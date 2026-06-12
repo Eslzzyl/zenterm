@@ -1,0 +1,6 @@
+[submodule "alacritty"]
+	path = alacritty
+	url = https://github.com/alacritty/alacritty.git
+[submodule "wezterm"]
+	path = wezterm
+	url = https://github.com/wezterm/wezterm.git
