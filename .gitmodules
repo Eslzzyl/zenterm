@@ -7,3 +7,6 @@
 [submodule "cosmic-term"]
 	path = cosmic-term
 	url = https://github.com/pop-os/cosmic-term.git
+[submodule "libcosmic"]
+	path = libcosmic
+	url = https://github.com/pop-os/libcosmic.git
