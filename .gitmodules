@@ -1,12 +1,16 @@
 [submodule "alacritty"]
 	path = alacritty
 	url = https://github.com/alacritty/alacritty.git
+	shallow = true
 [submodule "wezterm"]
 	path = wezterm
 	url = https://github.com/wezterm/wezterm.git
+	shallow = true
 [submodule "cosmic-term"]
 	path = cosmic-term
 	url = https://github.com/pop-os/cosmic-term.git
+	shallow = true
 [submodule "libcosmic"]
 	path = libcosmic
 	url = https://github.com/pop-os/libcosmic.git
+	shallow = true
