@@ -140,6 +140,7 @@ impl Terminal {
         if bytes.is_empty() {
             return;
         }
+        log::debug!("Terminal::feed: {} bytes: {:02x?}", bytes.len(), bytes);
         self.processor.advance(&mut self.term, bytes);
         self.damage.mark_all();
     }
@@ -182,7 +183,7 @@ impl Terminal {
             if row_idx >= screen_lines {
                 continue;
             }
-            let grid_line = Line(row_idx as i32 + grid.bottommost_line().0);
+            let grid_line = Line(row_idx as i32 - grid.display_offset() as i32);
             for col_idx in 0..cols.min(self.grid_cache[row_idx].len()) {
                 let alacell = &grid[grid_line][Column(col_idx)];
                 self.grid_cache[row_idx][col_idx] = self.resolve_cell(alacell);
@@ -271,6 +272,12 @@ fn named_color_default_rgb(named: NamedColor) -> Rgb {
         NamedColor::BrightMagenta => Rgb { r: 255, g: 85, b: 255 },
         NamedColor::BrightCyan => Rgb { r: 85, g: 255, b: 255 },
         NamedColor::BrightWhite => Rgb { r: 255, g: 255, b: 255 },
+        // Terminal-default colours used when no colour scheme is configured.
+        NamedColor::Foreground => Rgb { r: 220, g: 220, b: 220 }, // light grey
+        NamedColor::Background => Rgb { r: 0, g: 0, b: 0 },      // black
+        NamedColor::Cursor => Rgb { r: 220, g: 220, b: 220 },    // same as fg
+        NamedColor::DimForeground => Rgb { r: 140, g: 140, b: 140 },
+        NamedColor::BrightForeground => Rgb { r: 255, g: 255, b: 255 },
         _ => Rgb { r: 255, g: 255, b: 255 },
     }
 }

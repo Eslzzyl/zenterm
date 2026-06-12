@@ -12,6 +12,20 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Zenmux",
         native_options,
-        Box::new(|_cc| Ok(Box::new(zenmux_ui::ZenmuxApp::new()))),
+        Box::new(|cc| {
+            let render_state = cc
+                .wgpu_render_state
+                .clone()
+                .expect("zenmux requires wgpu rendering");
+
+            let pixels_per_point = cc.egui_ctx.pixels_per_point();
+
+            Ok(Box::new(zenmux_ui::ZenmuxApp::new_with_wgpu(
+                render_state.device,
+                render_state.queue,
+                render_state.target_format,
+                pixels_per_point,
+            )))
+        }),
     )
 }

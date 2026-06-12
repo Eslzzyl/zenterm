@@ -4895,6 +4895,7 @@ dependencies = [
  "bytemuck",
  "egui",
  "egui-wgpu",
+ "log",
  "wgpu",
  "zenmux-core",
  "zenmux-glyph",
@@ -4916,7 +4917,9 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
+ "egui-wgpu",
  "log",
+ "wgpu",
  "zenmux-core",
  "zenmux-glyph",
  "zenmux-input",

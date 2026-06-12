@@ -64,20 +64,24 @@ impl PtySession {
             .spawn(move || {
                 let mut reader = BufReader::new(reader);
                 let mut buf = [0u8; 4096];
+                log::debug!("pty-reader thread started");
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => {
                             // EOF — shell exited.
+                            log::debug!("pty-reader: EOF from PTY");
                             let _ = tx.send(Vec::new());
                             break;
                         }
                         Ok(n) => {
+                            log::debug!("pty-reader: read {} bytes from PTY: {:02x?}", n, &buf[..n]);
                             if tx.send(buf[..n].to_vec()).is_err() {
+                                log::debug!("pty-reader: channel closed, exiting");
                                 break;
                             }
                         }
                         Err(e) => {
-                            log::error!("PTY read error: {e}");
+                            log::error!("pty-reader error: {e}");
                             break;
                         }
                     }
@@ -102,13 +106,16 @@ impl PtySession {
         match self.rx.try_recv() {
             Ok(data) => {
                 if data.is_empty() {
+                    log::debug!("pty try_read: shell exited");
                     Some(Err(Error::Pty("shell exited".into())))
                 } else {
+                    log::debug!("pty try_read: {} bytes: {:02x?}", data.len(), data);
                     Some(Ok(data))
                 }
             }
             Err(mpsc::TryRecvError::Empty) => None,
             Err(mpsc::TryRecvError::Disconnected) => {
+                log::debug!("pty try_read: reader thread disconnected");
                 Some(Err(Error::Pty("PTY reader disconnected".into())))
             }
         }

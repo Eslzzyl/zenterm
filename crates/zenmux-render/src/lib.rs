@@ -2,41 +2,79 @@
 //!
 //! Renders the visible terminal grid as instanced quads in a single draw
 //! call via `egui_wgpu::CallbackTrait`.
+//!
+//! # Sub-modules
+//!
+//! - [`atlas`] — helpers for creating/updating a wgpu texture from a glyph atlas.
+//! - [`callback`] — [`egui_wgpu::CallbackTrait`] implementation that bridges
+//!   the render pass into egui's wgpu pipeline.
+
+pub mod atlas;
+pub mod callback;
+
+// Re-export the public types from the callback module so consumers can
+// import them from the crate root.
+pub use callback::CallbackHandle;
+
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use wgpu::util::DeviceExt;
 
 use zenmux_core::Result;
 
 /// Per-instance GPU data for one cell quad.
+///
+/// All spatial values are in **clip space** (NDC, range -1 to 1) so the
+/// vertex shader can pass them directly through without knowing the
+/// viewport size.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct CellInstance {
-    /// Screen-space position (top-left of cell, in pixels).
-    screen_pos: [f32; 2],
-    /// UV rectangle in the glyph atlas: [u_min, v_min, u_max, v_max].
-    glyph_uv: [f32; 4],
+pub struct CellInstance {
+    /// Clip-space top-left corner of the cell: (x, y).
+    pub clip_pos: [f32; 2],
+    /// Glyph UV coordinates of the lower-left corner: (u_min, v_min).
+    pub uv_min: [f32; 2],
+    /// Glyph UV coordinates of the upper-right corner: (u_max, v_max).
+    pub uv_max: [f32; 2],
+    /// Cell size in clip-space units: (width, height).
+    pub clip_cell_size: [f32; 2],
+    /// Glyph bitmap size in pixels: (width, height).
+    /// Used to render the glyph at native resolution instead of stretching
+    /// to fill the cell.
+    pub glyph_size: [f32; 2],
+    /// Glyph offset within the cell in pixels: (x, y).
+    /// Computed from bearing_x and (cell_height - bearing_y) so the glyph
+    /// is positioned on the baseline like a real terminal.
+    pub glyph_offset: [f32; 2],
     /// Foreground colour (RGBA).
-    fg_color: [f32; 4],
+    pub fg_color: [f32; 4],
     /// Background colour (RGBA).
-    bg_color: [f32; 4],
+    pub bg_color: [f32; 4],
 }
 
 /// The terminal render pass.
+///
+/// Owns the wgpu pipeline, static vertex/index buffers, a dynamically
+/// written instance buffer, and the atlas bind group.
 pub struct TerminalRenderPass {
     pipeline: wgpu::RenderPipeline,
     instance_buf: wgpu::Buffer,
     vertex_buf: wgpu::Buffer,
     index_buf: wgpu::Buffer,
     atlas_bind_group: wgpu::BindGroup,
-    num_instances: u32,
+    num_instances: AtomicU32,
     max_instances: u32,
 }
 
 impl TerminalRenderPass {
     /// Create a new render pass.
+    ///
+    /// The pipeline is configured to render into a surface with the given
+    /// `target_format`.  `atlas_view` and `sampler` are bound at group 0
+    /// so the fragment shader can sample glyph textures.
     pub fn new(
         device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
+        target_format: wgpu::TextureFormat,
         atlas_view: &wgpu::TextureView,
         sampler: &wgpu::Sampler,
     ) -> Result<Self> {
@@ -119,6 +157,7 @@ impl TerminalRenderPass {
             immediate_size: 0,
         });
 
+        // Render pipeline with both vertex and instance buffer layouts.
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("terminal.pipeline"),
             layout: Some(&pipeline_layout),
@@ -127,8 +166,9 @@ impl TerminalRenderPass {
                 entry_point: Some("vs_main".into()),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 buffers: &[
+                    // Vertex buffer (per-vertex quad corners)
                     wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                        array_stride: std::mem::size_of::<[f32; 2]>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &[wgpu::VertexAttribute {
                             format: wgpu::VertexFormat::Float32x2,
@@ -136,8 +176,9 @@ impl TerminalRenderPass {
                             shader_location: 0,
                         }],
                     },
+                    // Instance buffer (per-instance cell data)
                     wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<CellInstance>() as wgpu::BufferAddress,
+                        array_stride: std::mem::size_of::<CellInstance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &[
                             wgpu::VertexAttribute {
@@ -146,97 +187,153 @@ impl TerminalRenderPass {
                                 shader_location: 1,
                             },
                             wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x4,
+                                format: wgpu::VertexFormat::Float32x2,
                                 offset: 8,
                                 shader_location: 2,
                             },
                             wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x4,
-                                offset: 24,
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 16,
                                 shader_location: 3,
                             },
                             wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x4,
-                                offset: 40,
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 24,
                                 shader_location: 4,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 32,
+                                shader_location: 5,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 40,
+                                shader_location: 6,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 48,
+                                shader_location: 7,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 64,
+                                shader_location: 8,
                             },
                         ],
                     },
                 ],
             },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &fs_module,
                 entry_point: Some("fs_main".into()),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
+                    format: target_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: None,
             cache: None,
-        });
-
-        Ok(Self {
+            multiview_mask: None,
+        });        Ok(Self {
             pipeline,
             instance_buf,
             vertex_buf,
             index_buf,
             atlas_bind_group,
-            num_instances: 0,
+            num_instances: AtomicU32::new(0),
             max_instances,
         })
     }
 
-    /// Record the draw commands into an encoder.
-    pub fn render(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-    ) {
-        if self.num_instances == 0 {
+    /// Write a new set of cell instances to the GPU instance buffer.
+    ///
+    /// `instances` must not exceed `max_instances` (40 000).
+    pub fn update_instances(&self, queue: &wgpu::Queue, instances: &[CellInstance]) {
+        let count = instances.len() as u32;
+        if count > self.max_instances {
+            log::warn!(
+                "instance count {} exceeds max {}, truncating",
+                count,
+                self.max_instances
+            );
+            let truncated = &instances[..self.max_instances as usize];
+            queue.write_buffer(
+                &self.instance_buf,
+                0,
+                bytemuck::cast_slice(truncated),
+            );
+            self.num_instances.store(self.max_instances, Ordering::Release);
             return;
         }
+        if count > 0 {
+            queue.write_buffer(
+                &self.instance_buf,
+                0,
+                bytemuck::cast_slice(instances),
+            );
+        }
+        self.num_instances.store(count, Ordering::Release);
+    }
 
-        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("terminal.render_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-
+    /// Draw into an existing render pass (used by [`callback::TerminalWgpuCallback`]).
+    pub fn draw_to_pass(&self, rpass: &mut wgpu::RenderPass) {
+        let count = self.num_instances.load(Ordering::Acquire);
+        if count == 0 {
+            return;
+        }
         rpass.set_pipeline(&self.pipeline);
         rpass.set_bind_group(0, &self.atlas_bind_group, &[]);
         rpass.set_vertex_buffer(0, self.vertex_buf.slice(..));
         rpass.set_vertex_buffer(1, self.instance_buf.slice(..));
         rpass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-        rpass.draw_indexed(0..6, 0, 0..self.num_instances);
+        rpass.draw_indexed(0..6, 0, 0..count);
+    }
+
+    /// Legacy standalone draw — creates its own render pass on the given
+    /// surface view.  Used for testing; the callback-based path is preferred.
+    pub fn draw(&self, _device: &wgpu::Device, queue: &wgpu::Queue, view: &wgpu::TextureView) {
+        let count = self.num_instances.load(Ordering::Acquire);
+        if count == 0 {
+            return;
+        }
+        // Get the surface config from the view's texture format — we need
+        // a real surface config for the render pass descriptor format.
+        // This is a simplistic approach; prefer `draw_to_pass`.
+        let mut encoder =
+            _device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("terminal.draw"),
+            });
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("terminal.draw_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.draw_to_pass(&mut rpass);
+        }
+        queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Maximum number of instances this render pass can hold.
+    pub fn max_instances(&self) -> u32 {
+        self.max_instances
     }
 }
 
@@ -248,10 +345,14 @@ struct VertexInput {
 };
 
 struct InstanceInput {
-    @location(1) screen_pos: vec2<f32>,
-    @location(2) glyph_uv: vec4<f32>,
-    @location(3) fg_color: vec4<f32>,
-    @location(4) bg_color: vec4<f32>,
+    @location(1) clip_pos: vec2<f32>,
+    @location(2) uv_min: vec2<f32>,
+    @location(3) uv_max: vec2<f32>,
+    @location(4) clip_cell_size: vec2<f32>,
+    @location(5) glyph_size: vec2<f32>,
+    @location(6) glyph_offset: vec2<f32>,
+    @location(7) fg_color: vec4<f32>,
+    @location(8) bg_color: vec4<f32>,
 };
 
 struct Varying {
@@ -267,16 +368,20 @@ fn vs_main(
     inst: InstanceInput,
 ) -> Varying {
     var out: Varying;
-    let cell_size = inst.glyph_uv.zw;
+    // vert.pos is (0,0)→(1,1) within the glyph quad.
+    // clip_pos is the glyph's top-left corner in clip space.
+    // clip_cell_size is the glyph's extent in clip space (native pixel size).
+    // UV coordinates map directly to the atlas rectangle.
     out.position = vec4<f32>(
-        (inst.screen_pos.x + vert.pos.x * cell_size.x) / 960.0 - 1.0,
-        1.0 - (inst.screen_pos.y + vert.pos.y * cell_size.y) / 540.0,
+        inst.clip_pos.x + vert.pos.x * inst.clip_cell_size.x,
+        inst.clip_pos.y - vert.pos.y * inst.clip_cell_size.y,
         0.0,
         1.0,
     );
+    // Interpolate UV within the glyph's rectangle.
     out.uv = vec2<f32>(
-        inst.glyph_uv.x + vert.pos.x * (inst.glyph_uv.z - inst.glyph_uv.x),
-        inst.glyph_uv.y + vert.pos.y * (inst.glyph_uv.w - inst.glyph_uv.y),
+        inst.uv_min.x + vert.pos.x * (inst.uv_max.x - inst.uv_min.x),
+        inst.uv_min.y + vert.pos.y * (inst.uv_max.y - inst.uv_min.y),
     );
     out.fg_color = inst.fg_color;
     out.bg_color = inst.bg_color;
@@ -296,9 +401,9 @@ struct Varying {
 };
 
 @fragment
-fn fs_main(var: Varying) -> @location(0) vec4<f32> {
-    let alpha = textureSample(glyph_atlas, atlas_sampler, var.uv).a;
-    let color = mix(var.bg_color, var.fg_color, alpha);
+fn fs_main(in: Varying) -> @location(0) vec4<f32> {
+    let alpha = textureSample(glyph_atlas, atlas_sampler, in.uv).a;
+    let color = mix(in.bg_color, in.fg_color, alpha);
     return color;
 }
 ";

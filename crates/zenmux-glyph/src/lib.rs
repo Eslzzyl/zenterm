@@ -1,9 +1,10 @@
 //! Glyph atlas — rasterizes characters with `cosmic-text` and packs them
 //! into a GPU-friendly texture atlas using `etagere`.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
-use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
+use cosmic_text::{Attrs, Buffer, CacheKeyFlags, Family, FontSystem, Metrics, Shaping, SwashCache};
 use etagere::AtlasAllocator;
 
 use zenmux_core::{Error, Result};
@@ -30,16 +31,22 @@ pub struct GlyphAtlas {
     /// Current atlas texture size (power of two).
     pub texture_size: u32,
     font_size: f32,
+    /// Font family name used for shaping (e.g. "Consolas", "Menlo").
+    font_family: Cow<'static, str>,
+    /// Display scale factor (physical pixels per logical point).
+    /// Used to disable hinting at high DPI, matching wezterm's strategy.
+    pixels_per_point: f32,
     metrics: Metrics,
     glyph_cache: HashMap<(char, u32), GlyphEntry>,
     swash_cache: SwashCache,
 }
 
 impl GlyphAtlas {
-    /// Create a new glyph atlas with the given font size (in pixels).
+    /// Create a new glyph atlas with the given font size (in pixels)
+    /// and font family name.
     ///
     /// The atlas starts at 512×512 and grows as needed.
-    pub fn new(font_size: f32) -> Self {
+    pub fn new(font_size: f32, font_family: Cow<'static, str>, pixels_per_point: f32) -> Self {
         let font_system = FontSystem::new();
         let metrics = Metrics::new(font_size, font_size * 1.2);
 
@@ -53,21 +60,42 @@ impl GlyphAtlas {
             texture_data,
             texture_size: initial_size,
             font_size,
+            font_family,
+            pixels_per_point,
             metrics,
             glyph_cache: HashMap::new(),
             swash_cache: SwashCache::new(),
         }
     }
 
-    /// Ensure the given character is rasterised and packed into the atlas.
-    pub fn ensure_glyph(&mut self, c: char) -> Result<&GlyphEntry> {
-        let key = (c, self.font_size.to_bits());
+    /// Return the platform-appropriate default monospace font family.
+    ///
+    /// Matches the strategy used by Alacritty: each platform gets its
+    /// standard monospace font — Consolas on Windows, Menlo on macOS,
+    /// and the fontconfig `monospace` generic family on Linux.
+    pub fn default_font_family() -> Cow<'static, str> {
+        if cfg!(target_os = "windows") {
+            Cow::Borrowed("Consolas")
+        } else if cfg!(target_os = "macos") {
+            Cow::Borrowed("Menlo")
+        } else {
+            Cow::Borrowed("monospace")
+        }
+    }
 
-        if !self.glyph_cache.contains_key(&key) {
+    /// Ensure the given character is rasterised and packed into the atlas.
+    ///
+    /// Returns `true` if a new glyph was rasterised (caller should mark
+    /// the atlas texture as dirty so it gets uploaded to the GPU).
+    pub fn ensure_glyph(&mut self, c: char) -> Result<(&GlyphEntry, bool)> {
+        let key = (c, self.font_size.to_bits());
+        let is_new = !self.glyph_cache.contains_key(&key);
+
+        if is_new {
             self.rasterize_glyph(c)?;
         }
 
-        Ok(self.glyph_cache.get(&key).unwrap())
+        Ok((self.glyph_cache.get(&key).unwrap(), is_new))
     }
 
     /// Font metrics for layout calculations.
@@ -78,6 +106,16 @@ impl GlyphAtlas {
     /// Font size in pixels.
     pub fn font_size(&self) -> f32 {
         self.font_size
+    }
+
+    /// Returns the cell size (width, height) in pixels.
+    ///
+    /// Width is the advance of a representative monospace glyph ('W').
+    /// Height is the font's line height (font_size × 1.2).
+    /// This method will rasterize 'W' if it isn't cached yet.
+    pub fn cell_size(&mut self) -> Result<(f32, f32)> {
+        let (entry, _is_new) = self.ensure_glyph('W')?;
+        Ok((entry.advance, self.metrics.line_height))
     }
 
     /// Grow the atlas texture.
@@ -103,8 +141,21 @@ impl GlyphAtlas {
         // ── 1. Shape the character ────────────────────────────────────
         let mut buffer = Buffer::new(&mut self.font_system, self.metrics);
         buffer.set_size(Some(self.font_size), None);
-        let attrs = Attrs::new();
-        buffer.set_text(&c.to_string(), &attrs, Shaping::Basic, None);
+        // Use the platform-specific primary font (e.g. Consolas on Windows)
+        // so that ASCII characters like backslash (U+005C) are always
+        // rendered by a Latin font, not a CJK font that maps it to ¥.
+        //
+        // For ASCII we use Shaping::Basic to stay on the primary font.
+        // For non-ASCII we use Shaping::Advanced (HarfBuzz) which
+        // enables font fallback so CJK characters are rendered by a
+        // suitable system font.
+        let shaping = if c.is_ascii_graphic() || c == ' ' {
+            Shaping::Basic
+        } else {
+            Shaping::Advanced
+        };
+        let attrs = Attrs::new().family(Family::Name(&self.font_family));
+        buffer.set_text(&c.to_string(), &attrs, shaping, None);
         buffer.shape_until_scroll(&mut self.font_system, true);
 
         let glyphs = buffer.lines[0]
@@ -133,8 +184,20 @@ impl GlyphAtlas {
         };
 
         // ── 2. Get physical glyph (with cache_key) ───────────────────
-        let physical_glyph = gl.physical((0.0, 0.0), 1.0);
+        let mut physical_glyph = gl.physical((0.0, 0.0), 1.0);
         let advance = gl.w; // glyph width approximates advance for monospace
+
+        // ── 2b. Disable hinting at high DPI (wezterm strategy) ──────
+        // At high pixel densities, hinting's grid-fitting distortions
+        // are more visible than helpful.  Disabling hinting produces
+        // more natural glyphs AND skips the grid-fitting computation.
+        // Threshold: DPI ≥ 100 → pixels_per_point > 100/96 ≈ 1.04.
+        if self.pixels_per_point > 1.04 {
+            physical_glyph
+                .cache_key
+                .flags
+                .insert(CacheKeyFlags::DISABLE_HINTING);
+        }
 
         // ── 3. Rasterize via SwashCache ───────────────────────────────
         let physical = self

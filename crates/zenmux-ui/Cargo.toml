@@ -12,4 +12,6 @@ zenmux-render = { path = "../zenmux-render" }
 zenmux-input = { path = "../zenmux-input" }
 eframe = "0.34"
 egui = "0.34"
+egui-wgpu = "0.34"
+wgpu = "29"
 log = "0.4"
