@@ -27,7 +27,7 @@ When enabled (`\x1b[?2004h`), pasted text is surrounded by `\x1b[200~` and `\x1b
 ## C
 
 ### CallbackTrait
-An egui-wgpu trait that lets you inject custom wgpu rendering commands into egui's render pass. The escape hatch for bypassing egui's built-in text system.
+An egui-wgpu trait that lets you inject custom wgpu rendering commands into egui's render pass. The terminal grid renders via this trait — it runs inside egui's render pass at the correct position in the layout, no intermediate textures needed. NOT for egui text rendering (that's what Terminal Studio did wrong).
 
 ### Cell
 The fundamental unit of a terminal display. Each cell holds one character plus its style attributes (color, bold, italic, underline, etc.). 80×24 terminal = 1,920 cells.
@@ -42,7 +42,10 @@ Terminal commands starting with `\x1b[` (0x1B 0x5B). Examples:
 - `\x1b[1;1H` — Move cursor to row 1, column 1
 
 ### cosmic-text
-Pure Rust text shaping library by System76. Wraps HarfBuzz for shaping + swash for rasterization. Supports ligatures, BiDi, emoji, and font fallback. The recommended choice for terminal text rendering in 2025+.
+Pure Rust text shaping library by System76. Wraps `rustybuzz` (pure Rust HarfBuzz) for shaping + `swash` for rasterization. Supports ligatures, BiDi, emoji, and font fallback. Designed for paragraph layout rather than cell-by-cell terminal rendering.
+
+### crossfont
+Alacritty's font loading and rasterization library. Handles font discovery, size loading, and glyph bitmap generation via FreeType. Lighter than wezterm-font but lacks shaping/ligature support. **Not used in Zenmux** — Zenmux uses `wezterm-font` for full shaping from day one.
 
 ---
 
@@ -186,6 +189,9 @@ A pure Rust font loading, shaping, and rasterization library. Used internally by
 
 ### Screen Buffer (see Grid)
 
+### SGR Mouse Mode
+Mouse tracking protocol enabled by `\x1b[?1006h` (DECSET 1006). Encodes mouse events as `\x1b[<row>;<col>;<btn>M` (press) / `m` (release). Superior to older X10 mode because it disambiguates button numbers and supports drag events. Required by vim, htop, mc, and most TUI applications.
+
 ---
 
 ## T
@@ -207,7 +213,10 @@ The standard Rust crate for parsing ANSI/VT escape sequences. Implements Paul Wi
 Synchronizing frame rendering with the display's refresh cycle. Prevents screen tearing. Adds ~16.6ms (60Hz) or ~8.3ms (120Hz) of latency from GPU queue to visible output.
 
 ### vt100
-A higher-level Rust crate built on `vte`. Provides complete terminal state (parser + screen grid + colors + scrollback) in one package. 7M+ downloads, pure Rust, MIT license.
+A higher-level Rust crate built on `vte`. Provides complete terminal state (parser + screen grid + colors + scrollback) in one package. 7M+ downloads, pure Rust, MIT license. A black-box design — not used in Zenmux, which instead uses `vte` + alacritty's grid/term for full control.
+
+### wezterm-font
+Wezterm's font stack: wraps FreeType (rasterization), HarfBuzz (shaping + ligatures), and Cairo (rendering, Linux/macOS). Handles font discovery, shaping (ligatures, BiDi, emoji), rasterization, and font fallback with ranking. **Zenmux's font backend** — used from day one for full ligature support. C dependencies via FreeType, HarfBuzz (C++), and Cairo (C).
 
 ---
 

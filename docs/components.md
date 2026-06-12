@@ -72,48 +72,70 @@ Raw shell output:  "Hello \x1b[31mRed\x1b[0m text"
 
 The VT parser reads the byte stream and updates the **screen state** accordingly.
 
-### Two Levels of Crates
-
-#### Low-Level: `vte`
+### Crate: `vte` (low-level parser)
 
 - Provides a state machine that breaks byte streams into "actions" (print char, execute control, dispatch CSI/OSC)
 - You implement the `Perform` trait to handle each action
-- Alacritty and most terminals use this as the foundation
-- Requires you to maintain your own screen buffer
-
-#### High-Level: `vt100` ⭐
-
-- Wraps `vte` internally
-- Maintains the complete screen state (grid of cells with colors/styles)
-- One-function API: `parser.process(bytes)` → `parser.screen().cell(row, col)`
-- Pure Rust, 7M+ downloads, 121+ reverse dependencies
-- Also provides: `contents_diff()` for damage tracking, scrollback, cursor state
-
-### Crate: `vt100`
+- Alacritty uses this as the foundation
 
 ```rust
-use vt100::Parser;
+use vte::Parser;
+use vte::Perform;
 
-let mut parser = Parser::new(24, 80, 10000);  // rows, cols, scrollback_lines
+struct MyPerform;
 
-// Feed shell output
-parser.process(b"\x1b[31mHello\x1b[0m");
+impl Perform for MyPerform {
+    fn print(&mut self, c: char) {
+        // A printable character was received — add it to the grid
+        terminal.grid.current_cell_mut().character = c;
+    }
+    fn execute(&mut self, byte: u8) {
+        // A control character was received (\\n, \\r, \\t, \\x07 BEL, etc.)
+        match byte {
+            b'\\n' => terminal.grid.new_line(),
+            b'\\r' => terminal.grid.carriage_return(),
+            // ...
+        }
+    }
+    fn csi_dispatch(&mut self, params: &[i64], intermediates: &[u8], ignore: bool, action: u8) {
+        // A CSI sequence was received (e.g., \\x1b[31m → set color)
+        match action {
+            b'm' => { /* SGR — set graphics rendition */ }
+            b'A' => { /* CUU — cursor up */ }
+            // ...
+        }
+    }
+    // Also: osc_dispatch, esc_dispatch, hook/put/unhook, ...
+}
 
-// Read cell state
-let screen = parser.screen();
-let cell = screen.cell(0, 0).unwrap();
-println!("{:?}", cell.character());  // 'H'
-println!("{:?}", cell.fgcolor());    // Color::Idx(1) = red
-
-// Damage tracking
-let diff = screen.contents_diff(&previous_screen);
+let mut parser = Parser::new();
+parser.advance(&mut performer, b"\\x1b[31mHello");
 ```
+
+### Screen State: `alacritty_terminal::grid` + `alacritty_terminal::term`
+
+The `vte` parser generates **actions**; your `Perform` impl applies those actions to a **screen buffer** (grid).
+
+We use alacritty's grid, term, and selection modules from the vendored `alacritty/` directory:
+
+| Alacritty Module | Path | What It Provides |
+|------------------|------|------------------|
+| `grid/` | `alacritty/alacritty_terminal/src/grid/` | Ring buffer grid with O(1) scrolling, row storage, resize |
+| `term/` | `alacritty/alacritty_terminal/src/term/` | Terminal state: cursor, colors, modes, selection, alternate screen |
+| `selection/` | `alacritty/alacritty_terminal/src/selection/` | Text selection (click-drag, double/triple click) |
+| `index/` | `alacritty/alacritty_terminal/src/index/` | Row/Col/Line coordinate types |
+
+This gives us:
+- **Full control** over damage tracking (per-row dirty flags, column ranges)
+- **Battle-tested** ring buffer (used by Alacritty for years)
+- **Customizability** for future features (Kitty graphics protocol, OSC 8 hyperlinks, sixel)
+- **Modifiability** — we own the code, we can change anything
 
 ### What You Need to Do
 
-- Create one `vt100::Parser` per terminal tab
-- On each frame: feed PTY bytes to parser, read screen cells for rendering
-- Handle resize: call `parser.set_size(rows, cols)` when window changes size
+- Integrate `vte::Parser` with `alacritty_terminal::term::Term` via a `Perform` bridge
+- On each frame: feed PTY bytes to the parser, read grid cells for rendering
+- Handle resize: update `Term::resize()` when window changes size
 
 ---
 
@@ -140,13 +162,15 @@ Cell {
 
 Above the visible viewport is the **scrollback buffer** — lines that scrolled off the top, stored in memory for scrolling up.
 
-### Implementation Note
+### Implementation
 
-The `vt100` crate **already includes** a complete screen buffer. You don't need a separate grid crate. However, if you want to understand the design, reference Alacritty's implementation:
+We use **alacritty's grid implementation** directly:
 
-- `alacritty_terminal/src/grid/` — Superb ring buffer design
-- `alacritty_terminal/src/grid/storage.rs` — The `Storage` struct (circular buffer, O(1) scroll)
+- `alacritty_terminal/src/grid/` — Ring buffer design with O(1) scroll
+- `alacritty_terminal/src/grid/storage.rs` — The `Storage` struct (circular buffer)
 - `alacritty_terminal/src/term/cell.rs` — Cell representation
+
+This gives full control over damage tracking, selection rendering, and future custom features.
 
 ---
 
@@ -168,39 +192,43 @@ Shaping handles:
 - **Emoji sequences** — `👨‍💻` is multiple Unicode codepoints rendered as one glyph
 - **Font fallback** — If the current font doesn't have a glyph, try another font
 
-### Crate: `cosmic-text`
+### Crate: `wezterm-font` ⭐
 
-- **Author:** System76 (POP!_OS team)
-- **Pure Rust:** Yes
-- **Internally uses:** `swash` (rasterization) + `rustybuzz` (HarfBuzz shaping) + custom layout
-- **Features:** Ligatures ✓, BiDi ✓, Emoji ✓, Font fallback ✓
+- **Author:** Wezterm project
+- **License:** MIT
+- **C dependencies:** FreeType (C), HarfBuzz (C++), Cairo (C, Linux/macOS only)
+- **Features:** Full shaping (ligatures), BiDi, emoji sequences, font fallback with ranking, font discovery (fontconfig/DirectWrite/CoreText)
 
 ```rust
-use cosmic_text::{
-    FontSystem, SwashCache, Attrs, Family, Buffer, Metrics, Shaping,
+use wezterm_font::{
+    FontConfiguration, FontLocatorSelection, LocatorOptions,
+    NamedFontHandle,
 };
+use wezterm_font::units::*;
 
-let mut font_system = FontSystem::new();
-let mut swash_cache = SwashCache::new();
-
-let mut buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 20.0));
-buffer.set_size(&mut font_system, 800.0, 600.0);
-buffer.set_text(
-    &mut font_system,
-    "Hello -> World",
-    Attrs::new().family(Family::Monospace),
-    Shaping::Advanced,  // ← Advanced = HarfBuzz shaping with ligatures
-);
-
-// Buffer now contains positioned glyphs ready for rendering
+let font_config = FontConfiguration::new(vec![])?;
+let fonts = FontLocatorSelection::new(LocatorOptions {
+    fonts: vec!["JetBrains Mono".to_string()],
+    scale_factors: vec![],
+    freetype_load_target: Default::default(),
+    freetype_render_size: Default::default(),
+    harfbuzz_features: vec![],
+})?;
 ```
+
+`wezterm-font` handles the full pipeline: font discovery → shaping (with ligatures) → rasterization. Each cell's character is shaped into positioned glyphs, then rasterized into pixel buffers for atlas upload.
+
+**Alternative not chosen:** `crossfont` (Alacritty's choice) — lighter but lacks shaping/ligature support. `cosmic-text` — pure Rust but designed for paragraph layout, not cell-by-cell terminal rendering.
 
 ### What You Need to Do
 
-- **Don't** use cosmic-text for full line layout/word-wrap (too slow for terminal)
-- **Do** use it per-character-cell: for each `Cell.character`, get the shaped glyph + position
-- Cache the shaping results (the character set in a terminal session is usually small)
-- Handle font fallback for missing glyphs (e.g., emoji, CJK)
+- Initialize `wezterm-font` at startup with the configured font family
+- On first encounter of a unique character+style pair:
+  1. Shape via wezterm-font → get glyph indices + positions
+  2. Rasterize → get pixel buffer
+  3. Pack into GPU atlas via etagere
+  4. Cache UV coordinates for fast lookup
+- For cells with ligatures (e.g., `->`, `fi`), the shaped glyph may span multiple cells — handle via cell clustering
 
 ---
 
@@ -237,12 +265,11 @@ GPU Texture (e.g., 2048×2048 pixels)
 
 ### What You Need to Do
 
-1. On first encounter of a glyph:
-   - Rasterize it via cosmic-text/swash → pixel buffer
-   - Find empty space in atlas via etagere (`Allocator::allocate()`)
-   - Upload pixel buffer to GPU texture at allocated position
-   - Store the UV coordinates in a HashMap for fast lookup
-2. On render: look up each cell's glyph UV, build instanced quad data
+ 1. On first encounter of a glyph:
+    - Rasterize it via wezterm-font → pixel buffer
+    - Find empty space in atlas via etagere (`Allocator::allocate()`)
+    - Upload pixel buffer to GPU texture at allocated position
+    - Store the UV coordinates in a HashMap for fast lookup2. On render: look up each cell's glyph UV, build instanced quad data
 
 ---
 
@@ -377,6 +404,44 @@ Ctrl+Shift+C        \x1b[99;6u  (kitty protocol)
 - Respect terminal mode flags (e.g., application cursor keys)
 - Support at minimum: standard encoding + kitty protocol
 - Mouse: SGR encoding (mode `?1006`)
+- Handle selection mode vs. mouse-report mode routing
+
+### Mouse Input
+
+Mouse handling has two modes, determined by the shell application:
+
+**Selection mode (default):**
+- Left click-drag: select text in terminal grid
+- Double-click: select word
+- Triple-click: select line
+- Right-click: context menu
+- Scroll: scrollback navigation
+- These are handled locally with egui's `Sense::click_and_drag()` and `PointerState`
+
+**Mouse report mode (vim/htop/nano):**
+- When terminal enables `DECSET 1000`/`1006`, all mouse events become SGR escape sequences
+- Encoded as `\x1b[<row>;<col>;<btn>M` (press) / `m` (release)
+- Forwarded directly to PTY via `self.pty_writer.write()`
+- egui's `PointerState` gives same-frame mouse data — no latency penalty
+
+```rust
+// Inside App::update()
+let pointer = ui.input(|i| i.pointer.clone());
+if term_mode.contains(MOUSE_REPORT) {
+    if let Some(btn) = pointer.press_origin() {
+        let seq = encode_sgr_mouse(row, col, btn, true);
+        pty.write(seq.as_bytes());
+    }
+    if let Some(_) = &pointer.any_released() {
+        let seq = encode_sgr_mouse(row, col, 0, false);
+        pty.write(seq.as_bytes());
+    }
+} else {
+    let resp = ui.interact(rect, id, Sense::click_and_drag());
+    if resp.dragged() { selection.update(row, col); }
+    if resp.double_clicked() { selection.select_word(row, col); }
+}
+```
 
 ---
 
@@ -385,15 +450,22 @@ Ctrl+Shift+C        \x1b[99;6u  (kitty protocol)
 ```
 zenmux (your app)
 ├── eframe / egui / egui_dock     (UI framework)
-├── egui-wgpu                      (wgpu backend)
+├── egui-wgpu                      (wgpu backend + CallbackTrait)
 ├── wgpu                           (GPU API)
-├── vt100                          (terminal emulation)
-├── cosmic-text                    (font shaping, ligatures)
-├── swash                          (glyph rasterization)
+├── vte                            (low-level VT state machine)
+├── alacritty_terminal             (grid, term, selection — from alacritty/)
+│   └── vte (already a dep)
+├── wezterm-font                   (font shaping + rasterization + ligatures)
+│   ├── freetype (C dep)
+│   ├── harfbuzz (C++ dep)
+│   └── cairo (C dep, Linux/macOS)
 ├── etagere                        (texture atlas packing)
 ├── portable-pty                   (cross-platform PTY)
+├── wezterm-toast-notification     (native notifications)
+├── copypasta                      (clipboard)
+├── linkify                        (URL detection)
 ├── serde + toml                   (config)
 └── parking_lot                    (concurrency)
 ```
 
-All crates are **pure Rust**, all available on crates.io, all with permissive open-source licenses (MIT/Apache 2.0).
+All crates have permissive open-source licenses (MIT/Apache 2.0).
