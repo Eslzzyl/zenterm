@@ -4915,6 +4915,7 @@ dependencies = [
 name = "zenmux-ui"
 version = "0.1.0"
 dependencies = [
+ "alacritty_terminal",
  "eframe",
  "egui",
  "egui-wgpu",

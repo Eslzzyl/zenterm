@@ -84,6 +84,15 @@ impl InputMapper {
                 }
             }
 
+            egui::Event::Paste(text) => {
+                // Clipboard paste — send the UTF-8 bytes directly.
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text.as_bytes().to_vec())
+                }
+            }
+
             _ => None,
         }
     }

@@ -11,7 +11,8 @@ use std::fmt;
 
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::index::{Column, Direction, Line, Point};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{Config as TermConfig, Term, TermMode};
@@ -205,8 +206,12 @@ impl Terminal {
     /// Get cursor information.
     pub fn cursor(&self) -> CursorInfo {
         let point = self.term.grid().cursor.point;
+        // Convert from absolute grid line to viewport row so the
+        // caller can compare directly with visual row indices.
+        let display_offset = self.term.grid().display_offset();
+        let viewport_line = point.line.0 + display_offset as i32;
         CursorInfo {
-            pos: TermPos::new(point.line.0 as usize, point.column.0 as usize),
+            pos: TermPos::new(viewport_line.max(0) as usize, point.column.0),
             style: self.term.cursor_style(),
             visible: self.term.mode().contains(TermMode::SHOW_CURSOR),
         }
@@ -215,6 +220,65 @@ impl Terminal {
     /// Get terminal mode flags (needed by the input mapper).
     pub fn mode(&self) -> TermMode {
         *self.term.mode()
+    }
+
+    // ── Selection support ──────────────────────────────────────────────────
+
+    /// Start a new selection at the given grid position.
+    pub fn start_selection(&mut self, line: usize, col: usize) {
+        let point = Point::new(Line(line as i32), Column(col));
+        self.term.selection = Some(Selection::new(
+            SelectionType::Simple,
+            point,
+            Direction::Left,
+        ));
+    }
+
+    /// Extend the current selection to the given grid position.
+    pub fn update_selection(&mut self, line: usize, col: usize) {
+        if let Some(ref mut sel) = self.term.selection {
+            let point = Point::new(Line(line as i32), Column(col));
+            sel.update(point, Direction::Left);
+        }
+    }
+
+    /// Clear the active selection.
+    pub fn clear_selection(&mut self) {
+        self.term.selection = None;
+    }
+
+    /// Check whether a selection is currently active.
+    pub fn has_selection(&self) -> bool {
+        self.term.selection.is_some()
+    }
+
+    /// Check whether a specific cell is within the selection range.
+    pub fn is_selected(&self, line: usize, col: usize) -> bool {
+        let range = match self
+            .term
+            .selection
+            .as_ref()
+            .and_then(|s| s.to_range(&self.term))
+        {
+            Some(r) => r,
+            None => return false,
+        };
+        let point = Point::new(Line(line as i32), Column(col));
+        range.contains(point)
+    }
+
+    /// Extract selected text as a `String`, if any selection is active.
+    pub fn selected_text(&self) -> Option<String> {
+        self.term.selection_to_string()
+    }
+
+    /// Return the raw selection range, if any, so callers can check
+    /// cell membership without an extra `&self` borrow.
+    pub fn selection_range(&self) -> Option<alacritty_terminal::selection::SelectionRange> {
+        self.term
+            .selection
+            .as_ref()
+            .and_then(|s| s.to_range(&self.term))
     }
 
     // ---- Helpers ----

@@ -14,6 +14,9 @@ use std::sync::Arc;
 
 use egui::Context;
 
+use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::selection::SelectionRange;
+
 use zenmux_core::{Rgba, TermSize};
 use zenmux_glyph::GlyphAtlas;
 use zenmux_input::InputMapper;
@@ -39,6 +42,11 @@ pub struct ZenmuxApp {
 
     /// Last known atlas texture size (for detecting atlas growth).
     last_atlas_size: u32,
+
+    // ── Selection state ──────────────────────────────────────────────────
+    /// True while the left mouse button is held and a drag-selection is
+    /// in progress.
+    selecting: bool,
 }
 
 impl ZenmuxApp {
@@ -110,6 +118,7 @@ impl ZenmuxApp {
             cell_width,
             cell_height,
             last_atlas_size,
+            selecting: false,
         }
     }
 
@@ -158,11 +167,27 @@ impl ZenmuxApp {
     /// the bearing offset within the cell — following the approach used
     /// by Alacritty and WezTerm.  The cell background is provided by
     /// egui's `rect_filled` underneath.
+    ///
+    /// If the terminal cursor is visible, the cell at the cursor position
+    /// has its foreground and background colours **swapped** (inverse
+    /// video block cursor).  A blank cell at the cursor position is
+    /// rendered as a white block.
     fn update_cell_instances(
         &mut self,
         vp_width_px: f32,
         vp_height_px: f32,
     ) {
+        // Read cursor info BEFORE visible_cells() since both borrow
+        // self.terminal (one mut, one immut).
+        let cursor = self.terminal.cursor();
+        let cursor_row = cursor.pos.line;
+        let cursor_col = cursor.pos.column;
+        let cursor_visible = cursor.visible;
+
+        // Pre-compute selection range so the inner loop does not need
+        // an additional borrow on self.terminal during grid iteration.
+        let sel_range: Option<SelectionRange> = self.terminal.selection_range();
+
         let grid = self.terminal.visible_cells();
         let rows = grid.row_count();
         let cols = grid.col_count();
@@ -203,10 +228,13 @@ impl ZenmuxApp {
                     None => continue,
                 };
 
+                let is_cursor = cursor_visible && row == cursor_row && col == cursor_col;
+
                 let ch_char = cell.c;
 
-                // Skip fully blank cells (space on default background).
-                if ch_char == ' ' && cell.bg == Rgba::BLACK {
+                // Skip fully blank cells (space on default background),
+                // UNLESS this is the cursor position (render as cursor block).
+                if ch_char == ' ' && cell.bg == Rgba::BLACK && !is_cursor {
                     blank_count += 1;
                     continue;
                 }
@@ -226,43 +254,93 @@ impl ZenmuxApp {
                 let atlas_w = (entry.atlas_rect.max.x - entry.atlas_rect.min.x) as f32;
                 let atlas_h = (entry.atlas_rect.max.y - entry.atlas_rect.min.y) as f32;
 
-                // ── Glyph position in clip space ─────────────────────
+                // ── Colours ──────────────────────────────────────────────
+                let is_sel = sel_range.as_ref().is_some_and(|range| {
+                    let pt = Point::new(Line(row as i32), Column(col));
+                    range.contains(pt)
+                });
+
+                // ── Geometry ────────────────────────────────────────────
                 //
-                // Pixel position from the window top-left:
-                //   x = col * cell_width  + bearing_x
-                //   y = row * cell_height + (cell_height − bearing_y)
-                //
-                // bearing_y is distance from baseline to glyph top;
-                // cell_height − bearing_y converts to distance from
-                // cell top to glyph top.
+                // Every cell renders a glyph-sized quad at the bearing
+                // offset (native-resolution text).  For cursor and selected
+                // cells we additionally render a FULL-CELL background quad
+                // underneath so the colour fills the entire grid cell.
                 let glyph_x_px = col as f32 * cw + entry.bearing_x;
                 let glyph_y_px = row as f32 * ch + (ch - entry.bearing_y);
+                let gqx = glyph_x_px * x_scale - 1.0;
+                let gqy = 1.0 - glyph_y_px * y_scale;
+                let gqw = atlas_w * x_scale;
+                let gqh = atlas_h * y_scale;
 
-                let clip_x = glyph_x_px * x_scale - 1.0;
-                let clip_y = 1.0 - glyph_y_px * y_scale;
-                let clip_w = atlas_w * x_scale;
-                let clip_h = atlas_h * y_scale;
-
-                // ── UV coordinates (simple atlas mapping) ────────────
+                // ── UV coordinates ──────────────────────────────────────
                 let u_min = (entry.atlas_rect.min.x as f32 + 0.5) / tex_size;
                 let v_min = (entry.atlas_rect.min.y as f32 + 0.5) / tex_size;
                 let u_max = (entry.atlas_rect.max.x as f32 - 0.5) / tex_size;
                 let v_max = (entry.atlas_rect.max.y as f32 - 0.5) / tex_size;
 
-                // Colours.
-                let fg = [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0];
-                let bg = [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0];
+                // ── Background quad (full cell, cursor/selected only) ───
+                // Push BEFORE the glyph quad so it is drawn underneath.
+                if is_cursor || is_sel {
+                    let bqx = (col as f32 * cw) * x_scale - 1.0;
+                    let bqy = 1.0 - (row as f32 * ch) * y_scale;
+                    let bqw = cw * x_scale;
+                    let bqh = ch * y_scale;
+                    let bg_colour = if is_cursor {
+                        [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0]
+                    } else {
+                        [0.3, 0.5, 0.8, 1.0]
+                    };
+                    instances.push(CellInstance {
+                        clip_pos: [bqx, bqy],
+                        uv_min: [0.0, 0.0],
+                        uv_max: [0.0, 0.0],
+                        clip_cell_size: [bqw, bqh],
+                        glyph_size: [0.0, 0.0],
+                        glyph_offset: [0.0, 0.0],
+                        fg_color: bg_colour,
+                        bg_color: bg_colour,
+                    });
+                }
 
-                instances.push(CellInstance {
-                    clip_pos: [clip_x, clip_y],
-                    uv_min: [u_min, v_min],
-                    uv_max: [u_max, v_max],
-                    clip_cell_size: [clip_w, clip_h],
-                    glyph_size: [atlas_w, atlas_h],
-                    glyph_offset: [entry.bearing_x, ch - entry.bearing_y],
-                    fg_color: fg,
-                    bg_color: bg,
-                });
+                // ── Foreground quad (glyph, all cells) ──────────────────
+                if is_cursor {
+                    // Inverse video: swap fg/bg for the glyph quad.
+                    instances.push(CellInstance {
+                        clip_pos: [gqx, gqy],
+                        uv_min: [u_min, v_min],
+                        uv_max: [u_max, v_max],
+                        clip_cell_size: [gqw, gqh],
+                        glyph_size: [atlas_w, atlas_h],
+                        glyph_offset: [entry.bearing_x, ch - entry.bearing_y],
+                        fg_color: [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0],
+                        bg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
+                    });
+                } else if is_sel {
+                    // Selected: normal fg on selection-highlight bg.
+                    instances.push(CellInstance {
+                        clip_pos: [gqx, gqy],
+                        uv_min: [u_min, v_min],
+                        uv_max: [u_max, v_max],
+                        clip_cell_size: [gqw, gqh],
+                        glyph_size: [atlas_w, atlas_h],
+                        glyph_offset: [entry.bearing_x, ch - entry.bearing_y],
+                        fg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
+                        bg_color: [0.3, 0.5, 0.8, 1.0],
+                    });
+                } else {
+                    // Normal cell.
+                    instances.push(CellInstance {
+                        clip_pos: [gqx, gqy],
+                        uv_min: [u_min, v_min],
+                        uv_max: [u_max, v_max],
+                        clip_cell_size: [gqw, gqh],
+                        glyph_size: [atlas_w, atlas_h],
+                        glyph_offset: [entry.bearing_x, ch - entry.bearing_y],
+                        fg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
+                        bg_color: [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0],
+                    });
+                }
             }
         }
 
@@ -303,15 +381,43 @@ impl eframe::App for ZenmuxApp {
         self.pump_pty();
 
         // 2. Handle keyboard input.
-        ctx.input(|input| {
-            for event in &input.events {
-                if let Some(bytes) = InputMapper::map(event) {
-                    if let Err(e) = self.pty.write(&bytes) {
-                        log::error!("PTY write error: {e}");
+        //
+        //    Some key combinations (Ctrl+Shift+C) are terminal-emulator
+        //    commands rather than shell input — check for those first
+        //    by iterating events outside the ctx.input borrow so we can
+        //    call ctx.copy_text() if needed.
+        let copy_requested = ctx.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::C,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if modifiers.ctrl && modifiers.shift && !modifiers.alt
+                )
+            })
+        });
+
+        if copy_requested && self.terminal.has_selection() {
+            if let Some(text) = self.terminal.selected_text() {
+                ctx.copy_text(text);
+                // Do NOT send Ctrl+C / 0x03 to the shell when we have a
+                // selection — the user intended to copy, not interrupt.
+            }
+        } else {
+            // Normal input: pass all events through InputMapper → PTY.
+            ctx.input(|input| {
+                for event in &input.events {
+                    if let Some(bytes) = InputMapper::map(event) {
+                        if let Err(e) = self.pty.write(&bytes) {
+                            log::error!("PTY write error: {e}");
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
 
         // 3. Request continuous repainting.
         ctx.request_repaint();
@@ -337,11 +443,50 @@ impl eframe::App for ZenmuxApp {
                 self.pty.resize(new_size).ok();
             }
 
+            // ── Allocate terminal area and capture interactions ─────────
+            let sense = egui::Sense::click_and_drag();
+            let (rect, response) = ui.allocate_exact_size(available, sense);
+
+            // ── Mouse-driven text selection ────────────────────────────
+            if response.drag_started() {
+                // Convert pointer-down position to grid cell.
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let col = ((pos.x - rect.left()) / self.cell_width) as usize;
+                    let row = ((pos.y - rect.top()) / self.cell_height) as usize;
+                    if col < cols as usize && row < rows as usize {
+                        self.terminal.clear_selection();
+                        self.terminal.start_selection(row, col);
+                        self.selecting = true;
+                    }
+                }
+            }
+
+            if self.selecting && response.dragged() {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let col = ((pos.x - rect.left()) / self.cell_width) as usize;
+                    let row = ((pos.y - rect.top()) / self.cell_height) as usize;
+                    // Clamp to grid bounds.
+                    let col = col.min(cols.saturating_sub(1) as usize);
+                    let row = row.min(rows.saturating_sub(1) as usize);
+                    self.terminal.update_selection(row, col);
+                }
+            }
+
+            if self.selecting && response.drag_stopped() {
+                self.selecting = false;
+                // Selection is finalised — no further action needed here;
+                // it will be used by the copy action.
+            }
+
+            // Left-click without drag → clear selection.
+            if response.clicked() && !self.selecting {
+                self.terminal.clear_selection();
+            }
+
             // ── Build GPU instance data from visible cells ──────────────
             self.update_cell_instances(vp_width_px, vp_height_px);
 
             // ── Register the wgpu paint callback ────────────────────────
-            let (rect, _response) = ui.allocate_exact_size(available, egui::Sense::hover());
             let callback = egui_wgpu::Callback::new_paint_callback(
                 rect,
                 self.callback.clone(),
@@ -353,6 +498,21 @@ impl eframe::App for ZenmuxApp {
             // Register the callback shape — egui-wgpu will call
             // prepare() and paint() on it.
             ui.painter().add(callback);
+
+            // ── Right-click context menu ───────────────────────────────
+            response.context_menu(|ctx_ui| {
+                if self.terminal.has_selection() {
+                    if ctx_ui.button("Copy").clicked() {
+                        if let Some(text) = self.terminal.selected_text() {
+                            ctx_ui.ctx().copy_text(text);
+                        }
+                        ctx_ui.close();
+                    }
+                }
+                if ctx_ui.button("Paste").clicked() {
+                    ctx_ui.close();
+                }
+            });
         });
     }
 }
