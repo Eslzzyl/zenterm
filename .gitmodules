@@ -4,3 +4,6 @@
 [submodule "wezterm"]
 	path = wezterm
 	url = https://github.com/wezterm/wezterm.git
+[submodule "cosmic-term"]
+	path = cosmic-term
+	url = https://github.com/pop-os/cosmic-term.git
