@@ -1,6 +1,12 @@
-[package]
-name = "zenmux"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
+[workspace]
+resolver = "2"
+members = [
+    "crates/zenmux",
+    "crates/zenmux-core",
+    "crates/zenmux-pty",
+    "crates/zenmux-term",
+    "crates/zenmux-glyph",
+    "crates/zenmux-render",
+    "crates/zenmux-input",
+    "crates/zenmux-ui",
+]

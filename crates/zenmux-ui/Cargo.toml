@@ -1,0 +1,15 @@
+[package]
+name = "zenmux-ui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zenmux-core = { path = "../zenmux-core" }
+zenmux-pty = { path = "../zenmux-pty" }
+zenmux-term = { path = "../zenmux-term" }
+zenmux-glyph = { path = "../zenmux-glyph" }
+zenmux-render = { path = "../zenmux-render" }
+zenmux-input = { path = "../zenmux-input" }
+eframe = "0.34"
+egui = "0.34"
+log = "0.4"

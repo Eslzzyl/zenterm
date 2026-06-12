@@ -1,0 +1,8 @@
+[package]
+name = "zenmux-input"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zenmux-core = { path = "../zenmux-core" }
+egui = "0.34"
