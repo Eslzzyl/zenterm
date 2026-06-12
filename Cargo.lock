@@ -4852,6 +4852,7 @@ dependencies = [
  "eframe",
  "egui",
  "env_logger",
+ "wgpu",
  "zenmux-ui",
 ]
 

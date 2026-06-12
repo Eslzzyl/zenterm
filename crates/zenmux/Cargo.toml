@@ -8,3 +8,4 @@ zenmux-ui = { path = "../zenmux-ui" }
 eframe = "0.34"
 egui = "0.34"
 env_logger = "0.11"
+wgpu = "29"
