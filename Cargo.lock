@@ -4861,6 +4861,7 @@ name = "zenmux-core"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4869,7 +4870,10 @@ version = "0.1.0"
 dependencies = [
  "cosmic-text",
  "etagere",
+ "log",
+ "swash",
  "zenmux-core",
+ "zeno",
 ]
 
 [[package]]

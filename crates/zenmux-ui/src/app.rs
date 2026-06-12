@@ -17,7 +17,7 @@ use egui::Context;
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::selection::SelectionRange;
 
-use zenmux_core::{Rgba, TermSize};
+use zenmux_core::{Rgba, SubpixelLayout, TermSize};
 use zenmux_glyph::GlyphAtlas;
 use zenmux_input::InputMapper;
 use zenmux_pty::PtySession;
@@ -69,7 +69,12 @@ impl ZenmuxApp {
         // At 200% scaling, 18pt → 36 physical pixels.
         let font_size = 18.0 * pixels_per_point;
         let font_family = GlyphAtlas::default_font_family();
-        let mut glyph_atlas = GlyphAtlas::new(font_size, font_family, pixels_per_point);
+        let mut glyph_atlas = GlyphAtlas::new(
+            font_size,
+            font_family,
+            pixels_per_point,
+            SubpixelLayout::detect(),
+        );
 
         // Seed the atlas with a few common ASCII characters so the first
         // frame has something to render before the user types anything.
@@ -263,11 +268,12 @@ impl ZenmuxApp {
                 // ── Geometry ────────────────────────────────────────────
                 //
                 // Every cell renders a glyph-sized quad at the bearing
-                // offset (native-resolution text).  For cursor and selected
-                // cells we additionally render a FULL-CELL background quad
-                // underneath so the colour fills the entire grid cell.
-                let glyph_x_px = col as f32 * cw + entry.bearing_x;
-                let glyph_y_px = row as f32 * ch + (ch - entry.bearing_y);
+                // offset (native-resolution text).  Positions are rounded to
+                // the nearest physical pixel so quad edges align with pixel
+                // boundaries — this prevents Nearest-filter texture-sampling
+                // artefacts (jagged edges) caused by sub-pixel positioning.
+                let glyph_x_px = (col as f32 * cw + entry.bearing_x).round();
+                let glyph_y_px = (row as f32 * ch + (ch - entry.bearing_y)).round();
                 let gqx = glyph_x_px * x_scale - 1.0;
                 let gqy = 1.0 - glyph_y_px * y_scale;
                 let gqw = atlas_w * x_scale;
@@ -282,8 +288,8 @@ impl ZenmuxApp {
                 // ── Background quad (full cell, cursor/selected only) ───
                 // Push BEFORE the glyph quad so it is drawn underneath.
                 if is_cursor || is_sel {
-                    let bqx = (col as f32 * cw) * x_scale - 1.0;
-                    let bqy = 1.0 - (row as f32 * ch) * y_scale;
+                    let bqx = ((col as f32 * cw).round()) * x_scale - 1.0;
+                    let bqy = 1.0 - ((row as f32 * ch).round()) * y_scale;
                     let bqw = cw * x_scale;
                     let bqh = ch * y_scale;
                     let bg_colour = if is_cursor {

@@ -400,10 +400,39 @@ struct Varying {
     @location(2) bg_color: vec4<f32>,
 };
 
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        return c / 12.92;
+    } else {
+        return pow((c + 0.055) / 1.055, 2.4);
+    }
+}
+
 @fragment
 fn fs_main(in: Varying) -> @location(0) vec4<f32> {
-    let alpha = textureSample(glyph_atlas, atlas_sampler, in.uv).a;
-    let color = mix(in.bg_color, in.fg_color, alpha);
-    return color;
+    // Read per-channel subpixel coverage from the atlas.
+    //   R = red subpixel coverage
+    //   G = green subpixel coverage
+    //   B = blue subpixel coverage
+    // The atlas is Rgba8Unorm (no sRGB conversion), so these are linear.
+    let coverage = textureSample(glyph_atlas, atlas_sampler, in.uv).rgb;
+
+    // Convert vertex colours from sRGB to linear for correct blending.
+    let fg_r = srgb_to_linear(in.fg_color.r);
+    let fg_g = srgb_to_linear(in.fg_color.g);
+    let fg_b = srgb_to_linear(in.fg_color.b);
+    let bg_r = srgb_to_linear(in.bg_color.r);
+    let bg_g = srgb_to_linear(in.bg_color.g);
+    let bg_b = srgb_to_linear(in.bg_color.b);
+
+    // Per-channel subpixel blending in linear space.
+    // The result will be converted back to sRGB by the GPU when writing
+    // to the Rgba8UnormSrgb framebuffer.
+    let color = vec3<f32>(
+        mix(bg_r, fg_r, coverage.r),
+        mix(bg_g, fg_g, coverage.g),
+        mix(bg_b, fg_b, coverage.b),
+    );
+    return vec4<f32>(color, 1.0);
 }
 ";

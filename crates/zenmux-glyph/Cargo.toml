@@ -7,3 +7,6 @@ edition = "2024"
 zenmux-core = { path = "../zenmux-core" }
 cosmic-text = "0.19"
 etagere = "0.3"
+swash = "0.2"
+zeno = "0.3"
+log = "0.4"

@@ -7,7 +7,10 @@ use wgpu::{Extent3d, TexelCopyBufferLayout, TexelCopyTextureInfo};
 
 /// Create a wgpu 2D texture + view from glyph atlas pixel data.
 ///
-/// The texture is sized to `size × size` with format `Rgba8UnormSrgb`.
+/// The texture is sized to `size × size` with format `Rgba8Unorm`.
+/// We use a non-sRGB format because the atlas stores linear subpixel
+/// coverage values, not sRGB-encoded colors.  The actual sRGB→linear
+/// conversion for vertex colours is done in the fragment shader.
 pub fn create_atlas_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -24,7 +27,7 @@ pub fn create_atlas_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        format: wgpu::TextureFormat::Rgba8Unorm,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -89,7 +92,10 @@ pub fn update_atlas_texture(
 /// Create a default atlas sampler (nearest filtering, clamp-to-edge).
 ///
 /// Nearest-neighbour filtering gives crisp, pixel-aligned glyphs
-/// which is the expected look for a terminal emulator.
+/// which is the expected look for a terminal emulator on high-DPI
+/// displays.  With subpixel-rendered glyphs the RGB coverage values
+/// are per-pixel, so linear interpolation would introduce colour
+/// fringing — Nearest is the correct choice here.
 pub fn create_atlas_sampler(device: &wgpu::Device) -> wgpu::Sampler {
     device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("glyph_atlas_sampler"),

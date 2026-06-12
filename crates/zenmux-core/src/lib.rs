@@ -20,3 +20,79 @@ pub use size::TermSize;
 
 /// Convenience alias for [`Error`] results.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// The physical subpixel layout of the primary display.
+///
+/// LCD monitors arrange the red, green, and blue subpixels in one of two
+/// horizontal orders: **RGB** (red–green–blue, the most common) or **BGR**
+/// (blue–green–red, used by many Dell and Samsung panels, and most TVs).
+///
+/// Using the wrong layout causes visible colour fringing at text edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubpixelLayout {
+    /// Standard RGB layout (subpixel order: R·G·B).
+    Rgb,
+    /// Inverted BGR layout (subpixel order: B·G·R).
+    Bgr,
+}
+
+impl core::fmt::Display for SubpixelLayout {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Rgb => write!(f, "RGB"),
+            Self::Bgr => write!(f, "BGR"),
+        }
+    }
+}
+
+impl SubpixelLayout {
+    /// Auto-detect the subpixel layout of the primary display.
+    ///
+    /// On Windows this queries the OS via `SystemParametersInfoW` (the same
+    /// API that Chrome uses).  On other platforms it returns `Rgb` (macOS
+    /// has not used subpixel rendering since 2018, and Linux GUI toolkits
+    /// configure this via fontconfig).
+    pub fn detect() -> Self {
+        #[cfg(windows)]
+        {
+            Self::detect_windows()
+        }
+        #[cfg(not(windows))]
+        {
+            Self::Rgb
+        }
+    }
+
+    /// Windows implementation: call `SystemParametersInfoW` to read the
+    /// ClearType subpixel orientation from the OS.
+    #[cfg(windows)]
+    fn detect_windows() -> Self {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SystemParametersInfoW, SPI_GETFONTSMOOTHINGORIENTATION,
+            FE_FONTSMOOTHINGORIENTATIONBGR,
+        };
+
+        let mut orientation: u32 = 0;
+        // SAFETY: SystemParametersInfoW is a well-known Win32 API.
+        // We pass a valid pointer to a `u32` whose lifetime is bounded by
+        // this function, and interpret the result only on success (non-zero
+        // return value).
+        let ok = unsafe {
+            SystemParametersInfoW(
+                SPI_GETFONTSMOOTHINGORIENTATION,
+                0,
+                &mut orientation as *mut u32 as *mut _,
+                0,
+            )
+        };
+
+        if ok != 0 && orientation == FE_FONTSMOOTHINGORIENTATIONBGR {
+            Self::Bgr
+        } else {
+            // Default to RGB: this is what most monitors use, and the OS
+            // returns RGB even when ClearType is disabled or the monitor
+            // has no subpixel structure (e.g. OLED).
+            Self::Rgb
+        }
+    }
+}
