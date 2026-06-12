@@ -8,14 +8,11 @@
 
 ### Tasks
 
-1. **Dependency setup**
-   - Add `eframe`, `egui`, `egui-wgpu`, `wgpu` to Cargo.toml
-   - Add `vte`, `wezterm-font`, `portable-pty`, `etagere`, `copypasta`, `linkify`
-   - Add `parking_lot`, `serde`, `toml`
-   - Add `wezterm-toast-notification` (for future notification phase)
-   - Integrate `alacritty_terminal/src/grid/`, `term/`, `selection/` as terminal core
-   - Verify builds on macOS, Windows, and Linux
-
+ 1. **Dependency setup**
+    - Add `eframe`, `egui`, `egui-wgpu`, `wgpu` to Cargo.toml
+    - Add `vte`, `cosmic-text`, `portable-pty`, `etagere`, `copypasta`, `linkify`
+    - Add `parking_lot`, `serde`, `toml`
+    - Verify builds on macOS, Windows, and Linux
 2. **PTY + terminal session**
    - `TerminalSession` struct: `portable-pty::PtyMaster` + `vte::Parser` + `alacritty_terminal::term::Term`
    - Background thread reads PTY bytes → channel → main thread feeds `vte::Parser`
@@ -26,8 +23,7 @@
 3. **Glyph atlas rendering pipeline**
    - Implement `egui_wgpu::CallbackTrait`
    - Vertex shader + fragment shader (WGSL) for instanced quad rendering
-   - Glyph atlas with etagere packing + wezterm-font rasterization (ligatures, emoji, fallback built-in)
-   - Cell instance buffer: only upload changed cells (damage tracking)
+    - Glyph atlas with etagere packing + cosmic-text rasterization (ligatures, emoji, fallback built-in)   - Cell instance buffer: only upload changed cells (damage tracking)
    - ONE instanced draw call for the entire visible grid
 
 4. **vte → Term bridge**
@@ -143,13 +139,12 @@
 
 | Component | Source | License | Why |
 |-----------|--------|---------|-----|
-| `grid/` (ring buffer) | `alacritty/alacritty_terminal/src/grid/` | Apache 2.0 | Battle-tested, clean library design |
-| `term/` (screen state) | `alacritty/alacritty_terminal/src/term/` | Apache 2.0 | Handles cursor, colors, modes, alternate screen |
-| `selection/` | `alacritty/alacritty_terminal/src/selection/` | Apache 2.0 | Independent module, easy to adapt |
-| `index/` (coords) | `alacritty/alacritty_terminal/src/index/` | Apache 2.0 | Row/Col/Line types |
-| `input.rs` (key encoding) | `alacritty/alacritty/src/input.rs` | Apache 2.0 | Adapt from winit to egui events |
-| `portable-pty` | `wezterm/pty/` (crate) | MIT | Cross-platform PTY, use as dependency |
-| `wezterm-font` | `wezterm/wezterm-font/` (crate) | MIT | Full shaping + ligatures + emoji + fallback from day one |
-| `wezterm-toast-notification` | `wezterm/wezterm-toast-notification/` (crate) | MIT | Cross-platform native notifications |
-| `vtparse` patterns | `wezterm/vtparse/` | MIT | Reference for escape parsing edge cases |
-| Overlay UI patterns | `wezterm/wezterm-gui/src/overlay/` | MIT | Command palette, search overlay reference |
+| `alacritty_terminal` (grid, term, selection, index) | `alacritty_terminal` on crates.io | Apache 2.0 | Battle-tested grid ring buffer, screen state, selection. Published as a library crate. |
+| `input.rs` (key encoding) | `alacritty/src/input.rs` (vendored reference) | Apache 2.0 | Adapt from winit to egui events. Keep as reference in `alacritty/` submodule. |
+| `portable-pty` | `portable-pty` on crates.io | MIT | Cross-platform PTY. Published by the wezterm team. |
+| `cosmic-text` | `cosmic-text` on crates.io | MIT / Apache 2.0 | Pure Rust shaping + ligatures + emoji + fallback. Published by System76. |
+| `wezterm-toast-notification` | `wezterm/wezterm-toast-notification/` (vendored, Phase 2+) | MIT | Cross-platform native notifications. Not on crates.io; vendor when needed. |
+| `vte` | crates.io | Apache 2.0 | Low-level VT state machine. |
+| `etagere` | crates.io | MIT / Apache 2.0 | Efficient texture atlas packing. |
+| `vtparse` patterns | `wezterm/vtparse/` (reference) | MIT | Reference for escape parsing edge cases. |
+| Overlay UI patterns | `wezterm/wezterm-gui/src/overlay/` (reference) | MIT | Command palette, search overlay reference. |

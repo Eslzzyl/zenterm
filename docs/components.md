@@ -192,40 +192,50 @@ Shaping handles:
 - **Emoji sequences** — `👨‍💻` is multiple Unicode codepoints rendered as one glyph
 - **Font fallback** — If the current font doesn't have a glyph, try another font
 
-### Crate: `wezterm-font` ⭐
+### Crate: `cosmic-text` ⭐
 
-- **Author:** Wezterm project
-- **License:** MIT
-- **C dependencies:** FreeType (C), HarfBuzz (C++), Cairo (C, Linux/macOS only)
-- **Features:** Full shaping (ligatures), BiDi, emoji sequences, font fallback with ranking, font discovery (fontconfig/DirectWrite/CoreText)
+- **Author:** System76 (jackpot51, hecrj, and team)
+- **License:** MIT / Apache 2.0
+- **Pure Rust:** Yes — zero C dependencies
+- **Internal stack:** `rustybuzz` (pure Rust HarfBuzz) for shaping + `swash` for rasterization + `fontdb` for font discovery
+- **Features:** Full shaping (ligatures), BiDi, emoji sequences, font fallback with Chromium/Firefox priority lists
+- **Published:** `cosmic-text` on crates.io (v0.19.0, 5M+ downloads, 135 dependents)
 
 ```rust
-use wezterm_font::{
-    FontConfiguration, FontLocatorSelection, LocatorOptions,
-    NamedFontHandle,
-};
-use wezterm_font::units::*;
+use cosmic_text::{FontSystem, SwashCache, Buffer, Metrics, Shaping, Attrs};
 
-let font_config = FontConfiguration::new(vec![])?;
-let fonts = FontLocatorSelection::new(LocatorOptions {
-    fonts: vec!["JetBrains Mono".to_string()],
-    scale_factors: vec![],
-    freetype_load_target: Default::default(),
-    freetype_render_size: Default::default(),
-    harfbuzz_features: vec![],
-})?;
+// One per application (font discovery + caching)
+let mut font_system = FontSystem::new();
+let mut swash_cache = SwashCache::new();
+
+// Shape a line of text for a terminal row
+let mut buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 20.0));
+buffer.set_text("ls -> file.rs", &Attrs::new(), Shaping::Advanced);
+buffer.shape_until_scroll(&mut font_system, true);
+
+// Extract positioned glyphs with ligature support
+for run in buffer.layout_runs() {
+    for glyph in &run.glyphs {
+        // glyph.cache_key — lookup in SwashCache for rasterization
+        // glyph.x, glyph.y — pixel positions (accounting for ligature widths)
+        let image = swash_cache.get(&mut font_system, glyph.cache_key);
+        // → Pack image.data into etagere atlas
+    }
+}
 ```
 
-`wezterm-font` handles the full pipeline: font discovery → shaping (with ligatures) → rasterization. Each cell's character is shaped into positioned glyphs, then rasterized into pixel buffers for atlas upload.
+`cosmic-text` handles the full pipeline: font discovery → shaping (with ligatures) → rasterization. Each cell's character is shaped into positioned glyphs, then rasterized into pixel buffers for atlas upload.
 
-**Alternative not chosen:** `crossfont` (Alacritty's choice) — lighter but lacks shaping/ligature support. `cosmic-text` — pure Rust but designed for paragraph layout, not cell-by-cell terminal rendering.
+For terminal rendering, we use `cosmic-text` at the **shaping + rasterization layer only** — we manage atlas packing and GPU instanced rendering ourselves for optimal performance.
+
+**Not chosen:** `wezterm-font` (deeply coupled to wezterm internal crates, not on crates.io, C dependencies); `crossfont` (Alacritty's choice, no shaping/ligatures).
 
 ### What You Need to Do
 
-- Initialize `wezterm-font` at startup with the configured font family
-- On first encounter of a unique character+style pair:
-  1. Shape via wezterm-font → get glyph indices + positions
-  2. Rasterize → get pixel buffer
+- Initialize `FontSystem` at startup (font discovery + caching)
+- For each unique character+style pair, or per-row shaping run:
+  1. Shape via cosmic-text → get glyph indices + positions
+  2. Rasterize via SwashCache → get pixel buffer
   3. Pack into GPU atlas via etagere
   4. Cache UV coordinates for fast lookup
 - For cells with ligatures (e.g., `->`, `fi`), the shaped glyph may span multiple cells — handle via cell clustering
@@ -266,8 +276,7 @@ GPU Texture (e.g., 2048×2048 pixels)
 ### What You Need to Do
 
  1. On first encounter of a glyph:
-    - Rasterize it via wezterm-font → pixel buffer
-    - Find empty space in atlas via etagere (`Allocator::allocate()`)
+     - Rasterize it via cosmic-text SwashCache → pixel buffer    - Find empty space in atlas via etagere (`Allocator::allocate()`)
     - Upload pixel buffer to GPU texture at allocated position
     - Store the UV coordinates in a HashMap for fast lookup2. On render: look up each cell's glyph UV, build instanced quad data
 
@@ -455,17 +464,18 @@ zenmux (your app)
 ├── vte                            (low-level VT state machine)
 ├── alacritty_terminal             (grid, term, selection — from alacritty/)
 │   └── vte (already a dep)
-├── wezterm-font                   (font shaping + rasterization + ligatures)
-│   ├── freetype (C dep)
-│   ├── harfbuzz (C++ dep)
-│   └── cairo (C dep, Linux/macOS)
+├── cosmic-text                    (font shaping + rasterization + ligatures + emoji)
+│   └── (pure Rust: rustybuzz + swash + fontdb)
 ├── etagere                        (texture atlas packing)
 ├── portable-pty                   (cross-platform PTY)
-├── wezterm-toast-notification     (native notifications)
 ├── copypasta                      (clipboard)
-├── linkify                        (URL detection)
-├── serde + toml                   (config)
-└── parking_lot                    (concurrency)
+├── linkify                        (URL detection, Phase 3)
+├── serde + toml                   (config, Phase 3)
+├── parking_lot                    (concurrency)
+│
+│   Future phases:
+├── wezterm-toast-notification     (native notifications, Phase 2)
+└── wezterm-font / crossfont       (reference only — not used)
 ```
 
 All crates have permissive open-source licenses (MIT/Apache 2.0).

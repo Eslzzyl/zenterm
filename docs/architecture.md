@@ -8,7 +8,7 @@ Inspired by [cmux](https://cmux.com/) (macOS-only, Swift + libghostty) — Zenmu
 
 ## Design Philosophy
 
-1. **Rust-first, pragmatic about C** — Zero Zig dependencies. C dependencies (FreeType, HarfBuzz) are acceptable where pure Rust alternatives are unproven in production terminal use. The goal is a working terminal, not ideological purity.
+1. **Rust-first, pure Rust preferred** — Zero Zig dependencies. Prefer pure Rust crates where they are production-proven; C dependencies accepted only as last resort. The goal is a working terminal, not ideological purity.
 2. **Leverage ecosystem** — Don't reinvent the wheel. Use mature crates for VT parsing, PTY, GPU rendering, and UI.
 3. **Separation of concerns** — UI chrome (tabs, sidebar, settings) is decoupled from terminal rendering. Each uses the best tool for its job.
 4. **Performance budget** — UI chrome < 0.5ms per frame, terminal rendering < 1ms per frame. Total < 16ms (60 FPS) with headroom.
@@ -29,7 +29,7 @@ Inspired by [cmux](https://cmux.com/) (macOS-only, Swift + libghostty) — Zenmu
 │  │  ┌──────────────────┐  ┌──────────┐  ┌──────────────────┐   │   │
  │  │  │ Glyph Atlas      │  │ Cell     │→ │ wgpu             │   │   │
  │  │  │ (etagere packed) │  │ Instance │  │ Instanced Draw   │   │   │
- │  │  │ (wezterm-font)   │  │ Buffer   │  │ Call             │   │   │
+ │  │  │ (cosmic-text)    │  │ Buffer   │  │ Call             │   │   │
  │  │  │                  │  │ (damage  │  │                  │   │   ││  │  └──────────────────┘  └──────────┘  └──────────────────┘   │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
@@ -78,7 +78,7 @@ egui::update() called
         │
         ├── Snapshot alacritty_terminal::Grid (visible viewport)
         ├── Compare with previous frame → damage tracking (dirty rows)
-        ├── Glyph atlas lookup (wezterm-font — ligatures, emoji, fallback built-in)
+        ├── Glyph atlas lookup (cosmic-text — ligatures, emoji, fallback built-in)
         ├── Upload only changed cell instance data to GPU
         ├── ONE instanced wgpu draw call for the entire grid
         └── GPU renders via terminal.wgsl shader
@@ -162,13 +162,13 @@ zenmux/
 │   │   ├── mod.rs
 │   │   ├── pipeline.rs         # wgpu pipeline + CallbackTrait impl
 │   │   ├── glyph_atlas.rs      # Glyph cache + etagere texture atlas
-│   │   ├── font.rs             # Font loading via wezterm-font
+│   │   ├── font.rs             # Font loading via cosmic-text
 │   │   └── shader.wgsl         # Terminal grid vertex/fragment shader
 │   │
 │   └── theme.rs                # Color scheme, spacing, typography tokens
 │
-├── alacritty/                  # Vendored: Alacritty source (reference + reuse)
-└── wezterm/                    # Vendored: Wezterm source (reference + reuse)
+├── alacritty/                  # Vendored: Alacritty source (reference only — input.rs patterns, selection logic)
+└── wezterm/                    # Vendored: Wezterm source (reference only — portable-pty API patterns)
 
 ## Key Technical Decisions
 
@@ -176,9 +176,9 @@ zenmux/
 |----------|--------|-----------|
 | UI Framework | egui + eframe | Mature, cross-platform, WASM-ready, immediate-mode |
 | Tabs/Docking | egui_dock | 594 stars, production-proven tab/split/dock |
-| Terminal Core | `vte` + alacritty's `grid`/`term` | Battle-tested grid ring buffer, screen state, selection, and VT parsing from the vendored `alacritty/` directory. Full control over damage tracking and custom features. |
+| Terminal Core | `vte` + `alacritty_terminal` (crates.io) | Battle-tested grid ring buffer, screen state, selection. Published as a library crate. Full control over damage tracking and custom features. The `alacritty/` submodule provides reference for `input.rs` adaptation. |
 | PTY | `portable-pty` | Wezterm's crate, cross-platform (ConPTY on Windows) |
-| Font Loading | `wezterm-font` | Wezterm's font stack: FreeType + HarfBuzz + Cairo. Full shaping, ligatures, BiDi, emoji, and font fallback from day one. No migration needed. |
+| Font Loading | `cosmic-text` | Pure Rust font stack (rustybuzz + swash + fontdb). Full shaping, ligatures, BiDi, emoji, and font fallback. Zero C dependencies, published on crates.io. |
 | Glyph Atlas | `etagere` | Efficient space packing for GPU glyph storage |
 | GPU API | wgpu | Cross-platform (Vulkan/Metal/DX12/WebGPU) |
 | Terminal GPU Render | `egui_wgpu::CallbackTrait` | Renders terminal inline within egui's render pass — same window, same frame. No intermediate textures. One instanced draw call for the whole grid. |
@@ -190,8 +190,8 @@ zenmux/
 
 | Project | Why Reference |
 |---------|---------------|
-| **Alacritty** (~33k LOC) | **Core reuse target.** Grid/ring buffer (`grid/`), terminal state (`term/`), input encoding (`input.rs`), selection (`selection.rs`). All vendored in `alacritty/` directory. |
-| **Wezterm** (~413k LOC) | `portable-pty` (used directly), `wezterm-font` (font+shaping from day one), `wezterm-toast-notification` (native notifications), overlay UI patterns. Vendored in `wezterm/` directory. |
+| **Alacritty** (~33k LOC) | **Core reuse target.** Grid/ring buffer, terminal state, selection, index types — all available via the `alacritty_terminal` crate on crates.io. `input.rs` keyboard encoding adapted from the vendored `alacritty/` submodule. |
+| **Wezterm** (~413k LOC) | `portable-pty` (used directly), `wezterm-font` (reference for font shaping patterns), `wezterm-toast-notification` (native notifications), overlay UI patterns. Vendored in `wezterm/` directory. |
 | **cmux** | Workspace sidebar design, notification system UX, vertical tabs (inspiration only — macOS-only, Swift). |
 | **Terminal Studio** | egui + wgpu terminal approach. **What NOT to do:** it used egui's text system (`ui.label()`) for terminal cells, resulting in 1920+ draw calls per frame. **Lesson:** Use `CallbackTrait` + custom wgpu instanced rendering, NOT egui text for terminal. |
 | **Zed Editor** | Positive example of egui + custom GPU rendering coexistence via CallbackTrait for complex text/content areas. |
