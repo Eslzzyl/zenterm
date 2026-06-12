@@ -1,0 +1,9 @@
+[package]
+name = "zenterm-pty"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zenterm-core = { path = "../zenterm-core" }
+portable-pty = "0.9"
+log = "0.4.32"

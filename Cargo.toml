@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/zenmux",
-    "crates/zenmux-core",
-    "crates/zenmux-pty",
-    "crates/zenmux-term",
-    "crates/zenmux-glyph",
-    "crates/zenmux-render",
-    "crates/zenmux-input",
-    "crates/zenmux-ui",
+    "crates/zenterm",
+    "crates/zenterm-core",
+    "crates/zenterm-pty",
+    "crates/zenterm-term",
+    "crates/zenterm-glyph",
+    "crates/zenterm-render",
+    "crates/zenterm-input",
+    "crates/zenterm-ui",
 ]

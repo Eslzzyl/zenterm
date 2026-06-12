@@ -1,9 +1,0 @@
-[package]
-name = "zenmux-pty"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-zenmux-core = { path = "../zenmux-core" }
-portable-pty = "0.9"
-log = "0.4.32"

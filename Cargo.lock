@@ -1990,9 +1990,9 @@ checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
 
 [[package]]
 name = "memchr"
-version = "2.8.1"
+version = "2.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
+checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 
 [[package]]
 name = "memmap2"
@@ -4846,18 +4846,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "zenmux"
+name = "zeno"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"
+
+[[package]]
+name = "zenterm"
 version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
  "env_logger",
  "wgpu",
- "zenmux-ui",
+ "zenterm-ui",
 ]
 
 [[package]]
-name = "zenmux-core"
+name = "zenterm-core"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
@@ -4865,36 +4871,36 @@ dependencies = [
 ]
 
 [[package]]
-name = "zenmux-glyph"
+name = "zenterm-glyph"
 version = "0.1.0"
 dependencies = [
  "cosmic-text",
  "etagere",
  "log",
  "swash",
- "zenmux-core",
  "zeno",
+ "zenterm-core",
 ]
 
 [[package]]
-name = "zenmux-input"
+name = "zenterm-input"
 version = "0.1.0"
 dependencies = [
  "egui",
- "zenmux-core",
+ "zenterm-core",
 ]
 
 [[package]]
-name = "zenmux-pty"
+name = "zenterm-pty"
 version = "0.1.0"
 dependencies = [
  "log",
  "portable-pty",
- "zenmux-core",
+ "zenterm-core",
 ]
 
 [[package]]
-name = "zenmux-render"
+name = "zenterm-render"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
@@ -4902,22 +4908,22 @@ dependencies = [
  "egui-wgpu",
  "log",
  "wgpu",
- "zenmux-core",
- "zenmux-glyph",
+ "zenterm-core",
+ "zenterm-glyph",
 ]
 
 [[package]]
-name = "zenmux-term"
+name = "zenterm-term"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "log",
  "vte",
- "zenmux-core",
+ "zenterm-core",
 ]
 
 [[package]]
-name = "zenmux-ui"
+name = "zenterm-ui"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
@@ -4927,19 +4933,13 @@ dependencies = [
  "egui-wgpu",
  "log",
  "wgpu",
- "zenmux-core",
- "zenmux-glyph",
- "zenmux-input",
- "zenmux-pty",
- "zenmux-render",
- "zenmux-term",
+ "zenterm-core",
+ "zenterm-glyph",
+ "zenterm-input",
+ "zenterm-pty",
+ "zenterm-render",
+ "zenterm-term",
 ]
-
-[[package]]
-name = "zeno"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"
 
 [[package]]
 name = "zerocopy"

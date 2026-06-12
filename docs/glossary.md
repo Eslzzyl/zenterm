@@ -42,10 +42,10 @@ Terminal commands starting with `\x1b[` (0x1B 0x5B). Examples:
 - `\x1b[1;1H` — Move cursor to row 1, column 1
 
 ### cosmic-text
-Pure Rust text shaping library by System76. Wraps `rustybuzz` (pure Rust HarfBuzz) for shaping + `swash` for rasterization + `fontdb` for font discovery. Supports ligatures, BiDi, emoji, and font fallback with system-defined priority lists. **Zenmux's font backend** — pure Rust, zero C dependencies, full shaping from day one. Published on crates.io at `cosmic-text`.
+Pure Rust text shaping library by System76. Wraps `rustybuzz` (pure Rust HarfBuzz) for shaping + `swash` for rasterization + `fontdb` for font discovery. Supports ligatures, BiDi, emoji, and font fallback with system-defined priority lists. **Zenterm's font backend** — pure Rust, zero C dependencies, full shaping from day one. Published on crates.io at `cosmic-text`.
 
 ### crossfont
-Alacritty's font loading and rasterization library. Handles font discovery, size loading, and glyph bitmap generation via platform-native backends (FreeType on Linux/BSD, DirectWrite on Windows, CoreText on macOS). Lacks shaping/ligature support. **Not used in Zenmux** — Zenmux uses `cosmic-text` for full shaping + ligatures + emoji + font fallback from day one.
+Alacritty's font loading and rasterization library. Handles font discovery, size loading, and glyph bitmap generation via platform-native backends (FreeType on Linux/BSD, DirectWrite on Windows, CoreText on macOS). Lacks shaping/ligature support. **Not used in Zenterm** — Zenterm uses `cosmic-text` for full shaping + ligatures + emoji + font fallback from day one.
 
 ---
 
@@ -213,10 +213,10 @@ The standard Rust crate for parsing ANSI/VT escape sequences. Implements Paul Wi
 Synchronizing frame rendering with the display's refresh cycle. Prevents screen tearing. Adds ~16.6ms (60Hz) or ~8.3ms (120Hz) of latency from GPU queue to visible output.
 
 ### vt100
-A higher-level Rust crate built on `vte`. Provides complete terminal state (parser + screen grid + colors + scrollback) in one package. 7M+ downloads, pure Rust, MIT license. A black-box design — not used in Zenmux, which instead uses `vte` + alacritty's grid/term for full control.
+A higher-level Rust crate built on `vte`. Provides complete terminal state (parser + screen grid + colors + scrollback) in one package. 7M+ downloads, pure Rust, MIT license. A black-box design — not used in Zenterm, which instead uses `vte` + alacritty's grid/term for full control.
 
 ### wezterm-font
-Wezterm's font stack: wraps FreeType (rasterization), HarfBuzz (shaping + ligatures), and Cairo (rendering, Linux/macOS). Handles font discovery, shaping (ligatures, BiDi, emoji), rasterization, and font fallback with ranking. Not published on crates.io (`publish = false`); deeply coupled to wezterm's internal workspace crates. **Not used in Zenmux** — kept as a reference for font shaping patterns. Zenmux uses `cosmic-text` (pure Rust).
+Wezterm's font stack: wraps FreeType (rasterization), HarfBuzz (shaping + ligatures), and Cairo (rendering, Linux/macOS). Handles font discovery, shaping (ligatures, BiDi, emoji), rasterization, and font fallback with ranking. Not published on crates.io (`publish = false`); deeply coupled to wezterm's internal workspace crates. **Not used in Zenterm** — kept as a reference for font shaping patterns. Zenterm uses `cosmic-text` (pure Rust).
 
 ---
 

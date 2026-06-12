@@ -457,7 +457,7 @@ if term_mode.contains(MOUSE_REPORT) {
 ## Summary: Crate Dependency Graph
 
 ```
-zenmux (your app)
+zenterm (your app)
 ├── eframe / egui / egui_dock     (UI framework)
 ├── egui-wgpu                      (wgpu backend + CallbackTrait)
 ├── wgpu                           (GPU API)

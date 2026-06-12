@@ -1,0 +1,13 @@
+[package]
+name = "zenterm-render"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zenterm-core = { path = "../zenterm-core" }
+zenterm-glyph = { path = "../zenterm-glyph" }
+wgpu = "29"
+egui-wgpu = "0.34"
+egui = "0.34"
+bytemuck = "1.25.0"
+log = "0.4"

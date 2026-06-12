@@ -48,9 +48,9 @@
 
 ---
 
-## Phase 2: Zenmux Features
+## Phase 2: Zenterm Features
 
-**Goal:** Multi-terminal workspace with AI agent notifications — Zenmux's differentiation.
+**Goal:** Multi-terminal workspace with AI agent notifications — Zenterm's differentiation.
 
 ### Tasks
 
@@ -94,7 +94,7 @@
 ### Tasks
 
 1. **Configuration system**
-   - TOML config file (`~/.config/zenmux/zenmux.toml`)
+   - TOML config file (`~/.config/zenterm/zenterm.toml`)
    - Font family, font size, color scheme
    - Keybinding customization
    - Hot-reload on file change

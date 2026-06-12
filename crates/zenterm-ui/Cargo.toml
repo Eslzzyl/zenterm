@@ -1,0 +1,19 @@
+[package]
+name = "zenterm-ui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zenterm-core = { path = "../zenterm-core" }
+zenterm-pty = { path = "../zenterm-pty" }
+zenterm-term = { path = "../zenterm-term" }
+zenterm-glyph = { path = "../zenterm-glyph" }
+zenterm-render = { path = "../zenterm-render" }
+zenterm-input = { path = "../zenterm-input" }
+eframe = "0.34"
+egui = "0.34"
+egui-wgpu = "0.34"
+wgpu = "29"
+alacritty_terminal = "0.26"
+log = "0.4"
+arboard = "3"

@@ -1,0 +1,11 @@
+[package]
+name = "zenterm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zenterm-ui = { path = "../zenterm-ui" }
+eframe = "0.34"
+egui = "0.34"
+env_logger = "0.11"
+wgpu = "29"

@@ -1,10 +1,10 @@
-# Zenmux Architecture
+# Zenterm Architecture
 
 ## Vision
 
 A cross-platform (macOS + Windows + Linux) GPU-accelerated terminal emulator with workspace management and AI agent notification system, built with Rust.
 
-Inspired by [cmux](https://cmux.com/) (macOS-only, Swift + libghostty) — Zenmux aims to be the cross-platform equivalent: beautiful UI, multiple workspaces, and first-class notifications for AI coding agents.
+Inspired by [cmux](https://cmux.com/) (macOS-only, Swift + libghostty) — Zenterm aims to be the cross-platform equivalent: beautiful UI, multiple workspaces, and first-class notifications for AI coding agents.
 
 ## Design Philosophy
 
@@ -93,7 +93,7 @@ The terminal has two mouse modes, determined by the program running inside:
 
 ### Mode 1: Selection Mode (default — bash, zsh, most CLI tools)
 
-Mouse events are interpreted by Zenmux itself for text selection:
+Mouse events are interpreted by Zenterm itself for text selection:
 
 | Action | Behavior |
 |--------|----------|
@@ -134,7 +134,7 @@ if self.term.mode().contains(MOUSE_REPORT) {
 ## Directory Structure
 
 ```
-zenmux/
+zenterm/
 ├── Cargo.toml
 ├── docs/                       # This directory
 ├── src/
