@@ -22,6 +22,25 @@ use wgpu::util::DeviceExt;
 
 use zenmux_core::Result;
 
+/// Glyph type flags for per-instance shader dispatch.
+///
+/// These tell the fragment shader how to interpret the texture data
+/// sampled from the glyph atlas.
+pub mod glyph_type {
+    /// Default: LCD subpixel coverage (R=red, G=green, B=blue).
+    /// The shader does per-channel `mix(bg, fg, coverage)`.
+    pub const SUBPIXEL: u32 = 0;
+    /// Grayscale alpha mask: R=G=B=A, use `max(r,g,b)` as alpha.
+    /// Built-in block glyphs (▀▄▒▓█ etc.) use this path.
+    pub const MASK: u32 = 1;
+    /// Color glyph (emoji): texture holds actual RGBA premultiplied.
+    /// Output directly without fg/bg mixing.
+    pub const COLOR: u32 = 2;
+    /// Solid color fill — no texture sampling. Outputs `bg_color`
+    /// directly. Used for selection highlight and cursor backgrounds.
+    pub const SOLID: u32 = 3;
+}
+
 /// Per-instance GPU data for one cell quad.
 ///
 /// All spatial values are in **clip space** (NDC, range -1 to 1) so the
@@ -50,6 +69,9 @@ pub struct CellInstance {
     pub fg_color: [f32; 4],
     /// Background colour (RGBA).
     pub bg_color: [f32; 4],
+    /// Glyph type flag — one of [`glyph_type::SUBPIXEL`],
+    /// [`glyph_type::MASK`], [`glyph_type::COLOR`], [`glyph_type::SOLID`].
+    pub flags: u32,
 }
 
 /// The terminal render pass.
@@ -221,6 +243,11 @@ impl TerminalRenderPass {
                                 offset: 64,
                                 shader_location: 8,
                             },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32,
+                                offset: 80,
+                                shader_location: 9,
+                            },
                         ],
                     },
                 ],
@@ -353,6 +380,7 @@ struct InstanceInput {
     @location(6) glyph_offset: vec2<f32>,
     @location(7) fg_color: vec4<f32>,
     @location(8) bg_color: vec4<f32>,
+    @location(9) flags: u32,
 };
 
 struct Varying {
@@ -360,6 +388,7 @@ struct Varying {
     @location(0) uv: vec2<f32>,
     @location(1) fg_color: vec4<f32>,
     @location(2) bg_color: vec4<f32>,
+    @location(3) flags: u32,
 };
 
 @vertex
@@ -368,23 +397,19 @@ fn vs_main(
     inst: InstanceInput,
 ) -> Varying {
     var out: Varying;
-    // vert.pos is (0,0)→(1,1) within the glyph quad.
-    // clip_pos is the glyph's top-left corner in clip space.
-    // clip_cell_size is the glyph's extent in clip space (native pixel size).
-    // UV coordinates map directly to the atlas rectangle.
     out.position = vec4<f32>(
         inst.clip_pos.x + vert.pos.x * inst.clip_cell_size.x,
         inst.clip_pos.y - vert.pos.y * inst.clip_cell_size.y,
         0.0,
         1.0,
     );
-    // Interpolate UV within the glyph's rectangle.
     out.uv = vec2<f32>(
         inst.uv_min.x + vert.pos.x * (inst.uv_max.x - inst.uv_min.x),
         inst.uv_min.y + vert.pos.y * (inst.uv_max.y - inst.uv_min.y),
     );
     out.fg_color = inst.fg_color;
     out.bg_color = inst.bg_color;
+    out.flags = inst.flags;
     return out;
 }
 ";
@@ -398,6 +423,7 @@ struct Varying {
     @location(0) uv: vec2<f32>,
     @location(1) fg_color: vec4<f32>,
     @location(2) bg_color: vec4<f32>,
+    @location(3) flags: u32,
 };
 
 fn srgb_to_linear(c: f32) -> f32 {
@@ -408,14 +434,21 @@ fn srgb_to_linear(c: f32) -> f32 {
     }
 }
 
+fn linear_to_srgb(c: f32) -> f32 {
+    if c <= 0.0031308 {
+        return c * 12.92;
+    } else {
+        return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+    }
+}
+
 @fragment
 fn fs_main(in: Varying) -> @location(0) vec4<f32> {
-    // Read per-channel subpixel coverage from the atlas.
-    //   R = red subpixel coverage
-    //   G = green subpixel coverage
-    //   B = blue subpixel coverage
-    // The atlas is Rgba8Unorm (no sRGB conversion), so these are linear.
-    let coverage = textureSample(glyph_atlas, atlas_sampler, in.uv).rgb;
+    // Dispatch based on glyph type.
+    // 0 = SUBPIXEL — LCD subpixel coverage: per-channel mix.
+    // 1 = MASK     — Grayscale alpha mask: uniform coverage.
+    // 2 = COLOR    — Emoji/color glyph: sample RGBA directly.
+    // 3 = SOLID    — Solid color fill: no texture sample.
 
     // Convert vertex colours from sRGB to linear for correct blending.
     let fg_r = srgb_to_linear(in.fg_color.r);
@@ -425,9 +458,45 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
     let bg_g = srgb_to_linear(in.bg_color.g);
     let bg_b = srgb_to_linear(in.bg_color.b);
 
+    if (in.flags == 3u) {
+        // SOLID fill — no texture sample.
+        return vec4<f32>(vec3<f32>(bg_r, bg_g, bg_b), 1.0);
+    }
+
+    let texel = textureSample(glyph_atlas, atlas_sampler, in.uv);
+
+    if (in.flags == 2u) {
+        // COLOR glyph — texel is premultiplied RGBA.
+        // Un-premultiply and convert from sRGB to linear.
+        let a = texel.a;
+        if (a == 0.0) { return vec4<f32>(bg_r, bg_g, bg_b, 1.0); }
+        let c_r = srgb_to_linear(texel.r / a);
+        let c_g = srgb_to_linear(texel.g / a);
+        let c_b = srgb_to_linear(texel.b / a);
+        // Blend against background using alpha.
+        return vec4<f32>(
+            bg_r + (c_r - bg_r) * a,
+            bg_g + (c_g - bg_g) * a,
+            bg_b + (c_b - bg_b) * a,
+            1.0,
+        );
+    }
+
+    if (in.flags == 1u) {
+        // MASK glyph — R=G=B=alpha. Use single coverage value.
+        let alpha = texel.r;
+        return vec4<f32>(
+            bg_r + (fg_r - bg_r) * alpha,
+            bg_g + (fg_g - bg_g) * alpha,
+            bg_b + (fg_b - bg_b) * alpha,
+            1.0,
+        );
+    }
+
+    // SUBPIXEL (default, flags == 0).
     // Per-channel subpixel blending in linear space.
-    // The result will be converted back to sRGB by the GPU when writing
-    // to the Rgba8UnormSrgb framebuffer.
+    // The atlas stores R=red coverage, G=green coverage, B=blue coverage.
+    let coverage = texel.rgb;
     let color = vec3<f32>(
         mix(bg_r, fg_r, coverage.r),
         mix(bg_g, fg_g, coverage.g),

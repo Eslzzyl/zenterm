@@ -26,6 +26,11 @@ pub struct Cell {
     pub inverse: bool,
     pub dim: bool,
     pub hidden: bool,
+
+    /// True if this cell is the trailing spacer of a wide character (CJK,
+    /// emoji).  Spacer cells share the glyph of the preceding cell and
+    /// should be skipped during rendering.
+    pub is_spacer: bool,
 }
 
 impl Cell {
@@ -42,6 +47,7 @@ impl Cell {
             inverse: false,
             dim: false,
             hidden: false,
+            is_spacer: false,
         }
     }
 

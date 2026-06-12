@@ -16,7 +16,7 @@
 //! 5. During egui's render pass, `paint()` binds the pipeline and draws the
 //!    instanced quads.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use egui::PaintCallbackInfo;
@@ -31,6 +31,10 @@ pub struct SharedRenderState {
     /// Cell instance data for the current frame — built by the UI thread,
     /// consumed by `prepare()`.
     pub instances: Mutex<Vec<CellInstance>>,
+    /// Monotonically increasing generation counter.  Incremented by the UI
+    /// thread whenever `instances` changes.  `prepare()` compares this with
+    /// its local copy to decide whether a GPU buffer upload is needed.
+    pub instance_gen: AtomicU64,
     /// Set to `true` when the glyph atlas pixel data has changed.
     pub atlas_dirty: AtomicBool,
     /// When `atlas_dirty` is true, this holds the new atlas size and pixel
@@ -53,6 +57,7 @@ impl SharedRenderState {
     pub fn new(capacity: usize) -> Self {
         Self {
             instances: Mutex::new(Vec::with_capacity(capacity)),
+            instance_gen: AtomicU64::new(1),
             atlas_dirty: AtomicBool::new(false),
             atlas_update: Mutex::new(None),
         }
@@ -82,6 +87,10 @@ pub struct TerminalWgpuCallback {
 
     /// Shared state with the UI thread.
     shared: Arc<SharedRenderState>,
+
+    /// Last seen instance generation — used to skip GPU upload when the
+    /// instance data hasn't changed (terminal is idle).
+    last_instance_gen: AtomicU64,
 }
 
 impl TerminalWgpuCallback {
@@ -108,6 +117,7 @@ impl TerminalWgpuCallback {
             atlas_sampler,
             current_atlas_size: AtomicU32::new(0),
             shared,
+            last_instance_gen: AtomicU64::new(0), // First frame: 1 ≠ 0 → upload.
         }
     }
 }
@@ -170,18 +180,37 @@ impl CallbackTrait for TerminalWgpuCallback {
         }
 
         // ── 2. Upload cell instance data ────────────────────────────────
-        let instances = self.shared.instances.lock().unwrap();
-        if !instances.is_empty() {
-            if let Ok(rp_guard) = self.render_pass.lock() {
-                if let Some(ref rp) = *rp_guard {
-                    rp.update_instances(&self.queue, &instances);
-                    log::trace!("callback prepare: uploaded {} instances", instances.len());
-                } else {
-                    log::warn!("callback prepare: render_pass is None, cannot upload instances");
+        let current_gen = self.shared.instance_gen.load(Ordering::Acquire);
+        let last_gen = self.last_instance_gen.load(Ordering::Relaxed);
+        if current_gen != last_gen {
+            // Instances changed since last frame — upload to GPU buffer.
+            self.last_instance_gen.store(current_gen, Ordering::Relaxed);
+
+            // Clone out of the lock so we don't hold it during the GPU write.
+            let instances = self.shared.instances.lock().unwrap().clone();
+            if !instances.is_empty() {
+                if let Ok(rp_guard) = self.render_pass.lock() {
+                    if let Some(ref rp) = *rp_guard {
+                        rp.update_instances(&self.queue, &instances);
+                        log::trace!(
+                            "callback prepare: uploaded {} instances (gen {})",
+                            instances.len(),
+                            current_gen,
+                        );
+                    } else {
+                        log::warn!(
+                            "callback prepare: render_pass is None, cannot upload instances"
+                        );
+                    }
                 }
+            } else {
+                log::trace!("callback prepare: no instances to upload");
             }
         } else {
-            log::trace!("callback prepare: no instances to upload");
+            log::trace!(
+                "callback prepare: instances unchanged (gen {}), skipping upload",
+                current_gen,
+            );
         }
 
         Vec::new()

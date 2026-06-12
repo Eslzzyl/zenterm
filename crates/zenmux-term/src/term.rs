@@ -15,7 +15,7 @@ use alacritty_terminal::index::{Column, Direction, Line, Point};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
-use alacritty_terminal::term::{Config as TermConfig, Term, TermMode};
+use alacritty_terminal::term::{Config as TermConfig, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorStyle, NamedColor, Processor, Rgb};
 
 use zenmux_core::cell::Cell;
@@ -48,6 +48,10 @@ impl Dimensions for TermDimensions {
 #[derive(Clone)]
 pub struct ColorScheme {
     pub colors: Colors,
+    /// Selection background colour.  Defaults to a blue-ish tint.
+    pub selection_bg: Rgba,
+    /// Selection foreground colour.  `None` means keep the cell's fg.
+    pub selection_fg: Option<Rgba>,
 }
 
 impl fmt::Debug for ColorScheme {
@@ -60,6 +64,8 @@ impl Default for ColorScheme {
     fn default() -> Self {
         Self {
             colors: Colors::default(),
+            selection_bg: Rgba::from_u8(60, 100, 180, 255),
+            selection_fg: None,
         }
     }
 }
@@ -135,15 +141,27 @@ impl Terminal {
     /// Feed raw bytes from the PTY into the VT processor.
     ///
     /// The processor calls `Handler` methods on the inner `Term`, updating
-    /// grid state.  For Phase 1 the entire screen is marked dirty after
-    /// every feed.
+    /// grid state.  Damage is propagated from `alacritty_terminal`'s
+    /// internal tracking so only changed rows are re-resolved.
     pub fn feed(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
         log::debug!("Terminal::feed: {} bytes: {:02x?}", bytes.len(), bytes);
         self.processor.advance(&mut self.term, bytes);
-        self.damage.mark_all();
+
+        // Propagate damage from alacritty_terminal's internal tracker.
+        // Each VT operation (write char, cursor move, scroll, etc.)
+        // already marks the affected lines — we just read them out.
+        match self.term.damage() {
+            TermDamage::Full => self.damage.mark_all(),
+            TermDamage::Partial(iter) => {
+                for line in iter {
+                    self.damage.mark(line.line);
+                }
+            }
+        }
+        self.term.reset_damage();
     }
 
     /// Resize the terminal grid.
@@ -281,6 +299,16 @@ impl Terminal {
             .and_then(|s| s.to_range(&self.term))
     }
 
+    /// Selection background colour (RGBA).
+    pub fn selection_bg(&self) -> Rgba {
+        self.scheme.selection_bg
+    }
+
+    /// Selection foreground colour, if configured.  `None` means keep fg.
+    pub fn selection_fg(&self) -> Option<Rgba> {
+        self.scheme.selection_fg
+    }
+
     // ---- Helpers ----
 
     fn resolve_cell(&self, alacell: &alacritty_terminal::term::cell::Cell) -> Cell {
@@ -300,6 +328,7 @@ impl Terminal {
             inverse: flags.contains(Flags::INVERSE),
             dim: flags.contains(Flags::DIM),
             hidden: flags.contains(Flags::HIDDEN),
+            is_spacer: flags.contains(Flags::WIDE_CHAR_SPACER),
         }
     }
 

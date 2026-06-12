@@ -16,12 +16,15 @@ use egui::Context;
 
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::selection::SelectionRange;
+use alacritty_terminal::term::TermMode;
+use alacritty_terminal::vte::ansi::CursorShape;
 
 use zenmux_core::{Rgba, SubpixelLayout, TermSize};
-use zenmux_glyph::GlyphAtlas;
+use zenmux_glyph::{GlyphAtlas, GlyphContentType};
 use zenmux_input::InputMapper;
 use zenmux_pty::PtySession;
 use zenmux_render::callback::{AtlasUpdate, SharedRenderState, TerminalWgpuCallback};
+use zenmux_render::glyph_type;
 use zenmux_render::CallbackHandle;
 use zenmux_render::CellInstance;
 use zenmux_term::Terminal;
@@ -47,6 +50,18 @@ pub struct ZenmuxApp {
     /// True while the left mouse button is held and a drag-selection is
     /// in progress.
     selecting: bool,
+
+    /// Set to `true` when terminal state changes (PTY data, selection,
+    /// resize) so the next frame rebuilds GPU instances.
+    terminal_dirty: bool,
+
+    /// Frame counter for cursor blinking.  Incremented each frame;
+    /// cursor is hidden when `(frame_count / blink_interval) % 2 == 0`.
+    frame_count: u64,
+
+    /// Number of frames between cursor blink toggles (30 frames ≈ 500 ms
+    /// at 60 FPS).
+    blink_interval: u64,
 }
 
 impl ZenmuxApp {
@@ -124,6 +139,9 @@ impl ZenmuxApp {
             cell_height,
             last_atlas_size,
             selecting: false,
+            terminal_dirty: true,
+            frame_count: 0,
+            blink_interval: 30,
         }
     }
 
@@ -162,6 +180,7 @@ impl ZenmuxApp {
         }
         if total > 0 {
             log::debug!("pump_pty: read {} bytes from PTY", total);
+            self.terminal_dirty = true;
         }
     }
 
@@ -187,11 +206,24 @@ impl ZenmuxApp {
         let cursor = self.terminal.cursor();
         let cursor_row = cursor.pos.line;
         let cursor_col = cursor.pos.column;
-        let cursor_visible = cursor.visible;
+
+        // Handle cursor blinking.
+        // cursor.style.blinking indicates the application requested a
+        // blinking cursor via DECSCUSR.  We additionally force blink off
+        // when the cursor is a Block (most users expect block = steady).
+        let blink_on = if cursor.style.blinking && !matches!(cursor.style.shape, CursorShape::Block) {
+            (self.frame_count / self.blink_interval) % 2 == 0
+        } else {
+            true
+        };
+        let cursor_visible = cursor.visible && blink_on;
+        let cursor_shape = cursor.style.shape;
 
         // Pre-compute selection range so the inner loop does not need
         // an additional borrow on self.terminal during grid iteration.
         let sel_range: Option<SelectionRange> = self.terminal.selection_range();
+        let sel_bg = self.terminal.selection_bg();
+        let sel_fg = self.terminal.selection_fg();
 
         let grid = self.terminal.visible_cells();
         let rows = grid.row_count();
@@ -221,7 +253,10 @@ impl ZenmuxApp {
         let x_scale = 2.0 / vp_width_px;
         let y_scale = 2.0 / vp_height_px;
 
-        let mut instances = Vec::with_capacity(rows * cols);
+        let mut bg_instances = Vec::with_capacity(rows * cols);
+        let mut glyph_instances = Vec::with_capacity(rows * cols);
+        let mut cursor_bg_instances = Vec::with_capacity(rows * cols);
+        let mut deco_instances = Vec::with_capacity(rows * cols);
         let mut blank_count = 0u32;
         let mut glyph_fail = 0u32;
         let mut has_new_glyphs = false;
@@ -234,131 +269,376 @@ impl ZenmuxApp {
                 };
 
                 let is_cursor = cursor_visible && row == cursor_row && col == cursor_col;
+                let is_block_cursor = is_cursor && matches!(cursor_shape, CursorShape::Block);
 
-                let ch_char = cell.c;
-
-                // Skip fully blank cells (space on default background),
-                // UNLESS this is the cursor position (render as cursor block).
-                if ch_char == ' ' && cell.bg == Rgba::BLACK && !is_cursor {
-                    blank_count += 1;
-                    continue;
-                }
-
-                // Look up — or rasterise — the glyph.
-                let (entry, is_new) = match self.glyph_atlas.ensure_glyph(ch_char) {
-                    Ok(e) => e,
-                    Err(_) => {
-                        glyph_fail += 1;
-                        continue;
-                    }
-                };
-                if is_new {
-                    has_new_glyphs = true;
-                }
-
-                let atlas_w = (entry.atlas_rect.max.x - entry.atlas_rect.min.x) as f32;
-                let atlas_h = (entry.atlas_rect.max.y - entry.atlas_rect.min.y) as f32;
-
-                // ── Colours ──────────────────────────────────────────────
+                // Check selection membership.
                 let is_sel = sel_range.as_ref().is_some_and(|range| {
                     let pt = Point::new(Line(row as i32), Column(col));
                     range.contains(pt)
                 });
 
-                // ── Geometry ────────────────────────────────────────────
-                //
-                // Every cell renders a glyph-sized quad at the bearing
-                // offset (native-resolution text).  Positions are rounded to
-                // the nearest physical pixel so quad edges align with pixel
-                // boundaries — this prevents Nearest-filter texture-sampling
-                // artefacts (jagged edges) caused by sub-pixel positioning.
-                let glyph_x_px = (col as f32 * cw + entry.bearing_x).round();
-                let glyph_y_px = (row as f32 * ch + (ch - entry.bearing_y)).round();
-                let gqx = glyph_x_px * x_scale - 1.0;
-                let gqy = 1.0 - glyph_y_px * y_scale;
-                let gqw = atlas_w * x_scale;
-                let gqh = atlas_h * y_scale;
+                let ch_char = cell.c;
+                let is_blank = ch_char == ' ' && cell.bg == Rgba::BLACK && !is_cursor;
 
-                // ── UV coordinates ──────────────────────────────────────
-                let u_min = (entry.atlas_rect.min.x as f32 + 0.5) / tex_size;
-                let v_min = (entry.atlas_rect.min.y as f32 + 0.5) / tex_size;
-                let u_max = (entry.atlas_rect.max.x as f32 - 0.5) / tex_size;
-                let v_max = (entry.atlas_rect.max.y as f32 - 0.5) / tex_size;
+                // Skip spacer cells of wide characters (CJK / emoji).
+                // The wide char itself occupies the leading cell; spacers
+                // share its glyph and don't need their own instance.
+                if cell.is_spacer {
+                    blank_count += 1;
+                    continue;
+                }
 
-                // ── Background quad (full cell, cursor/selected only) ───
-                // Push BEFORE the glyph quad so it is drawn underneath.
-                if is_cursor || is_sel {
+                // Hidden cells (e.g. password fields) render background
+                // but not the glyph.
+                if cell.hidden {
+                    blank_count += 1;
+                    continue;
+                }
+
+                // ── Geometry helpers ────────────────────────────────────
+                // Pixel → clip-space conversion.
+                let px_to_clip_x = |px: f32| px * x_scale - 1.0;
+                let px_to_clip_y = |px: f32| 1.0 - px * y_scale;
+
+                // ── Pass 1: Background quad (selected cells) ──────────
+                // Full-cell solid-color rectangle.  Selection backgrounds
+                // go here; cursor backgrounds are deferred to Pass 3 so
+                // they render on top of all glyphs.
+                if is_sel {
                     let bqx = ((col as f32 * cw).round()) * x_scale - 1.0;
                     let bqy = 1.0 - ((row as f32 * ch).round()) * y_scale;
                     let bqw = cw * x_scale;
                     let bqh = ch * y_scale;
-                    let bg_colour = if is_cursor {
-                        [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0]
-                    } else {
-                        [0.3, 0.5, 0.8, 1.0]
-                    };
-                    instances.push(CellInstance {
+
+                    bg_instances.push(CellInstance {
                         clip_pos: [bqx, bqy],
-                        uv_min: [0.0, 0.0],
-                        uv_max: [0.0, 0.0],
+                        uv_min: [0.0; 2],
+                        uv_max: [0.0; 2],
                         clip_cell_size: [bqw, bqh],
-                        glyph_size: [0.0, 0.0],
-                        glyph_offset: [0.0, 0.0],
-                        fg_color: bg_colour,
-                        bg_color: bg_colour,
+                        glyph_size: [0.0; 2],
+                        glyph_offset: [0.0; 2],
+                        fg_color: [sel_bg.r(), sel_bg.g(), sel_bg.b(), 1.0],
+                        bg_color: [sel_bg.r(), sel_bg.g(), sel_bg.b(), 1.0],
+                        flags: glyph_type::SOLID,
                     });
                 }
 
-                // ── Foreground quad (glyph, all cells) ──────────────────
-                if is_cursor {
-                    // Inverse video: swap fg/bg for the glyph quad.
-                    instances.push(CellInstance {
-                        clip_pos: [gqx, gqy],
-                        uv_min: [u_min, v_min],
-                        uv_max: [u_max, v_max],
-                        clip_cell_size: [gqw, gqh],
-                        glyph_size: [atlas_w, atlas_h],
-                        glyph_offset: [entry.bearing_x, ch - entry.bearing_y],
-                        fg_color: [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0],
-                        bg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
-                    });
-                } else if is_sel {
-                    // Selected: normal fg on selection-highlight bg.
-                    instances.push(CellInstance {
-                        clip_pos: [gqx, gqy],
-                        uv_min: [u_min, v_min],
-                        uv_max: [u_max, v_max],
-                        clip_cell_size: [gqw, gqh],
-                        glyph_size: [atlas_w, atlas_h],
-                        glyph_offset: [entry.bearing_x, ch - entry.bearing_y],
-                        fg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
-                        bg_color: [0.3, 0.5, 0.8, 1.0],
-                    });
+                // ── Pass 2: Glyph quad (non-cursor cells only) ──────────
+                // Cursor cells are deferred to Pass 3b so they render
+                // on top of the cursor block background.
+                // Skip fully blank cells (space on default background,
+                // no cursor).  Selected blank cells already got their
+                // background quad in Pass 1.
+                if is_blank {
+                    blank_count += 1;
                 } else {
-                    // Normal cell.
-                    instances.push(CellInstance {
-                        clip_pos: [gqx, gqy],
-                        uv_min: [u_min, v_min],
-                        uv_max: [u_max, v_max],
-                        clip_cell_size: [gqw, gqh],
-                        glyph_size: [atlas_w, atlas_h],
-                        glyph_offset: [entry.bearing_x, ch - entry.bearing_y],
-                        fg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
-                        bg_color: [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0],
+                    // Look up — or rasterise — the glyph.
+                    let lookup = self.glyph_atlas.ensure_glyph(ch_char);
+                    if let Ok((entry, is_new)) = lookup {
+                        if is_new {
+                            has_new_glyphs = true;
+                        }
+
+                        let atlas_w = (entry.atlas_rect.max.x - entry.atlas_rect.min.x) as f32;
+                        let atlas_h = (entry.atlas_rect.max.y - entry.atlas_rect.min.y) as f32;
+
+                        // Every cell renders a glyph-sized quad at the bearing
+                        // offset (native-resolution text).  Positions are rounded
+                        // to the nearest physical pixel so quad edges align with
+                        // pixel boundaries.
+                        let glyph_x_px = (col as f32 * cw + entry.bearing_x).round();
+                        let glyph_y_px = (row as f32 * ch + (ch - entry.bearing_y)).round();
+                        let gqx = px_to_clip_x(glyph_x_px);
+                        let gqy = px_to_clip_y(glyph_y_px);
+                        let gqw = atlas_w * x_scale;
+                        let gqh = atlas_h * y_scale;
+
+                        // ── UV coordinates ──────────────────────────────────
+                        let u_min = (entry.atlas_rect.min.x as f32 + 0.5) / tex_size;
+                        let v_min = (entry.atlas_rect.min.y as f32 + 0.5) / tex_size;
+                        let u_max = (entry.atlas_rect.max.x as f32 - 0.5) / tex_size;
+                        let v_max = (entry.atlas_rect.max.y as f32 - 0.5) / tex_size;
+
+                        // Map from atlas content type to shader dispatch flag.
+                        let gtype = match entry.content_type {
+                            GlyphContentType::Subpixel => glyph_type::SUBPIXEL,
+                            GlyphContentType::Mask => glyph_type::MASK,
+                            GlyphContentType::Color => glyph_type::COLOR,
+                        };
+
+                        if is_block_cursor {
+                            // ── DEBUG: log cursor geometry ─────────────
+                            let cell_top = (row as f32 * ch).round();
+                            let cell_bot = ((row as f32 + 1.0) * ch).round();
+                            let gtop = (row as f32 * ch + (ch - entry.bearing_y)).round();
+                            let gbot = gtop + atlas_h;
+                            log::debug!(
+                                "CURSOR row={} col={} ch={} cell=[{:.0},{:.0}] \
+                                 glyph=[{:.0},{:.0}] atlas_h={} use_glyph={}",
+                                row, col, ch, cell_top, cell_bot,
+                                gtop, gbot, atlas_h,
+                                atlas_w > 0.0 && atlas_h > 0.0,
+                            );
+
+                            // Deferred cursor block: rendered AFTER all
+                            // other glyphs so it stays on top.
+                            // Use CELL position + CELL size (full cell).
+                            let bqy = 1.0 - cell_top * y_scale;
+                            let bqx = ((col as f32 * cw).round()) * x_scale - 1.0;
+                            let bqw = cw * x_scale;
+                            let bqh = ch * y_scale;
+                            // ── Background: SOLID fill with cell's fg colour ──
+                            cursor_bg_instances.push(CellInstance {
+                                clip_pos: [bqx, bqy],
+                                uv_min: [0.0; 2],
+                                uv_max: [0.0; 2],
+                                clip_cell_size: [bqw, bqh],
+                                glyph_size: [0.0; 2],
+                                glyph_offset: [0.0; 2],
+                                fg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
+                                bg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
+                                flags: glyph_type::SOLID,
+                            });
+                            // ── Glyph: inverse video, same pos+size ────
+                            cursor_bg_instances.push(CellInstance {
+                                clip_pos: [bqx, bqy],
+                                uv_min: [u_min, v_min],
+                                uv_max: [u_max, v_max],
+                                clip_cell_size: [bqw, bqh],
+                                glyph_size: [atlas_w, atlas_h],
+                                glyph_offset: [entry.bearing_x, ch - entry.bearing_y],
+                                fg_color: [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0],
+                                bg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
+                                flags: gtype,
+                            });
+                        } else if is_cursor {
+                            // Non-block cursor: draw glyph normally.
+                            glyph_instances.push(CellInstance {
+                                clip_pos: [gqx, gqy],
+                                uv_min: [u_min, v_min],
+                                uv_max: [u_max, v_max],
+                                clip_cell_size: [gqw, gqh],
+                                glyph_size: [atlas_w, atlas_h],
+                                glyph_offset: [entry.bearing_x, ch - entry.bearing_y],
+                                fg_color: [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0],
+                                bg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
+                                flags: gtype,
+                            });
+                    } else if is_sel {
+                        // Selected: use configured selection colours.
+                        let glyph_fg = sel_fg.unwrap_or(cell.fg);
+                        glyph_instances.push(CellInstance {
+                            clip_pos: [gqx, gqy],
+                            uv_min: [u_min, v_min],
+                            uv_max: [u_max, v_max],
+                            clip_cell_size: [gqw, gqh],
+                            glyph_size: [atlas_w, atlas_h],
+                            glyph_offset: [entry.bearing_x, ch - entry.bearing_y],
+                            fg_color: [glyph_fg.r(), glyph_fg.g(), glyph_fg.b(), 1.0],
+                            bg_color: [sel_bg.r(), sel_bg.g(), sel_bg.b(), 1.0],
+                            flags: gtype,
+                        });                        } else {
+                            // Normal cell.
+                            glyph_instances.push(CellInstance {
+                                clip_pos: [gqx, gqy],
+                                uv_min: [u_min, v_min],
+                                uv_max: [u_max, v_max],
+                                clip_cell_size: [gqw, gqh],
+                                glyph_size: [atlas_w, atlas_h],
+                                glyph_offset: [entry.bearing_x, ch - entry.bearing_y],
+                                fg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
+                                bg_color: [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0],
+                                flags: gtype,
+                            });
+                        }
+                    } else {
+                        glyph_fail += 1;
+                    }
+                }
+
+                // ── Pass 4: Decorations (underline / strikethrough) ─────
+                // Thin solid-color bars rendered on top of glyphs.
+                // These are emitted even for blank cells (e.g. selected
+                // blank cells with underline flags).
+                let deco_color = if is_cursor {
+                    [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0]
+                } else if is_sel {
+                    [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0]
+                } else {
+                    [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0]
+                };
+
+                if cell.underline {
+                    let thickness = 1.0_f32.max((ch * 0.05).round());
+                    let deco_y = (ch - thickness).max(0.0);
+                    let dqy = px_to_clip_y((row as f32 * ch + deco_y).round());
+                    let dqx = ((col as f32 * cw).round()) * x_scale - 1.0;
+                    let dqw = cw * x_scale;
+                    let dqh = thickness * y_scale;
+                    deco_instances.push(CellInstance {
+                        clip_pos: [dqx, dqy],
+                        uv_min: [0.0; 2],
+                        uv_max: [0.0; 2],
+                        clip_cell_size: [dqw, dqh],
+                        glyph_size: [0.0; 2],
+                        glyph_offset: [0.0; 2],
+                        fg_color: deco_color,
+                        bg_color: deco_color,
+                        flags: glyph_type::SOLID,
                     });
+                }
+
+                if cell.strikethrough {
+                    let thickness = 1.0_f32.max((ch * 0.05).round());
+                    let deco_y = (ch * 0.45).round();
+                    let dqy = px_to_clip_y((row as f32 * ch + deco_y).round());
+                    let dqx = ((col as f32 * cw).round()) * x_scale - 1.0;
+                    let dqw = cw * x_scale;
+                    let dqh = thickness * y_scale;
+                    deco_instances.push(CellInstance {
+                        clip_pos: [dqx, dqy],
+                        uv_min: [0.0; 2],
+                        uv_max: [0.0; 2],
+                        clip_cell_size: [dqw, dqh],
+                        glyph_size: [0.0; 2],
+                        glyph_offset: [0.0; 2],
+                        fg_color: deco_color,
+                        bg_color: deco_color,
+                        flags: glyph_type::SOLID,
+                    });
+                }
+
+                // ── Cursor style decorations ──────────────────────────
+                // For non-Block cursors we draw a thin bar instead of the
+                // full-cell inverse-video background.
+                if is_cursor && !is_block_cursor {
+                    let cursor_color = [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0];
+                    let thickness = 2.0_f32.max((ch * 0.08).round());
+                    let cx_px = (col as f32 * cw).round();
+                    let cy_px = (row as f32 * ch).round();
+
+                    match cursor_shape {
+                        CursorShape::Underline => {
+                            // Horizontal bar at the bottom of the cell.
+                            let bar_h = thickness;
+                            let bar_y = cy_px + ch - bar_h;
+                            deco_instances.push(CellInstance {
+                                clip_pos: [px_to_clip_x(cx_px), px_to_clip_y(bar_y)],
+                                uv_min: [0.0; 2],
+                                uv_max: [0.0; 2],
+                                clip_cell_size: [cw * x_scale, bar_h * y_scale],
+                                glyph_size: [0.0; 2],
+                                glyph_offset: [0.0; 2],
+                                fg_color: cursor_color,
+                                bg_color: cursor_color,
+                                flags: glyph_type::SOLID,
+                            });
+                        }
+                        CursorShape::Beam => {
+                            // Vertical bar on the left side of the cell.
+                            let bar_w = thickness.max(2.0);
+                            deco_instances.push(CellInstance {
+                                clip_pos: [px_to_clip_x(cx_px), px_to_clip_y(cy_px)],
+                                uv_min: [0.0; 2],
+                                uv_max: [0.0; 2],
+                                clip_cell_size: [bar_w * x_scale, ch * y_scale],
+                                glyph_size: [0.0; 2],
+                                glyph_offset: [0.0; 2],
+                                fg_color: cursor_color,
+                                bg_color: cursor_color,
+                                flags: glyph_type::SOLID,
+                            });
+                        }
+                        CursorShape::HollowBlock => {
+                            // Border rectangle (four thin bars).
+                            let border = thickness.max(1.0);
+                            // Top
+                            deco_instances.push(CellInstance {
+                                clip_pos: [px_to_clip_x(cx_px), px_to_clip_y(cy_px)],
+                                uv_min: [0.0; 2],
+                                uv_max: [0.0; 2],
+                                clip_cell_size: [cw * x_scale, border * y_scale],
+                                glyph_size: [0.0; 2],
+                                glyph_offset: [0.0; 2],
+                                fg_color: cursor_color,
+                                bg_color: cursor_color,
+                                flags: glyph_type::SOLID,
+                            });
+                            // Bottom
+                            deco_instances.push(CellInstance {
+                                clip_pos: [px_to_clip_x(cx_px), px_to_clip_y(cy_px + ch - border)],
+                                uv_min: [0.0; 2],
+                                uv_max: [0.0; 2],
+                                clip_cell_size: [cw * x_scale, border * y_scale],
+                                glyph_size: [0.0; 2],
+                                glyph_offset: [0.0; 2],
+                                fg_color: cursor_color,
+                                bg_color: cursor_color,
+                                flags: glyph_type::SOLID,
+                            });
+                            // Left
+                            deco_instances.push(CellInstance {
+                                clip_pos: [px_to_clip_x(cx_px), px_to_clip_y(cy_px)],
+                                uv_min: [0.0; 2],
+                                uv_max: [0.0; 2],
+                                clip_cell_size: [border * x_scale, ch * y_scale],
+                                glyph_size: [0.0; 2],
+                                glyph_offset: [0.0; 2],
+                                fg_color: cursor_color,
+                                bg_color: cursor_color,
+                                flags: glyph_type::SOLID,
+                            });
+                            // Right
+                            deco_instances.push(CellInstance {
+                                clip_pos: [px_to_clip_x(cx_px + cw - border), px_to_clip_y(cy_px)],
+                                uv_min: [0.0; 2],
+                                uv_max: [0.0; 2],
+                                clip_cell_size: [border * x_scale, ch * y_scale],
+                                glyph_size: [0.0; 2],
+                                glyph_offset: [0.0; 2],
+                                fg_color: cursor_color,
+                                bg_color: cursor_color,
+                                flags: glyph_type::SOLID,
+                            });
+                        }
+                        _ => {} // Block, Hidden handled elsewhere.
+                    }
                 }
             }
         }
 
+        // Concatenate: backgrounds → glyphs → cursor_bg → decorations.
+        // This ensures correct z-order:
+        //   1. Selection backgrounds (below all text)
+        //   2. All glyphs (text from all rows)
+        //   3. Cursor block background (above text, covering descenders
+        //      from the row above)
+        //   4. Underline / strikethrough / cursor bars (topmost)
+        let bg_count = bg_instances.len();
+        let glyph_count = glyph_instances.len();
+        let cursor_bg_count = cursor_bg_instances.len();
+        let deco_count = deco_instances.len();
+        let mut instances = bg_instances;
+        instances.extend(glyph_instances);
+        instances.extend(cursor_bg_instances);
+        instances.extend(deco_instances);
+        let total_instances = instances.len();
+
         log::debug!(
-            "update_cell_instances: {} instances built, {} blank skipped, {} glyph failures",
-            instances.len(),
+            "update_cell_instances: {} total ({} bg + {} glyph + {} curs_bg + {} deco), \
+             {} blank skipped, {} glyph failures",
+            total_instances,
+            bg_count,
+            glyph_count,
+            cursor_bg_count,
+            deco_count,
             blank_count,
             glyph_fail,
         );
 
         // Store for the callback's `prepare()`.
         *self.shared.instances.lock().unwrap() = instances;
+        self.shared.instance_gen.fetch_add(1, Ordering::Release);
 
         // ── Sync glyph atlas to GPU ──────────────────────────────────
         // Upload when the atlas has grown OR when new glyphs were added.
@@ -376,6 +656,29 @@ impl ZenmuxApp {
             self.shared.atlas_dirty.store(true, Ordering::Release);
         }
     }
+
+    /// Send an SGR mouse event to the PTY if mouse reporting is active.
+    ///
+    /// Format: `\x1b[<row;col;buttonM` (press) / `\x1b[<row;col;buttonm` (release).
+    /// Row and column are 1-based.
+    fn send_sgr_mouse(&mut self, row: usize, col: usize, button: u8, release: bool) {
+        // Only send if the terminal has enabled SGR mouse mode AND
+        // some form of mouse event reporting.
+        let mode = self.terminal.mode();
+        let mouse_active = mode.contains(TermMode::SGR_MOUSE)
+            && mode.intersects(TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION);
+        if !mouse_active {
+            return;
+        }
+
+        // SGR: \x1b[<row;col;buttonM  (press) / m (release)
+        // row/col are 1-based, button encodes which button + modifiers.
+        let suffix = if release { "m" } else { "M" };
+        let seq = format!("\x1b[{};{};{}{}", row + 1, col + 1, button, suffix);
+        if let Err(e) = self.pty.write(seq.as_bytes()) {
+            log::error!("SGR mouse write error: {e}");
+        }
+    }
 }
 
 impl eframe::App for ZenmuxApp {
@@ -388,22 +691,35 @@ impl eframe::App for ZenmuxApp {
 
         // 2. Handle keyboard input.
         //
-        //    Some key combinations (Ctrl+Shift+C) are terminal-emulator
-        //    commands rather than shell input — check for those first
-        //    by iterating events outside the ctx.input borrow so we can
-        //    call ctx.copy_text() if needed.
-        let copy_requested = ctx.input(|input| {
-            input.events.iter().any(|event| {
-                matches!(
-                    event,
+        //    Some key combinations (Ctrl+Shift+C, Ctrl+Shift+V) are
+        //    terminal-emulator commands rather than shell input — check
+        //    for those first by iterating events outside the ctx.input
+        //    borrow so we can call ctx.copy_text() / clipboard_text().
+        let (copy_requested, paste_requested) = ctx.input(|input| {
+            let mut copy = false;
+            let mut paste = false;
+            for event in &input.events {
+                match event {
                     egui::Event::Key {
                         key: egui::Key::C,
                         pressed: true,
                         modifiers,
                         ..
-                    } if modifiers.ctrl && modifiers.shift && !modifiers.alt
-                )
-            })
+                    } if modifiers.ctrl && modifiers.shift && !modifiers.alt => {
+                        copy = true;
+                    }
+                    egui::Event::Key {
+                        key: egui::Key::V,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if modifiers.ctrl && modifiers.shift && !modifiers.alt => {
+                        paste = true;
+                    }
+                    _ => {}
+                }
+            }
+            (copy, paste)
         });
 
         if copy_requested && self.terminal.has_selection() {
@@ -411,6 +727,17 @@ impl eframe::App for ZenmuxApp {
                 ctx.copy_text(text);
                 // Do NOT send Ctrl+C / 0x03 to the shell when we have a
                 // selection — the user intended to copy, not interrupt.
+            }
+        } else if paste_requested {
+            // Read clipboard and send as raw bytes to the PTY.
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                if let Ok(text) = clipboard.get_text() {
+                    if !text.is_empty() {
+                        if let Err(e) = self.pty.write(text.as_bytes()) {
+                            log::error!("PTY paste error: {e}");
+                        }
+                    }
+                }
             }
         } else {
             // Normal input: pass all events through InputMapper → PTY.
@@ -425,7 +752,16 @@ impl eframe::App for ZenmuxApp {
             });
         }
 
-        // 3. Request continuous repainting.
+        // 3. Advance frame counter and trigger rebuild for cursor blink.
+        self.frame_count += 1;
+        let needs_blink = self.terminal.cursor().style.blinking
+            && !matches!(self.terminal.cursor().style.shape, CursorShape::Block);
+        if needs_blink {
+            // Ensure instances are rebuilt on blink boundaries.
+            self.terminal_dirty = true;
+        }
+
+        // 4. Request continuous repainting.
         ctx.request_repaint();
     }
 
@@ -447,50 +783,94 @@ impl eframe::App for ZenmuxApp {
             if new_size != self.terminal.size() {
                 self.terminal.resize(new_size);
                 self.pty.resize(new_size).ok();
+                self.terminal_dirty = true;
             }
 
             // ── Allocate terminal area and capture interactions ─────────
             let sense = egui::Sense::click_and_drag();
             let (rect, response) = ui.allocate_exact_size(available, sense);
 
-            // ── Mouse-driven text selection ────────────────────────────
+            // ── Mouse handling (selection + SGR mouse events) ────────
+            // Check whether the application has requested mouse reporting.
+            let mode = self.terminal.mode();
+            let mouse_reporting = mode.contains(TermMode::SGR_MOUSE)
+                && mode.intersects(TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION);
+
+            // Helper: convert pixel position to grid cell.
+            let cw = self.cell_width;
+            let ch = self.cell_height;
+            let pixel_to_cell = move |pos: egui::Pos2| -> Option<(usize, usize)> {
+                let col = ((pos.x - rect.left()) / cw) as usize;
+                let row = ((pos.y - rect.top()) / ch) as usize;
+                if col < cols as usize && row < rows as usize {
+                    Some((row, col))
+                } else {
+                    None
+                }
+            };
+
             if response.drag_started() {
-                // Convert pointer-down position to grid cell.
                 if let Some(pos) = response.interact_pointer_pos() {
-                    let col = ((pos.x - rect.left()) / self.cell_width) as usize;
-                    let row = ((pos.y - rect.top()) / self.cell_height) as usize;
-                    if col < cols as usize && row < rows as usize {
-                        self.terminal.clear_selection();
-                        self.terminal.start_selection(row, col);
-                        self.selecting = true;
+                    if let Some((row, col)) = pixel_to_cell(pos) {
+                        if mouse_reporting {
+                            // Button 0 = left, no modifiers.
+                            self.send_sgr_mouse(row, col, 0, false);
+                        } else {
+                            // Start text selection.
+                            self.terminal.clear_selection();
+                            self.terminal.start_selection(row, col);
+                            self.selecting = true;
+                            self.terminal_dirty = true;
+                        }
                     }
                 }
             }
 
-            if self.selecting && response.dragged() {
-                if let Some(pos) = response.interact_pointer_pos() {
-                    let col = ((pos.x - rect.left()) / self.cell_width) as usize;
-                    let row = ((pos.y - rect.top()) / self.cell_height) as usize;
-                    // Clamp to grid bounds.
-                    let col = col.min(cols.saturating_sub(1) as usize);
-                    let row = row.min(rows.saturating_sub(1) as usize);
-                    self.terminal.update_selection(row, col);
+            if response.dragged() {
+                if mouse_reporting {
+                    // Motion with button 0 pressed = button 32.
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        if let Some((row, col)) = pixel_to_cell(pos) {
+                            self.send_sgr_mouse(row, col, 32, false);
+                        }
+                    }
+                } else if self.selecting {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        if let Some((row, col)) = pixel_to_cell(pos) {
+                            self.terminal.update_selection(row, col);
+                            self.terminal_dirty = true;
+                        }
+                    }
                 }
             }
 
-            if self.selecting && response.drag_stopped() {
-                self.selecting = false;
-                // Selection is finalised — no further action needed here;
-                // it will be used by the copy action.
+            if response.drag_stopped() {
+                if mouse_reporting {
+                    // Release with button 0.
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        if let Some((row, col)) = pixel_to_cell(pos) {
+                            self.send_sgr_mouse(row, col, 0, true);
+                        }
+                    }
+                } else {
+                    self.selecting = false;
+                    self.terminal_dirty = true;
+                }
             }
 
-            // Left-click without drag → clear selection.
-            if response.clicked() && !self.selecting {
+            // Left-click without drag → clear selection (only when not
+            // in mouse reporting mode, otherwise the app handles it).
+            if response.clicked() && !self.selecting && !mouse_reporting {
                 self.terminal.clear_selection();
+                self.terminal_dirty = true;
             }
 
             // ── Build GPU instance data from visible cells ──────────────
-            self.update_cell_instances(vp_width_px, vp_height_px);
+            // Only rebuild when terminal state actually changed.
+            if self.terminal_dirty {
+                self.update_cell_instances(vp_width_px, vp_height_px);
+                self.terminal_dirty = false;
+            }
 
             // ── Register the wgpu paint callback ────────────────────────
             let callback = egui_wgpu::Callback::new_paint_callback(
@@ -516,6 +896,15 @@ impl eframe::App for ZenmuxApp {
                     }
                 }
                 if ctx_ui.button("Paste").clicked() {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        if let Ok(text) = clipboard.get_text() {
+                            if !text.is_empty() {
+                                if let Err(e) = self.pty.write(text.as_bytes()) {
+                                    log::error!("PTY paste error: {e}");
+                                }
+                            }
+                        }
+                    }
                     ctx_ui.close();
                 }
             });
