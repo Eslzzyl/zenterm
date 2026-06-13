@@ -85,6 +85,11 @@ pub struct ZentermApp {
     /// resize) so the next frame rebuilds GPU instances.
     terminal_dirty: bool,
 
+    /// Timestamp (from `ctx.input(|i| i.time)`) of the most recent terminal
+    /// resize, or `None` if no resize has occurred yet.  Used to show a
+    /// transient size overlay after the window is resized.
+    last_resize_at: Option<f64>,
+
     /// Frame counter for cursor blinking.  Incremented each frame;
     /// cursor is hidden when `(frame_count / blink_interval) % 2 == 0`.
     frame_count: u64,
@@ -204,6 +209,7 @@ impl ZentermApp {
             last_atlas_size,
             selecting: false,
             terminal_dirty: true,
+            last_resize_at: None,
             frame_count: 0,
             blink_interval: 30,
             theme: &THEME_DARK,
@@ -1034,6 +1040,7 @@ impl eframe::App for ZentermApp {
                 self.terminal.resize(new_size);
                 self.pty.resize(new_size).ok();
                 self.terminal_dirty = true;
+                self.last_resize_at = Some(ui.input(|i| i.time));
             }
 
             // ── Allocate terminal area and capture interactions ─────────
@@ -1139,6 +1146,40 @@ impl eframe::App for ZentermApp {
             // Register the callback shape — egui-wgpu will call
             // prepare() and paint() on it.
             ui.painter().add(callback);
+
+            // ── Transient resize overlay ─────────────────────────────────
+            // Show current rows×cols in the center of the terminal for
+            // ~2 seconds after each resize, then fade out.
+            if let Some(last_time) = self.last_resize_at {
+                let now = ui.input(|i| i.time);
+                let elapsed = (now - last_time) as f32;
+                if elapsed < 2.0 {
+                    let size = self.terminal.size();
+                    let text = format!("{} × {}", size.cols, size.rows);
+                    // Fade alpha from 1.0 → 0.0 over 2 seconds.
+                    let alpha = (1.0 - elapsed / 2.0).clamp(0.0, 1.0);
+
+                    // Semi-transparent rounded backdrop for readability.
+                    let backdrop = egui::Rect::from_center_size(
+                        rect.center(),
+                        egui::vec2(220.0, 64.0),
+                    );
+                    ui.painter().rect_filled(
+                        backdrop,
+                        10.0,
+                        egui::Color32::BLACK.gamma_multiply(alpha * 0.55),
+                    );
+
+                    // White text, fading with the backdrop.
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        text,
+                        egui::FontId::proportional(28.0),
+                        egui::Color32::WHITE.gamma_multiply(alpha),
+                    );
+                }
+            }
 
             // ── Right-click context menu ───────────────────────────────
             response.context_menu(|ctx_ui| {
