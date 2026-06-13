@@ -200,14 +200,17 @@ impl GlyphAtlas {
 
     /// Returns the cell size (width, height) in pixels.
     ///
-    /// Width is the advance of a representative monospace glyph ('W').
+    /// Width is the advance of a representative monospace glyph ('W'),
+    /// rounded **up** to an integer pixel boundary so column-to-column
+    /// background quads tile perfectly with no sub-pixel gaps or overlap.
     /// Height is the font's line height rounded **up** to an integer pixel
     /// boundary, matching the strategy used by `cosmic-term`
     /// (`(font_size * 1.4).ceil()`) and the spirit of `alacritty`'s
-    /// `(line_height + offset_y).floor()`.  Integer cell height is critical
-    /// for the cell-background rasterizer: fractional heights cause adjacent
-    /// rows' SOLID quads to overlap by a sub-pixel in the 1-px grid, which
-    /// shows up as a 1-px "fringe" between rows of coloured cells.
+    /// `(line_height + offset_y).floor()`.  Integer cell dimensions are
+    /// critical for the cell-background rasterizer: fractional sizes cause
+    /// adjacent cells' SOLID quads to overlap by a sub-pixel in the 1-px
+    /// grid, which shows up as a 1-px "fringe" between rows/columns of
+    /// coloured cells.
     ///
     /// Side-effect: this also measures the cell's baseline offset by shaping
     /// a full-height reference character ('M') and reading `max_ascent` from
@@ -228,8 +231,9 @@ impl GlyphAtlas {
         // making every W on screen collapse to a single invisible dot.
         self.measure_baseline()?;
         let (entry, _is_new) = self.ensure_glyph('W')?;
-        self.cell_width = entry.advance;
-        // Integer cell height: avoid sub-pixel drift between adjacent rows.
+        // Integer cell width/height: avoid sub-pixel drift between
+        // adjacent columns (width) and rows (height).
+        self.cell_width = entry.advance.ceil();
         self.cell_height = self.metrics.line_height.ceil();
         // Authoritative baseline: ask cosmic-text where it would put the
         // baseline for a full-height glyph.  This is exactly the value

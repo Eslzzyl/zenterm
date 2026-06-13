@@ -76,6 +76,19 @@ pub struct ZentermApp {
     /// Last known atlas texture size (for detecting atlas growth).
     last_atlas_size: u32,
 
+    /// DPI scaling factor (physical pixels per logical point) used to
+    /// compute `font_size`.  Tracked to detect DPI changes at runtime
+    /// (e.g. window moved between monitors) so we can rebuild the glyph
+    /// atlas at the correct physical size.
+    pixels_per_point: f32,
+
+    /// Physical viewport size (in pixels) from the previous frame.
+    /// Used to detect viewport size changes that don't alter the terminal
+    /// grid dimensions (rows/cols) but still require instance buffer
+    /// updates because clip-space coordinates depend on `x_scale`/`y_scale`
+    /// (which are derived from `vp_width_px` / `vp_height_px`).
+    last_vp_size_px: [f32; 2],
+
     // ── Selection state ──────────────────────────────────────────────────
     /// True while the left mouse button is held and a drag-selection is
     /// in progress.
@@ -207,6 +220,8 @@ impl ZentermApp {
             cell_width,
             cell_height,
             last_atlas_size,
+            pixels_per_point,
+            last_vp_size_px: [0.0, 0.0],
             selecting: false,
             terminal_dirty: true,
             last_resize_at: None,
@@ -458,15 +473,18 @@ impl ZentermApp {
                 if !is_cursor {
                     let cell_bg = if is_sel { sel_bg } else { cell.bg };
                     if cell_bg != default_bg {
-                        // `ch` is now an integer (see `GlyphAtlas::cell_size`),
-                        // so the cell positions align perfectly with the
-                        // pixel grid: no sub-pixel drift between adjacent
-                        // rows, and therefore no 1-px "fringe" where
-                        // coloured cell backgrounds meet.  `.round()` is
-                        // kept as a defensive no-op so future font-size
-                        // changes still work.
-                        let bqx = ((col as f32 * cw).round()) * x_scale - 1.0;
-                        let bqy = 1.0 - ((row as f32 * ch).round()) * y_scale;
+                        // `cw` and `ch` are both integers (see
+                        // `GlyphAtlas::cell_size`), so the cell positions
+                        // align perfectly with the pixel grid: no sub-pixel
+                        // drift between adjacent rows or columns, and
+                        // therefore no 1-px "fringe" where coloured cell
+                        // backgrounds meet.  `.round()` is kept as a
+                        // defensive no-op so future font-size changes
+                        // still work.
+                        let bg_x_px = (col as f32 * cw).round();
+                        let bg_y_px = (row as f32 * ch).round();
+                        let bqx = px_to_clip_x(bg_x_px);
+                        let bqy = px_to_clip_y(bg_y_px);
                         let bqw = cw * x_scale;
                         let bqh = ch * y_scale;
 
@@ -585,7 +603,7 @@ impl ZentermApp {
                             // Background quad is CELL-sized and fills the
                             // whole cell with the cell's fg colour.
                             let bqy = 1.0 - cell_top * y_scale;
-                            let bqx = ((col as f32 * cw).round()) * x_scale - 1.0;
+                            let bqx = px_to_clip_x((col as f32 * cw).round());
                             let bqw = cw * x_scale;
                             let bqh = ch * y_scale;
                             // ── Background: SOLID fill with cell's fg colour ──
@@ -699,7 +717,7 @@ impl ZentermApp {
                     // underline where alacritty / wezterm put it.
                     let deco_y = baseline + 1.0;
                     let dqy = px_to_clip_y((row as f32 * ch + deco_y).round());
-                    let dqx = ((col as f32 * cw).round()) * x_scale - 1.0;
+                    let dqx = px_to_clip_x((col as f32 * cw).round());
                     let dqw = cw * x_scale;
                     let dqh = thickness * y_scale;
                     deco_instances.push(CellInstance {
@@ -725,7 +743,7 @@ impl ZentermApp {
                     // for stability across font-size changes.
                     let deco_y = (baseline * 0.55).round();
                     let dqy = px_to_clip_y((row as f32 * ch + deco_y).round());
-                    let dqx = ((col as f32 * cw).round()) * x_scale - 1.0;
+                    let dqx = px_to_clip_x((col as f32 * cw).round());
                     let dqw = cw * x_scale;
                     let dqh = thickness * y_scale;
                     deco_instances.push(CellInstance {
@@ -912,6 +930,61 @@ impl ZentermApp {
             log::error!("SGR mouse write error: {e}");
         }
     }
+
+    /// Re-initialise the glyph atlas and cell metrics for a new DPI scale
+    /// factor.  Called when the window moves between monitors with different
+    /// DPI settings.
+    fn reinit_for_dpi(&mut self, new_ppp: f32) {
+        let new_font_size = 18.0 * new_ppp;
+        let font_family = GlyphAtlas::default_font_family();
+
+        // Rebuild the glyph atlas (clears all cached glyphs so they are
+        // re-rasterised at the new font size on the next `ensure_glyph`).
+        self.glyph_atlas = GlyphAtlas::new(
+            new_font_size,
+            font_family,
+            new_ppp,
+            SubpixelLayout::detect(),
+        );
+
+        // Re-measure cell geometry.
+        let (cw, ch) = self
+            .glyph_atlas
+            .cell_size()
+            .expect("glyph atlas cell_size after DPI reinit");
+        self.cell_width = cw;
+        self.cell_height = ch;
+
+        // Re-seed the atlas with common ASCII characters so the next
+        // frame has something to render before the user types anything.
+        let ascii_chars =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,!?;:-=+*/\\|()[]{}<>\"'`~@#$%^&_";
+        for c in ascii_chars.chars() {
+            let _ = self.glyph_atlas.ensure_glyph(c);
+        }
+
+        // Push the new atlas texture data to the GPU.
+        let tex_size = self.glyph_atlas.texture_size;
+        {
+            let mut update = self.shared.atlas_update.lock().unwrap();
+            *update = Some(AtlasUpdate {
+                size: tex_size,
+                data: self.glyph_atlas.texture_data.clone(),
+                resized: true,
+            });
+        }
+        self.shared.atlas_dirty.store(true, Ordering::Release);
+        self.last_atlas_size = tex_size;
+
+        // Mark everything dirty so the next frame rebuilds instances.
+        self.terminal_dirty = true;
+        self.pixels_per_point = new_ppp;
+
+        log::info!(
+            "DPI reinit: new_ppp={new_ppp:.2} font_size={new_font_size:.1} \
+             cw={cw:.1} ch={ch:.1}",
+        );
+    }
 }
 
 impl eframe::App for ZentermApp {
@@ -935,6 +1008,12 @@ impl eframe::App for ZentermApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // 0. Synchronise theme with system / user preference.
         self.sync_theme(ctx);
+
+        // 0.5. Detect DPI changes (window moved between monitors).
+        let current_ppp = ctx.pixels_per_point();
+        if (current_ppp - self.pixels_per_point).abs() > 0.01 {
+            self.reinit_for_dpi(current_ppp);
+        }
 
         // 1. Read pending PTY bytes and feed the terminal parser.
         self.pump_pty();
@@ -1031,6 +1110,20 @@ impl eframe::App for ZentermApp {
             let pixels_per_point = ui.ctx().pixels_per_point();
             let vp_width_px = available.x * pixels_per_point;
             let vp_height_px = available.y * pixels_per_point;
+
+            // ── Detect viewport pixel-size changes ─────────────────────
+            // Even when the terminal grid dimensions (rows/cols) don't
+            // change, the clip-space coordinates of every cell depend on
+            // `x_scale = 2.0 / vp_width_px` and `y_scale = 2.0 / vp_height_px`.
+            // A small viewport resize changes these scales, so we must
+            // rebuild instances even if the grid count stays the same.
+            // Without this, stale clip-space coordinates cause sub-pixel
+            // misalignment of glyphs → color fringing / blur.
+            let px_size = [vp_width_px, vp_height_px];
+            if px_size != self.last_vp_size_px {
+                self.last_vp_size_px = px_size;
+                self.terminal_dirty = true;
+            }
 
             // ── Resize terminal to match the available area ─────────────
             let cols = (vp_width_px / self.cell_width).max(10.0) as u16;
