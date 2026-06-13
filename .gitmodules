@@ -14,3 +14,7 @@
 	path = libcosmic
 	url = https://github.com/pop-os/libcosmic.git
 	shallow = true
+[submodule "cosmic-text"]
+	path = cosmic-text
+	url = https://github.com/pop-os/cosmic-text.git
+	shallow = true
