@@ -7,7 +7,14 @@ fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size((960.0, 540.0))
-            .with_title("Zenterm"),
+            .with_title("Zenterm")
+            // Enable OS-level window transparency.  eframe will then
+            // configure the wgpu surface with `CompositeAlphaMode::PreMultiplied`
+            // (see egui-wgpu-0.34/src/winit.rs:252-266), and our SOLID shader
+            // emits pre-multiplied alpha so the configured `default_bg` and
+            // the OS desktop can show through wherever no opaque cell
+            // background is drawn.
+            .with_transparent(true),
         // Use smaller GPU memory blocks — we're a terminal, not a game.
         // Performance (default) pre-allocates 128–256 MB blocks from the
         // driver; MemoryUsage starts at 8 MB and grows as needed.

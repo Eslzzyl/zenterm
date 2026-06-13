@@ -460,7 +460,15 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
 
     if (in.flags == 3u) {
         // SOLID fill — no texture sample.
-        return vec4<f32>(vec3<f32>(bg_r, bg_g, bg_b), 1.0);
+        // The wgpu surface is configured with
+        // `CompositeAlphaMode::PreMultiplied` (see eframe's
+        // `viewport.transparent(true)` and egui-wgpu/src/winit.rs:258).
+        // The fragment output must therefore be pre-multiplied: the
+        // colour channels are scaled by alpha *before* being handed to
+        // the compositor.  Alpha itself is a linear multiplier
+        // (no sRGB gamma conversion).
+        let a = in.bg_color.a;
+        return vec4<f32>(vec3<f32>(bg_r * a, bg_g * a, bg_b * a), a);
     }
 
     let texel = textureSample(glyph_atlas, atlas_sampler, in.uv);

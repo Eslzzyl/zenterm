@@ -309,6 +309,18 @@ impl Terminal {
         self.scheme.selection_fg
     }
 
+    /// Default background colour — the resolved `NamedColor::Background`.
+    ///
+    /// Cells whose `cell.bg` equals this value don't need their own
+    /// background quad: the terminal-wide `rect_filled` (or, with
+    /// `viewport.transparent(true)`, the OS desktop through a
+    /// transparent clear) already covers them.  This is the same
+    /// pattern cosmic-term uses in `terminal_box.rs:576`
+    /// (`if metadata.bg != default_metadata.bg`).
+    pub fn default_bg(&self) -> Rgba {
+        self.resolve_color(Color::Named(NamedColor::Background))
+    }
+
     // ---- Helpers ----
 
     fn resolve_cell(&self, alacell: &alacritty_terminal::term::cell::Cell) -> Cell {

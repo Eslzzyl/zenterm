@@ -62,6 +62,21 @@ pub struct ZentermApp {
     /// Number of frames between cursor blink toggles (30 frames ≈ 500 ms
     /// at 60 FPS).
     blink_interval: u64,
+
+    /// Default background colour for the terminal area and for cells
+    /// whose `cell.bg` equals the resolved `NamedColor::Background`.
+    ///
+    /// `egui::Color32` carries 4 channels — setting alpha below 1.0
+    /// makes the terminal see through to the OS desktop.  This only
+    /// works in combination with `viewport.transparent(true)` in
+    /// `main.rs`, which causes eframe to configure the wgpu surface
+    /// with `CompositeAlphaMode::PreMultiplied`.
+    ///
+    /// The default is `Color32::BLACK` for backward compatibility.
+    /// To get a transparent terminal, set this to `Color32::TRANSPARENT`.
+    /// For a light theme (matching the tidev TUI on a light desktop),
+    /// set it to `Color32::from_rgb(255, 255, 255)` or similar.
+    pub default_bg: egui::Color32,
 }
 
 impl ZentermApp {
@@ -142,6 +157,11 @@ impl ZentermApp {
             terminal_dirty: true,
             frame_count: 0,
             blink_interval: 30,
+            // Default to opaque black for backward compatibility.  Users
+            // who want a light theme or a transparent terminal can
+            // override this after construction (or we can wire it to a
+            // config file later).
+            default_bg: egui::Color32::BLACK,
         }
     }
 
@@ -224,6 +244,13 @@ impl ZentermApp {
         let sel_range: Option<SelectionRange> = self.terminal.selection_range();
         let sel_bg = self.terminal.selection_bg();
         let sel_fg = self.terminal.selection_fg();
+        // Default background colour (resolved `NamedColor::Background`).
+        // Cells whose `cell.bg` equals this value don't get their own
+        // background quad — the terminal-wide `rect_filled` covers them.
+        // Snapshotting it here avoids re-borrowing `self.terminal`
+        // inside the cell-iteration loop (which holds a mutable borrow
+        // via `visible_cells()`).
+        let default_bg = self.terminal.default_bg();
 
         let grid = self.terminal.visible_cells();
         let rows = grid.row_count();
@@ -252,6 +279,17 @@ impl ZentermApp {
         // Pre-compute pixel → clip-space conversion.
         let x_scale = 2.0 / vp_width_px;
         let y_scale = 2.0 / vp_height_px;
+
+        // Authoritative baseline position from cosmic-text.
+        // This is the y-down distance from the cell TOP to the baseline, in
+        // pixels.  Glyphs are positioned such that
+        //
+        //   glyph_top_y = row * ch + baseline - glyph_bearing_y
+        //
+        // which is equivalent to alacritty's `(line+1)*ch - (ascent - descent)`
+        // and wezterm's `cell_height + descender - bearing_y` (with descender
+        // negative).  See `GlyphAtlas::cell_baseline_offset`.
+        let baseline = self.glyph_atlas.cell_baseline_offset();
 
         let mut bg_instances = Vec::with_capacity(rows * cols);
         let mut glyph_instances = Vec::with_capacity(rows * cols);
@@ -300,27 +338,65 @@ impl ZentermApp {
                 let px_to_clip_x = |px: f32| px * x_scale - 1.0;
                 let px_to_clip_y = |px: f32| 1.0 - px * y_scale;
 
-                // ── Pass 1: Background quad (selected cells) ──────────
-                // Full-cell solid-color rectangle.  Selection backgrounds
-                // go here; cursor backgrounds are deferred to Pass 3 so
-                // they render on top of all glyphs.
-                if is_sel {
-                    let bqx = ((col as f32 * cw).round()) * x_scale - 1.0;
-                    let bqy = 1.0 - ((row as f32 * ch).round()) * y_scale;
-                    let bqw = cw * x_scale;
-                    let bqh = ch * y_scale;
+                // ── Pass 1: Background quad (all cells except cursor) ──────────
+                // We paint a SOLID quad for every non-cursor cell, using
+                // either the selection color (for selected cells) or the
+                // cell's own bg color.  Cells whose bg equals the terminal
+                // default (NamedColor::Background) are SKIPPED — the
+                // terminal-wide `rect_filled` at the bottom of `ui()`
+                // (using `default_bg`) already covers them.  This is the
+                // cosmic-term pattern (terminal_box.rs:576:
+                // `if metadata.bg != default_metadata.bg`) and avoids
+                // redundant work for cells that use the default colour.
+                //
+                // Why this matters: TUI programs like `tidev-tui` paint
+                // their main area via
+                //   Block::default().style(Style::default().bg(palette.background))
+                // which produces SGR `\x1b[48;2;R;G;Bm` for *every* cell.
+                // zenterm correctly resolves those into `cell.bg`, but if
+                // we never draw a quad for non-selection cells, the
+                // underlying `rect_filled` (BLACK by default) shows
+                // through and the TUI's light background disappears.
+                if !is_cursor {
+                    let cell_bg = if is_sel { sel_bg } else { cell.bg };
+                    if cell_bg != default_bg {
+                        // `ch` is now an integer (see `GlyphAtlas::cell_size`),
+                        // so the cell positions align perfectly with the
+                        // pixel grid: no sub-pixel drift between adjacent
+                        // rows, and therefore no 1-px "fringe" where
+                        // coloured cell backgrounds meet.  `.round()` is
+                        // kept as a defensive no-op so future font-size
+                        // changes still work.
+                        let bqx = ((col as f32 * cw).round()) * x_scale - 1.0;
+                        let bqy = 1.0 - ((row as f32 * ch).round()) * y_scale;
+                        let bqw = cw * x_scale;
+                        let bqh = ch * y_scale;
 
-                    bg_instances.push(CellInstance {
-                        clip_pos: [bqx, bqy],
-                        uv_min: [0.0; 2],
-                        uv_max: [0.0; 2],
-                        clip_cell_size: [bqw, bqh],
-                        glyph_size: [0.0; 2],
-                        glyph_offset: [0.0; 2],
-                        fg_color: [sel_bg.r(), sel_bg.g(), sel_bg.b(), 1.0],
-                        bg_color: [sel_bg.r(), sel_bg.g(), sel_bg.b(), 1.0],
-                        flags: glyph_type::SOLID,
-                    });
+                        bg_instances.push(CellInstance {
+                            clip_pos: [bqx, bqy],
+                            uv_min: [0.0; 2],
+                            uv_max: [0.0; 2],
+                            clip_cell_size: [bqw, bqh],
+                            glyph_size: [0.0; 2],
+                            glyph_offset: [0.0; 2],
+                            // Pass alpha through to the shader; SOLID
+                            // path will pre-multiply the colour by alpha
+                            // (matching `CompositeAlphaMode::PreMultiplied`).
+                            fg_color: [
+                                cell_bg.r(),
+                                cell_bg.g(),
+                                cell_bg.b(),
+                                cell_bg.a(),
+                            ],
+                            bg_color: [
+                                cell_bg.r(),
+                                cell_bg.g(),
+                                cell_bg.b(),
+                                cell_bg.a(),
+                            ],
+                            flags: glyph_type::SOLID,
+                        });
+                    }
                 }
 
                 // ── Pass 2: Glyph quad (non-cursor cells only) ──────────
@@ -343,11 +419,23 @@ impl ZentermApp {
                         let atlas_h = (entry.atlas_rect.max.y - entry.atlas_rect.min.y) as f32;
 
                         // Every cell renders a glyph-sized quad at the bearing
-                        // offset (native-resolution text).  Positions are rounded
-                        // to the nearest physical pixel so quad edges align with
-                        // pixel boundaries.
+                        // offset (native-resolution text).  The y position is
+                        //
+                        //   glyph_y_px = row * ch + baseline - bearing_y
+                        //
+                        // i.e. glyph_top = baseline - bearing_y, where
+                        // `baseline` is the cell's baseline offset measured
+                        // by cosmic-text (== ascent for the reference 'M'
+                        // glyph).  For a full-height glyph with
+                        // `bearing_y ≈ baseline`, this puts the glyph top at
+                        // the cell top, exactly as in alacritty / wezterm.
+                        // The previous formula `ch - bearing_y` implicitly
+                        // placed the baseline at the cell BOTTOM, which
+                        // pushed text `ch - 2*baseline ≈ descent+leading`
+                        // pixels too low — that's what made the cursor
+                        // appear to overlap the line above.
                         let glyph_x_px = (col as f32 * cw + entry.bearing_x).round();
-                        let glyph_y_px = (row as f32 * ch + (ch - entry.bearing_y)).round();
+                        let glyph_y_px = (row as f32 * ch + (baseline - entry.bearing_y)).round();
                         let gqx = px_to_clip_x(glyph_x_px);
                         let gqy = px_to_clip_y(glyph_y_px);
                         let gqw = atlas_w * x_scale;
@@ -370,12 +458,13 @@ impl ZentermApp {
                             // ── DEBUG: log cursor geometry ─────────────
                             let cell_top = (row as f32 * ch).round();
                             let cell_bot = ((row as f32 + 1.0) * ch).round();
-                            let gtop = (row as f32 * ch + (ch - entry.bearing_y)).round();
+                            let gtop =
+                                (row as f32 * ch + (baseline - entry.bearing_y)).round();
                             let gbot = gtop + atlas_h;
                             log::debug!(
-                                "CURSOR row={} col={} ch={} cell=[{:.0},{:.0}] \
+                                "CURSOR row={} col={} ch={} baseline={} cell=[{:.0},{:.0}] \
                                  glyph=[{:.0},{:.0}] atlas_h={} use_glyph={}",
-                                row, col, ch, cell_top, cell_bot,
+                                row, col, ch, baseline, cell_top, cell_bot,
                                 gtop, gbot, atlas_h,
                                 atlas_w > 0.0 && atlas_h > 0.0,
                             );
@@ -406,7 +495,10 @@ impl ZentermApp {
                                 uv_max: [u_max, v_max],
                                 clip_cell_size: [bqw, bqh],
                                 glyph_size: [atlas_w, atlas_h],
-                                glyph_offset: [entry.bearing_x, ch - entry.bearing_y],
+                                glyph_offset: [
+                                    entry.bearing_x,
+                                    baseline - entry.bearing_y,
+                                ],
                                 fg_color: [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0],
                                 bg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
                                 flags: gtype,
@@ -419,7 +511,10 @@ impl ZentermApp {
                                 uv_max: [u_max, v_max],
                                 clip_cell_size: [gqw, gqh],
                                 glyph_size: [atlas_w, atlas_h],
-                                glyph_offset: [entry.bearing_x, ch - entry.bearing_y],
+                                glyph_offset: [
+                                    entry.bearing_x,
+                                    baseline - entry.bearing_y,
+                                ],
                                 fg_color: [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0],
                                 bg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
                                 flags: gtype,
@@ -433,7 +528,10 @@ impl ZentermApp {
                             uv_max: [u_max, v_max],
                             clip_cell_size: [gqw, gqh],
                             glyph_size: [atlas_w, atlas_h],
-                            glyph_offset: [entry.bearing_x, ch - entry.bearing_y],
+                            glyph_offset: [
+                                entry.bearing_x,
+                                baseline - entry.bearing_y,
+                            ],
                             fg_color: [glyph_fg.r(), glyph_fg.g(), glyph_fg.b(), 1.0],
                             bg_color: [sel_bg.r(), sel_bg.g(), sel_bg.b(), 1.0],
                             flags: gtype,
@@ -445,7 +543,10 @@ impl ZentermApp {
                                 uv_max: [u_max, v_max],
                                 clip_cell_size: [gqw, gqh],
                                 glyph_size: [atlas_w, atlas_h],
-                                glyph_offset: [entry.bearing_x, ch - entry.bearing_y],
+                                glyph_offset: [
+                                    entry.bearing_x,
+                                    baseline - entry.bearing_y,
+                                ],
                                 fg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
                                 bg_color: [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0],
                                 flags: gtype,
@@ -470,7 +571,14 @@ impl ZentermApp {
 
                 if cell.underline {
                     let thickness = 1.0_f32.max((ch * 0.05).round());
-                    let deco_y = (ch - thickness).max(0.0);
+                    // Underline sits 1 px below the baseline (i.e. just
+                    // inside the descender area).  Previously this used
+                    // `ch - thickness`, which put the underline flush with
+                    // the cell bottom — visually wrong because the cell
+                    // bottom is the *descender* area, not the underline
+                    // area.  Using `baseline` (from cosmic-text) puts the
+                    // underline where alacritty / wezterm put it.
+                    let deco_y = baseline + 1.0;
                     let dqy = px_to_clip_y((row as f32 * ch + deco_y).round());
                     let dqx = ((col as f32 * cw).round()) * x_scale - 1.0;
                     let dqw = cw * x_scale;
@@ -490,7 +598,13 @@ impl ZentermApp {
 
                 if cell.strikethrough {
                     let thickness = 1.0_f32.max((ch * 0.05).round());
-                    let deco_y = (ch * 0.45).round();
+                    // Strikethrough goes through the visual middle of the
+                    // x-height.  This is approximately at `baseline / 2`
+                    // for a typical font, which is what the previous
+                    // `ch * 0.45` formula approximated.  With the new
+                    // cell geometry we anchor it relative to the baseline
+                    // for stability across font-size changes.
+                    let deco_y = (baseline * 0.55).round();
                     let dqy = px_to_clip_y((row as f32 * ch + deco_y).round());
                     let dqx = ((col as f32 * cw).round()) * x_scale - 1.0;
                     let dqw = cw * x_scale;
@@ -682,6 +796,20 @@ impl ZentermApp {
 }
 
 impl eframe::App for ZentermApp {
+    /// Override eframe's default clear colour.
+    ///
+    /// The default (`rgba(12, 12, 12, 180)`) is a dark semi-transparent
+    /// grey that exists "to make shadows look right".  We return
+    /// fully-transparent instead so the OS desktop shows through
+    /// wherever no opaque cell background is drawn — combined with
+    /// `viewport.transparent(true)` in `main.rs` (which causes eframe
+    /// to configure `CompositeAlphaMode::PreMultiplied` on the wgpu
+    /// surface) and our pre-multiplied SOLID shader, this gives us a
+    /// terminal that can be light, dark, or fully see-through.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
     /// Phase 1: non-UI work.
     ///
     /// This is called before [`Self::ui()`] each frame.
@@ -770,7 +898,13 @@ impl eframe::App for ZentermApp {
     /// Builds cell instance data from the terminal grid and registers the
     /// wgpu-based paint callback inside a `CentralPanel`.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        // Use `Frame::NONE` for the CentralPanel so egui's default panel
+        // fill (which is opaque) doesn't cover the transparent clear and
+        // the OS desktop.  Our own `rect_filled` below provides the
+        // configured `default_bg` (which itself can be transparent).
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show_inside(ui, |ui| {
             let available = ui.available_size();
             let pixels_per_point = ui.ctx().pixels_per_point();
             let vp_width_px = available.x * pixels_per_point;
@@ -879,7 +1013,12 @@ impl eframe::App for ZentermApp {
             );
 
             // Draw the terminal background underneath the cells.
-            ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
+            // Uses the configurable `default_bg` (defaults to BLACK, but
+            // can be set to TRANSPARENT or any other colour).  This is
+            // the "default background" that cells with `cell.bg ==
+            // NamedColor::Background` rely on — see Pass 1 in
+            // `update_cell_instances`.
+            ui.painter().rect_filled(rect, 0.0, self.default_bg);
 
             // Register the callback shape — egui-wgpu will call
             // prepare() and paint() on it.

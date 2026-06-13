@@ -78,6 +78,24 @@ pub struct GlyphAtlas {
     /// Cached cell width/height in pixels, set by [`cell_size()`](Self::cell_size).
     cell_width: f32,
     cell_height: f32,
+    /// Distance from the cell TOP to the baseline, in pixels.
+    ///
+    /// This is the authoritative baseline position produced by `cosmic-text`'s
+    /// own layout pass for a full-height reference character (e.g. 'M').  The
+    /// renderer positions glyphs as
+    ///
+    /// ```text
+    /// glyph_top_y = row * cell_height + cell_ascent - glyph_bearing_y
+    /// ```
+    ///
+    /// which is equivalent to `alacritty`'s
+    /// `(line + 1) * ch - (ascent - descent)` and `wezterm`'s
+    /// `cell_height + descender - bearing_y` (with `descender` negative).
+    cell_ascent: f32,
+    /// Distance from the baseline to the cell BOTTOM, in pixels.
+    /// Mirrors `cell_ascent` and is exposed for callers that need to position
+    /// decorations (underline / strikethrough) relative to the baseline.
+    cell_descent: f32,
 }
 
 impl GlyphAtlas {
@@ -116,6 +134,8 @@ impl GlyphAtlas {
             swash_ctx: ScaleContext::new(),
             cell_width: 0.0,
             cell_height: 0.0,
+            cell_ascent: 0.0,
+            cell_descent: 0.0,
         }
     }
 
@@ -162,8 +182,20 @@ impl GlyphAtlas {
     /// Returns the cell size (width, height) in pixels.
     ///
     /// Width is the advance of a representative monospace glyph ('W').
-    /// Height is the font's line height (font_size × 1.2).
-    /// This method will rasterize 'W' if it isn't cached yet.
+    /// Height is the font's line height rounded **up** to an integer pixel
+    /// boundary, matching the strategy used by `cosmic-term`
+    /// (`(font_size * 1.4).ceil()`) and the spirit of `alacritty`'s
+    /// `(line_height + offset_y).floor()`.  Integer cell height is critical
+    /// for the cell-background rasterizer: fractional heights cause adjacent
+    /// rows' SOLID quads to overlap by a sub-pixel in the 1-px grid, which
+    /// shows up as a 1-px "fringe" between rows of coloured cells.
+    ///
+    /// Side-effect: this also measures the cell's baseline offset by shaping
+    /// a full-height reference character ('M') and reading `max_ascent` from
+    /// the cosmic-text layout.  Callers must use this value to position
+    /// glyphs, *not* the raw `line_height`.
+    ///
+    /// This method will rasterize 'W' and 'M' if they aren't cached yet.
     /// Once computed, the values are cached for subsequent calls.
     pub fn cell_size(&mut self) -> Result<(f32, f32)> {
         if self.cell_width > 0.0 && self.cell_height > 0.0 {
@@ -171,13 +203,95 @@ impl GlyphAtlas {
         }
         let (entry, _is_new) = self.ensure_glyph('W')?;
         self.cell_width = entry.advance;
-        self.cell_height = self.metrics.line_height;
+        // Integer cell height: avoid sub-pixel drift between adjacent rows.
+        self.cell_height = self.metrics.line_height.ceil();
+        // Authoritative baseline: ask cosmic-text where it would put the
+        // baseline for a full-height glyph.  This is exactly the value
+        // alacritty calls `ascent` and wezterm calls `ascender` — the
+        // y-down distance from the cell top to the baseline.
+        self.measure_baseline('M')?;
+        log::info!(
+            "GlyphAtlas::cell_size: cw={:.2} ch={:.2} ascent={:.2} descent={:.2} \
+             (line_height={:.2} font_size={:.2})",
+            self.cell_width,
+            self.cell_height,
+            self.cell_ascent,
+            self.cell_descent,
+            self.metrics.line_height,
+            self.font_size,
+        );
         Ok((self.cell_width, self.cell_height))
+    }
+
+    /// Measure the cell's baseline offset (ascent) and descent via
+    /// `cosmic-text`'s own layout pass.
+    ///
+    /// 'M' is used as the reference because it has the full ascent of the
+    /// font without diacritics, matching what alacritty/wezterm/cosmic-term
+    /// use as the "design ascent" of the cell.
+    ///
+    /// The `Metrics` we feed to cosmic-text uses `line_height = font_size *
+    /// 1.2`.  We re-derive the layout's `line_height` to
+    /// `ascent + descent` here, which makes cosmic-text's `centering_offset`
+    /// collapse to zero, so `line_y == max_ascent` exactly.
+    fn measure_baseline(&mut self, c: char) -> Result<()> {
+        // Use a temporary buffer.  `line_height` here only affects inter-line
+        // spacing inside cosmic-text; per-glyph metrics like `max_ascent` are
+        // independent of it (they come from the shaped glyph's own font size).
+        // We use a generous line height so cosmic-text doesn't truncate.
+        let mut buf = Buffer::new(
+            &mut self.font_system,
+            Metrics::new(self.font_size, self.font_size * 2.0),
+        );
+        let attrs = Attrs::new().family(Family::Name(&self.font_family));
+        buf.set_text(&c.to_string(), &attrs, Shaping::Basic, None);
+        buf.shape_until_scroll(&mut self.font_system, true);
+
+        let line = buf.lines[0]
+            .layout_opt()
+            .and_then(|l| l.first())
+            .ok_or_else(|| Error::Glyph("measure_baseline: empty layout".into()))?;
+
+        let max_ascent = line.max_ascent;
+        let max_descent = line.max_descent;
+        if max_ascent <= 0.0 {
+            return Err(Error::Glyph(format!(
+                "measure_baseline: got non-positive max_ascent for {:?}",
+                c
+            )));
+        }
+        self.cell_ascent = max_ascent;
+        self.cell_descent = max_descent;
+        Ok(())
     }
 
     /// Return the cached cell dimensions (must call `cell_size()` first).
     pub fn cell_dimensions(&self) -> (f32, f32) {
         (self.cell_width, self.cell_height)
+    }
+
+    /// Return the cell's baseline offset: the y-down distance from the cell
+    /// TOP to the baseline, in pixels.
+    ///
+    /// This is what callers should use to position glyphs vertically.  The
+    /// standard formula is
+    ///
+    /// ```text
+    /// glyph_top_y = row * cell_height + cell_baseline_offset() - glyph_bearing_y
+    /// ```
+    ///
+    /// which places the baseline at `row * cell_height + cell_baseline_offset()`
+    /// and the glyph top at `baseline - bearing_y`, exactly as in alacritty
+    /// and wezterm.
+    pub fn cell_baseline_offset(&self) -> f32 {
+        self.cell_ascent
+    }
+
+    /// Return the cell's descent: the y-down distance from the baseline to
+    /// the cell BOTTOM, in pixels.  Useful for placing decorations
+    /// (underline, strikethrough) just below the baseline.
+    pub fn cell_descent(&self) -> f32 {
+        self.cell_descent
     }
 
     /// Grow the atlas texture.
