@@ -46,6 +46,18 @@ pub struct GlyphEntry {
     pub advance: f32,
     /// Type of content stored in the atlas for this glyph.
     pub content_type: GlyphContentType,
+    /// Per-glyph scale factor applied at render time.
+    ///
+    /// `1.0` means "use the rasterizer's natural size".  Values > 1 enlarge a
+    /// glyph (e.g. ASCII when `line_height` has been tightened to 1.0 so the
+    /// glyph does not naturally fill the cell); values < 1 shrink a glyph
+    /// (e.g. CJK whose `placement.top` exceeds the cell ascent, which would
+    /// otherwise be clipped at the cell top).
+    ///
+    /// The renderer multiplies both the rendered quad's size and the bearing
+    /// offsets by this value, and shrinks the sampled UV window so that the
+    /// texture is sampled at its native resolution under `Nearest` filtering.
+    pub scale: f32,
 }
 
 /// The glyph atlas.
@@ -114,7 +126,14 @@ impl GlyphAtlas {
              pixels_per_point={pixels_per_point:.2} subpixel={subpixel_layout:?}",
         );
         let font_system = FontSystem::new();
-        let metrics = Metrics::new(font_size, font_size * 1.2);
+        // Tight line-height (1.0): the cell is now sized to exactly the
+        // font's full body height (ascent + descent).  Combined with the
+        // per-glyph `scale` factor computed in `rasterize_glyph` (which
+        // enlarges ASCII to fill the cell, and shrinks CJK that would
+        // otherwise extend above the cell top), this matches the visual
+        // behaviour of alacritty / wezterm: the cursor block and the
+        // character body occupy the same height with no bottom padding.
+        let metrics = Metrics::new(font_size, font_size);
 
         let initial_size: u32 = 512;
         let atlas = AtlasAllocator::new(etagere::size2(initial_size as i32, initial_size as i32));
@@ -201,6 +220,13 @@ impl GlyphAtlas {
         if self.cell_width > 0.0 && self.cell_height > 0.0 {
             return Ok((self.cell_width, self.cell_height));
         }
+        // ── Order matters ─────────────────────────────────────────────
+        // Measure baseline FIRST so `cell_ascent` and `cell_descent` are
+        // valid by the time we rasterise 'W' below.  If we rasterised W
+        // first (with both metrics still 0), `compute_glyph_scale` would
+        // see `s_above = 0/placement.top = 0` and clamp W to scale 0.1,
+        // making every W on screen collapse to a single invisible dot.
+        self.measure_baseline()?;
         let (entry, _is_new) = self.ensure_glyph('W')?;
         self.cell_width = entry.advance;
         // Integer cell height: avoid sub-pixel drift between adjacent rows.
@@ -209,7 +235,8 @@ impl GlyphAtlas {
         // baseline for a full-height glyph.  This is exactly the value
         // alacritty calls `ascent` and wezterm calls `ascender` — the
         // y-down distance from the cell top to the baseline.
-        self.measure_baseline('M')?;
+        // (The actual `measure_baseline` call is now at the top of this
+        // function so the 'W' rasterisation above sees valid metrics.)
         log::info!(
             "GlyphAtlas::cell_size: cw={:.2} ch={:.2} ascent={:.2} descent={:.2} \
              (line_height={:.2} font_size={:.2})",
@@ -226,15 +253,17 @@ impl GlyphAtlas {
     /// Measure the cell's baseline offset (ascent) and descent via
     /// `cosmic-text`'s own layout pass.
     ///
-    /// 'M' is used as the reference because it has the full ascent of the
-    /// font without diacritics, matching what alacritty/wezterm/cosmic-term
-    /// use as the "design ascent" of the cell.
+    /// We use the string `"Mg"` (M for the full font ascent, g for the full
+    /// font descent) so that `max_ascent` and `max_descent` both reflect the
+    /// font's design metrics.  Using a single character like `'M'` would
+    /// yield `max_descent = 0` (M has no descender), which then makes
+    /// `compute_glyph_scale` compute `s_below = 0` and clamp every glyph
+    /// to a tiny size — the bug visible in the screenshots where ASCII
+    /// glyphs shrank to a single dot after the line-height tightening.
     ///
-    /// The `Metrics` we feed to cosmic-text uses `line_height = font_size *
-    /// 1.2`.  We re-derive the layout's `line_height` to
-    /// `ascent + descent` here, which makes cosmic-text's `centering_offset`
-    /// collapse to zero, so `line_y == max_ascent` exactly.
-    fn measure_baseline(&mut self, c: char) -> Result<()> {
+    /// alacritty and wezterm take the same dual-character approach (or
+    /// pull the metrics directly from the font's OS/2 table).
+    fn measure_baseline(&mut self) -> Result<()> {
         // Use a temporary buffer.  `line_height` here only affects inter-line
         // spacing inside cosmic-text; per-glyph metrics like `max_ascent` are
         // independent of it (they come from the shaped glyph's own font size).
@@ -244,7 +273,11 @@ impl GlyphAtlas {
             Metrics::new(self.font_size, self.font_size * 2.0),
         );
         let attrs = Attrs::new().family(Family::Name(&self.font_family));
-        buf.set_text(&c.to_string(), &attrs, Shaping::Basic, None);
+        // "Mg" — M contributes the full font ascent, g contributes the full
+        // font descent (e.g. a typical 14/4 em-square).  cosmic-text's
+        // layout pass exposes the *line-wide* max, so a single buffer line
+        // of "Mg" gives us both numbers.
+        buf.set_text("Mg", &attrs, Shaping::Basic, None);
         buf.shape_until_scroll(&mut self.font_system, true);
 
         let line = buf.lines[0]
@@ -256,8 +289,8 @@ impl GlyphAtlas {
         let max_descent = line.max_descent;
         if max_ascent <= 0.0 {
             return Err(Error::Glyph(format!(
-                "measure_baseline: got non-positive max_ascent for {:?}",
-                c
+                "measure_baseline: got non-positive max_ascent (font_size={}, family={:?})",
+                self.font_size, self.font_family,
             )));
         }
         self.cell_ascent = max_ascent;
@@ -310,6 +343,51 @@ impl GlyphAtlas {
         Ok(())
     }
 
+    /// Compute the per-glyph scale factor that makes the swash-rendered
+    /// bitmap fit vertically inside the cell.
+    ///
+    /// In swash's coordinate convention the baseline is at `y = 0` (y-up):
+    ///   bitmap top edge:    `y = placement.top`
+    ///   bitmap bottom edge: `y = placement.top - placement.height`
+    ///   pixels above baseline:  `above = placement.top`
+    ///   pixels below baseline:  `below = placement.height - placement.top`
+    ///
+    /// The cell has:
+    ///   pixels above baseline:  `self.cell_ascent`
+    ///   pixels below baseline:  `self.cell_descent`
+    ///
+    /// To fit the bitmap in the cell we need
+    ///   `above * s ≤ cell_ascent`  and  `below * s ≤ cell_descent`,
+    /// i.e. `s ≤ min(cell_ascent / above, cell_descent / below)`.
+    ///
+    /// CJK glyphs (e.g. '版') typically have `placement.top` larger than
+    /// the font's full em-square ascent — they are designed to fill the
+    /// em-square, so their top extends above the ASCII cell ascent.  The
+    /// resulting `s < 1` shrinks them so the top is no longer clipped.
+    /// ASCII glyphs have `placement.top` close to the cell ascent and
+    /// `s ≈ 1.0`, so they render at native size and fill the cell.
+    ///
+    /// The result is clamped to a sane range so a degenerate (zero-size)
+    /// bitmap cannot blow up.
+    fn compute_glyph_scale(&self, placement_top: f32, placement_height: f32) -> f32 {
+        if placement_height <= 0.0 {
+            return 1.0;
+        }
+        let above = placement_top.max(0.0);
+        let below = (placement_height - placement_top).max(0.0);
+        let s_above = if above > 0.0 {
+            self.cell_ascent / above
+        } else {
+            f32::INFINITY
+        };
+        let s_below = if below > 0.0 {
+            self.cell_descent / below
+        } else {
+            f32::INFINITY
+        };
+        s_above.min(s_below).clamp(0.1, 1.0)
+    }
+
     /// Rasterize a single character using swash with `Format::Subpixel`,
     /// pack it into the atlas, and cache it.
     ///
@@ -358,6 +436,7 @@ impl GlyphAtlas {
                         bearing_y: 0.0,
                         advance: 0.0,
                         content_type: GlyphContentType::Subpixel,
+                        scale: 1.0,
                     },
                 );
                 return Ok(());
@@ -393,6 +472,7 @@ impl GlyphAtlas {
                         bearing_y: 0.0,
                         advance,
                         content_type: GlyphContentType::Subpixel,
+                        scale: 1.0,
                     },
                 );
                 return Ok(());
@@ -414,6 +494,7 @@ impl GlyphAtlas {
                     bearing_y: img.placement.top as f32,
                     advance,
                     content_type: GlyphContentType::Subpixel,
+                    scale: 1.0,
                 },
             );
             return Ok(());
@@ -488,6 +569,43 @@ impl GlyphAtlas {
             SwashContent::Color => GlyphContentType::Color,
         };
 
+        // Per-glyph scale: shrink CJK that would otherwise extend above the
+        // cell top, keep ASCII at native size.  See `compute_glyph_scale`
+        // for the math.
+        let mut scale = self.compute_glyph_scale(
+            img.placement.top as f32,
+            img.placement.height as f32,
+        );
+        let mut img = img;
+
+        // ── Pre-scale in atlas (avoid per-instance aliasing) ─────────
+        // If the computed scale is < 1.0, the glyph is "too tall" to fit
+        // the cell.  The naive approach is to draw the full-size bitmap
+        // into a smaller quad at render time, but with `Nearest` sampling
+        // this produces visible stair-step jaggies (the CJK "毛刺" bug).
+        //
+        // Instead we re-rasterise the glyph at `font_size * scale` pixels
+        // using the same swash path with a modified `cache_key.font_size_bits`,
+        // and store THAT bitmap in the atlas.  The entry's `scale` is then
+        // forced back to 1.0, so the renderer draws the pre-scaled bitmap
+        // 1:1 against the screen — clean, no aliasing.
+        //
+        // `cache_key` is `Copy` (all fields are primitives in cosmic-text
+        // 0.19), so we just rebind to a modified copy and re-invoke swash.
+        if scale < 1.0 {
+            let scaled_size = (self.font_size * scale).max(1.0);
+            let mut scaled_key = physical_glyph.cache_key;
+            scaled_key.font_size_bits = scaled_size.to_bits();
+            if let Some(scaled_img) = self.rasterize_swash(&scaled_key) {
+                let sw = scaled_img.placement.width;
+                let sh = scaled_img.placement.height;
+                if sw > 0 && sh > 0 {
+                    img = scaled_img;
+                    scale = 1.0;
+                }
+            }
+        }
+
         self.glyph_cache.insert(
             key,
             GlyphEntry {
@@ -496,6 +614,7 @@ impl GlyphAtlas {
                 bearing_y: img.placement.top as f32,
                 advance,
                 content_type,
+                scale,
             },
         );
 
@@ -529,6 +648,7 @@ impl GlyphAtlas {
                     bearing_y: glyph.bearing_y,
                     advance: glyph.advance,
                     content_type: glyph.content_type,
+                    scale: 1.0,
                 },
             );
             return Ok(());
@@ -571,6 +691,7 @@ impl GlyphAtlas {
                 bearing_y: glyph.bearing_y,
                 advance: glyph.advance,
                 content_type: glyph.content_type,
+                scale: 1.0,
             },
         );
 

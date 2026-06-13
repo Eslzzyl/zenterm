@@ -106,6 +106,17 @@ impl ZentermApp {
             SubpixelLayout::detect(),
         );
 
+        // ── Critical ordering ─────────────────────────────────────────
+        // `cell_size()` measures `cell_ascent` / `cell_descent` via
+        // cosmic-text, which the per-glyph `compute_glyph_scale` reads
+        // while rasterising each glyph.  If we seed the atlas with ASCII
+        // characters *before* measuring, those characters are rasterised
+        // with `cell_ascent = 0` and end up scaled to 0.1 (clamp floor),
+        // collapsing to a single dot.  Measure FIRST, seed AFTER.
+        let (cell_width, cell_height) = glyph_atlas
+            .cell_size()
+            .expect("failed to measure cell size");
+
         // Seed the atlas with a few common ASCII characters so the first
         // frame has something to render before the user types anything.
         for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,!?;:-=+*/\\|()[]{}<>\"'`~@#$%^&_"
@@ -113,8 +124,6 @@ impl ZentermApp {
         {
             let _ = glyph_atlas.ensure_glyph(c);
         }
-
-        let (cell_width, cell_height) = glyph_atlas.cell_size().expect("failed to measure cell size");
 
         let shared = Arc::new(SharedRenderState::new(
             size.rows as usize * size.cols as usize,
@@ -434,12 +443,25 @@ impl ZentermApp {
                         // pushed text `ch - 2*baseline ≈ descent+leading`
                         // pixels too low — that's what made the cursor
                         // appear to overlap the line above.
-                        let glyph_x_px = (col as f32 * cw + entry.bearing_x).round();
-                        let glyph_y_px = (row as f32 * ch + (baseline - entry.bearing_y)).round();
+                        //
+                        // `entry.scale` < 1.0 for CJK glyphs whose natural
+                        // `placement.top` exceeds `cell_ascent`: scaling the
+                        // bitmap and its bearings down makes the CJK fit
+                        // inside the cell (top no longer clipped) — the same
+                        // strategy wezterm uses (`glyph.scale`).  For ASCII
+                        // glyphs the value is ≈ 1.0.
+                        let scale = entry.scale;
+                        let scaled_w = atlas_w * scale;
+                        let scaled_h = atlas_h * scale;
+                        let sbx = entry.bearing_x * scale;
+                        let sby = entry.bearing_y * scale;
+
+                        let glyph_x_px = (col as f32 * cw + sbx).round();
+                        let glyph_y_px = (row as f32 * ch + (baseline - sby)).round();
                         let gqx = px_to_clip_x(glyph_x_px);
                         let gqy = px_to_clip_y(glyph_y_px);
-                        let gqw = atlas_w * x_scale;
-                        let gqh = atlas_h * y_scale;
+                        let gqw = scaled_w * x_scale;
+                        let gqh = scaled_h * y_scale;
 
                         // ── UV coordinates ──────────────────────────────────
                         let u_min = (entry.atlas_rect.min.x as f32 + 0.5) / tex_size;
@@ -459,19 +481,20 @@ impl ZentermApp {
                             let cell_top = (row as f32 * ch).round();
                             let cell_bot = ((row as f32 + 1.0) * ch).round();
                             let gtop =
-                                (row as f32 * ch + (baseline - entry.bearing_y)).round();
-                            let gbot = gtop + atlas_h;
+                                (row as f32 * ch + (baseline - sby)).round();
+                            let gbot = gtop + scaled_h;
                             log::debug!(
                                 "CURSOR row={} col={} ch={} baseline={} cell=[{:.0},{:.0}] \
-                                 glyph=[{:.0},{:.0}] atlas_h={} use_glyph={}",
+                                 glyph=[{:.0},{:.0}] atlas_h={} scale={:.3} use_glyph={}",
                                 row, col, ch, baseline, cell_top, cell_bot,
-                                gtop, gbot, atlas_h,
+                                gtop, gbot, atlas_h, scale,
                                 atlas_w > 0.0 && atlas_h > 0.0,
                             );
 
                             // Deferred cursor block: rendered AFTER all
                             // other glyphs so it stays on top.
-                            // Use CELL position + CELL size (full cell).
+                            // Background quad is CELL-sized and fills the
+                            // whole cell with the cell's fg colour.
                             let bqy = 1.0 - cell_top * y_scale;
                             let bqx = ((col as f32 * cw).round()) * x_scale - 1.0;
                             let bqw = cw * x_scale;
@@ -488,16 +511,23 @@ impl ZentermApp {
                                 bg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
                                 flags: glyph_type::SOLID,
                             });
-                            // ── Glyph: inverse video, same pos+size ────
+                            // ── Glyph: inverse video, drawn at the GLYPH's ──────
+                            //   natural position and size (not the cell size).
+                            // Using cell-sized quads here stretches the small
+                            // glyph texture across the whole cell, which
+                            // produces a chunky/pixelated "magnified" S, the
+                            // bug visible in the block-cursor screenshot.
+                            // The alacritty / wezterm cursor paths reuse
+                            // the glyph's natural quad for the same reason.
                             cursor_bg_instances.push(CellInstance {
-                                clip_pos: [bqx, bqy],
+                                clip_pos: [gqx, gqy],
                                 uv_min: [u_min, v_min],
                                 uv_max: [u_max, v_max],
-                                clip_cell_size: [bqw, bqh],
-                                glyph_size: [atlas_w, atlas_h],
+                                clip_cell_size: [gqw, gqh],
+                                glyph_size: [scaled_w, scaled_h],
                                 glyph_offset: [
-                                    entry.bearing_x,
-                                    baseline - entry.bearing_y,
+                                    sbx,
+                                    baseline - sby,
                                 ],
                                 fg_color: [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0],
                                 bg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
@@ -510,10 +540,10 @@ impl ZentermApp {
                                 uv_min: [u_min, v_min],
                                 uv_max: [u_max, v_max],
                                 clip_cell_size: [gqw, gqh],
-                                glyph_size: [atlas_w, atlas_h],
+                                glyph_size: [scaled_w, scaled_h],
                                 glyph_offset: [
-                                    entry.bearing_x,
-                                    baseline - entry.bearing_y,
+                                    sbx,
+                                    baseline - sby,
                                 ],
                                 fg_color: [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0],
                                 bg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
@@ -527,10 +557,10 @@ impl ZentermApp {
                             uv_min: [u_min, v_min],
                             uv_max: [u_max, v_max],
                             clip_cell_size: [gqw, gqh],
-                            glyph_size: [atlas_w, atlas_h],
+                            glyph_size: [scaled_w, scaled_h],
                             glyph_offset: [
-                                entry.bearing_x,
-                                baseline - entry.bearing_y,
+                                sbx,
+                                baseline - sby,
                             ],
                             fg_color: [glyph_fg.r(), glyph_fg.g(), glyph_fg.b(), 1.0],
                             bg_color: [sel_bg.r(), sel_bg.g(), sel_bg.b(), 1.0],
@@ -542,10 +572,10 @@ impl ZentermApp {
                                 uv_min: [u_min, v_min],
                                 uv_max: [u_max, v_max],
                                 clip_cell_size: [gqw, gqh],
-                                glyph_size: [atlas_w, atlas_h],
+                                glyph_size: [scaled_w, scaled_h],
                                 glyph_offset: [
-                                    entry.bearing_x,
-                                    baseline - entry.bearing_y,
+                                    sbx,
+                                    baseline - sby,
                                 ],
                                 fg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
                                 bg_color: [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0],
