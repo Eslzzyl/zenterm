@@ -287,13 +287,18 @@ impl ZentermApp {
     /// Pump pending PTY bytes into the terminal state machine and write
     /// any terminal-query response bytes back to the PTY.
     ///
-    /// When the shell exits (PTY EOF) this sets `self.pty_exited = true`;
-    /// the next frame will close the application via [`update()`].
+    /// Also polls [`PtySession::try_wait()`] to detect shell exit on
+    /// platforms where the PTY reader does not automatically receive EOF
+    /// when the child process terminates (notably **Windows ConPTY**).
+    ///
+    /// When the shell exits this sets `self.pty_exited = true`; the next
+    /// frame will close the application via [`update()`].
     fn pump_pty(&mut self) {
         if self.pty_exited {
             return;
         }
 
+        // 1. Drain available PTY bytes.
         let mut total = 0usize;
         while let Some(result) = self.pty.try_read() {
             match result {
@@ -315,6 +320,7 @@ impl ZentermApp {
                 Err(e) => {
                     log::info!("PTY session ended ({e}), exiting");
                     self.pty_exited = true;
+                    self.pty.close();
                     break;
                 }
             }
@@ -322,6 +328,21 @@ impl ZentermApp {
         if total > 0 {
             log::debug!("pump_pty: read {} bytes from PTY", total);
             self.terminal_dirty = true;
+        }
+
+        // 2. Check if the child process has exited.
+        //
+        //    On Unix PTY this is redundant (the reader thread above gets
+        //    EOF and already signalled exit).  On Windows ConPTY the
+        //    output pipe is NOT closed when the child exits, so the
+        //    reader thread blocks forever — we must poll the child
+        //    process directly.
+        if !self.pty_exited {
+            if let Some(status) = self.pty.try_wait() {
+                log::info!("shell exited with status: {status:?}, closing");
+                self.pty.close();
+                self.pty_exited = true;
+            }
         }
     }
 
