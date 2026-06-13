@@ -20,6 +20,7 @@ use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::CursorShape;
 
 use zenterm_core::{Rgba, SubpixelLayout, TermSize};
+use zenterm_core::theme::{Theme, ThemePreference, THEME_DARK};
 use zenterm_glyph::{GlyphAtlas, GlyphContentType};
 use zenterm_input::InputMapper;
 use zenterm_pty::PtySession;
@@ -28,6 +29,35 @@ use zenterm_render::glyph_type;
 use zenterm_render::CallbackHandle;
 use zenterm_render::CellInstance;
 use zenterm_term::Terminal;
+use zenterm_term::ColorScheme;
+
+// ── Colour helpers ──────────────────────────────────────────────────────
+
+/// Convert a [`Theme`] background colour to `egui::Color32`.
+///
+/// The theme stores colours as premultiplied `Rgba` in linear space;
+/// egui expects sRGB `Color32`.  We round-trip through 8-bit sRGB, which
+/// is close enough for a terminal background.
+fn theme_bg_to_color32(theme: &Theme) -> egui::Color32 {
+    let b = theme.background;
+    egui::Color32::from_rgba_premultiplied(
+        (b.r() * 255.0).round().clamp(0.0, 255.0) as u8,
+        (b.g() * 255.0).round().clamp(0.0, 255.0) as u8,
+        (b.b() * 255.0).round().clamp(0.0, 255.0) as u8,
+        (b.a() * 255.0).round().clamp(0.0, 255.0) as u8,
+    )
+}
+
+/// Convert any [`Rgba`] to `egui::Color32`.
+#[allow(dead_code)]
+fn rgba_to_color32(c: Rgba) -> egui::Color32 {
+    egui::Color32::from_rgba_premultiplied(
+        (c.r() * 255.0).round().clamp(0.0, 255.0) as u8,
+        (c.g() * 255.0).round().clamp(0.0, 255.0) as u8,
+        (c.b() * 255.0).round().clamp(0.0, 255.0) as u8,
+        (c.a() * 255.0).round().clamp(0.0, 255.0) as u8,
+    )
+}
 
 /// The top-level application state.
 pub struct ZentermApp {
@@ -72,11 +102,21 @@ pub struct ZentermApp {
     /// `main.rs`, which causes eframe to configure the wgpu surface
     /// with `CompositeAlphaMode::PreMultiplied`.
     ///
-    /// The default is `Color32::BLACK` for backward compatibility.
-    /// To get a transparent terminal, set this to `Color32::TRANSPARENT`.
-    /// For a light theme (matching the tidev TUI on a light desktop),
-    /// set it to `Color32::from_rgb(255, 255, 255)` or similar.
+    /// Derived from the active [`Theme`] each frame.
     pub default_bg: egui::Color32,
+
+    /// The active terminal colour scheme.
+    ///
+    /// Set during construction and updated when the system theme changes
+    /// or the user explicitly switches themes.
+    pub theme: &'static Theme,
+
+    /// The user's theme preference (Dark / Light / System).
+    pub theme_preference: ThemePreference,
+
+    /// Cached dark-mode flag from the previous frame so we can detect
+    /// system-theme transitions without re-applying on every frame.
+    last_system_dark: bool,
 }
 
 impl ZentermApp {
@@ -166,11 +206,54 @@ impl ZentermApp {
             terminal_dirty: true,
             frame_count: 0,
             blink_interval: 30,
-            // Default to opaque black for backward compatibility.  Users
-            // who want a light theme or a transparent terminal can
-            // override this after construction (or we can wire it to a
-            // config file later).
-            default_bg: egui::Color32::BLACK,
+            theme: &THEME_DARK,
+            theme_preference: ThemePreference::System,
+            last_system_dark: true,
+            default_bg: theme_bg_to_color32(&THEME_DARK),
+        }
+    }
+
+    /// Synchronise the active theme with the user's preference and the
+    /// OS system theme.
+    ///
+    /// Call this once per frame from [`Self::update()`].  If the resolved
+    /// theme has changed, the terminal's colour scheme is rebuilt and the
+    /// entire grid is marked dirty for re-rendering.
+    fn sync_theme(&mut self, egui_ctx: &egui::Context) {
+        // Determine whether the OS is currently in dark mode.
+        // egui 0.34's `RawInput::system_theme` is populated by eframe
+        // via winit's `ThemeChanged` event on all platforms.
+        let system_dark = egui_ctx.input(|i| {
+            match i.raw.system_theme {
+                Some(egui::Theme::Dark) => true,
+                Some(egui::Theme::Light) => false,
+                None => true, // fallback → dark
+            }
+        });
+
+        let new_theme = Theme::resolve(self.theme_preference, system_dark);
+
+        // Detect transitions.
+        let changed = !std::ptr::eq(new_theme, self.theme)
+            || system_dark != self.last_system_dark;
+
+        // Always update the cached flag so we can detect future changes.
+        self.last_system_dark = system_dark;
+
+        if changed {
+            log::info!(
+                "theme: {} (pref={:?}, system_dark={})",
+                new_theme.name,
+                self.theme_preference,
+                system_dark,
+            );
+            self.theme = new_theme;
+            self.default_bg = theme_bg_to_color32(new_theme);
+
+            // Push the new colour scheme into the terminal state machine so
+            // that future `visible_cells()` calls resolve colours correctly.
+            let scheme = ColorScheme::from_theme(new_theme);
+            self.terminal.set_scheme(scheme);
         }
     }
 
@@ -844,6 +927,9 @@ impl eframe::App for ZentermApp {
     ///
     /// This is called before [`Self::ui()`] each frame.
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // 0. Synchronise theme with system / user preference.
+        self.sync_theme(ctx);
+
         // 1. Read pending PTY bytes and feed the terminal parser.
         self.pump_pty();
 

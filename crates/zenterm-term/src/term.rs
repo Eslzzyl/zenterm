@@ -23,6 +23,7 @@ use zenterm_core::color::Rgba;
 use zenterm_core::damage::DamageSet;
 use zenterm_core::position::TermPos;
 use zenterm_core::size::TermSize;
+use zenterm_core::theme::Theme;
 
 // ── Newtype wrapper to implement `Dimensions` for `TermSize` ─────────
 
@@ -48,7 +49,7 @@ impl Dimensions for TermDimensions {
 #[derive(Clone)]
 pub struct ColorScheme {
     pub colors: Colors,
-    /// Selection background colour.  Defaults to a blue-ish tint.
+    /// Selection background colour.
     pub selection_bg: Rgba,
     /// Selection foreground colour.  `None` means keep the cell's fg.
     pub selection_fg: Option<Rgba>,
@@ -62,11 +63,54 @@ impl fmt::Debug for ColorScheme {
 
 impl Default for ColorScheme {
     fn default() -> Self {
-        Self {
-            colors: Colors::default(),
-            selection_bg: Rgba::from_u8(60, 100, 180, 255),
-            selection_fg: None,
+        Self::from_theme(&zenterm_core::theme::THEME_DARK)
+    }
+}
+
+impl ColorScheme {
+    /// Build a colour scheme from a [`Theme`].
+    ///
+    /// Pre-populates the full `Colors` array so that alacritty's named-colour
+    /// resolution has values for every standard slot, avoiding fallback to
+    /// `named_color_default_rgb`.
+    pub fn from_theme(theme: &Theme) -> Self {
+        let mut colors = Colors::default();
+
+        // ANSI normal colours (NamedColor::Black .. NamedColor::White = 0..7).
+        for (i, c) in theme.ansi_normal.iter().enumerate() {
+            colors[i] = Some(rgba_to_rgb(c));
         }
+        // ANSI bright colours (NamedColor::BrightBlack .. NamedColor::BrightWhite = 8..15).
+        for (i, c) in theme.ansi_bright.iter().enumerate() {
+            colors[8 + i] = Some(rgba_to_rgb(c));
+        }
+        // Foreground / Background / Cursor.
+        colors[NamedColor::Foreground as usize] = Some(rgba_to_rgb(&theme.foreground));
+        colors[NamedColor::Background as usize] = Some(rgba_to_rgb(&theme.background));
+        colors[NamedColor::Cursor as usize] = Some(rgba_to_rgb(&theme.cursor));
+        // Dim / Bright foreground.
+        colors[NamedColor::DimForeground as usize] = Some(rgba_to_rgb(&theme.dim_foreground));
+        colors[NamedColor::BrightForeground as usize] = Some(rgba_to_rgb(&theme.bright_foreground));
+
+        Self {
+            colors,
+            selection_bg: theme.selection_bg,
+            selection_fg: Some(theme.selection_fg),
+        }
+    }
+
+    /// Rebuild this scheme from a new theme (replaces *all* colours).
+    pub fn set_theme(&mut self, theme: &Theme) {
+        *self = Self::from_theme(theme);
+    }
+}
+
+/// Convert our internal `Rgba` to alacritty's `Rgb`.
+fn rgba_to_rgb(c: &Rgba) -> Rgb {
+    Rgb {
+        r: (c.r() * 255.0).round() as u8,
+        g: (c.g() * 255.0).round() as u8,
+        b: (c.b() * 255.0).round() as u8,
     }
 }
 
@@ -238,6 +282,19 @@ impl Terminal {
     /// Get terminal mode flags (needed by the input mapper).
     pub fn mode(&self) -> TermMode {
         *self.term.mode()
+    }
+
+    /// Replace the colour scheme (e.g. when the user switches themes).
+    ///
+    /// Marks the entire grid as dirty so cells are re-resolved next frame.
+    pub fn set_scheme(&mut self, scheme: ColorScheme) {
+        self.scheme = scheme;
+        self.damage.mark_all();
+    }
+
+    /// Get the current colour scheme (for inspection).
+    pub fn scheme(&self) -> &ColorScheme {
+        &self.scheme
     }
 
     // ── Selection support ──────────────────────────────────────────────────

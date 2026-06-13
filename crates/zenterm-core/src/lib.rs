@@ -10,6 +10,7 @@ pub mod damage;
 pub mod error;
 pub mod position;
 pub mod size;
+pub mod theme;
 
 pub use cell::Cell;
 pub use color::Rgba;
@@ -17,6 +18,7 @@ pub use damage::DamageSet;
 pub use error::Error;
 pub use position::TermPos;
 pub use size::TermSize;
+pub use theme::{Theme, ThemePreference, THEME_DARK, THEME_LIGHT};
 
 /// Convenience alias for [`Error`] results.
 pub type Result<T> = std::result::Result<T, Error>;

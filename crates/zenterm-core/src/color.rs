@@ -25,12 +25,12 @@ impl Rgba {
     }
 
     /// Create from 8-bit integer components (0-255).
-    pub fn from_u8(r: u8, g: u8, b: u8, a: u8) -> Self {
+    pub const fn from_u8(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self([
-            r as f32 / 255.0,
-            g as f32 / 255.0,
-            b as f32 / 255.0,
-            a as f32 / 255.0,
+            (r as f32) * (1.0 / 255.0),
+            (g as f32) * (1.0 / 255.0),
+            (b as f32) * (1.0 / 255.0),
+            (a as f32) * (1.0 / 255.0),
         ])
     }
 
