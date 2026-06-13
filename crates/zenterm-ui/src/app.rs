@@ -135,6 +135,11 @@ pub struct ZentermApp {
     /// Cached dark-mode flag from the previous frame so we can detect
     /// system-theme transitions without re-applying on every frame.
     last_system_dark: bool,
+
+    /// Set to `true` once the PTY reader detects shell exit or the terminal
+    /// emits an `Exit`/`ChildExit` event.  When `true`, [`pump_pty()`] is
+    /// skipped to avoid logging "PTY reader disconnected" every frame.
+    pty_exited: bool,
 }
 
 impl ZentermApp {
@@ -231,6 +236,7 @@ impl ZentermApp {
             theme_preference: ThemePreference::System,
             last_system_dark: true,
             default_bg: theme_bg_to_color32(&THEME_DARK),
+            pty_exited: false,
         }
     }
 
@@ -278,35 +284,37 @@ impl ZentermApp {
         }
     }
 
-    /// Pump pending PTY bytes into the terminal state machine.
+    /// Pump pending PTY bytes into the terminal state machine and write
+    /// any terminal-query response bytes back to the PTY.
     ///
-    /// Also handles VT sequences that ConPTY/WinPTY sends during
-    /// initialisation — most importantly **DSR** (`\x1b[6n`, "Cursor
-    /// Position Report") which must be answered or the PTY may never
-    /// deliver the shell prompt.
+    /// When the shell exits (PTY EOF) this sets `self.pty_exited = true`;
+    /// the next frame will close the application via [`update()`].
     fn pump_pty(&mut self) {
+        if self.pty_exited {
+            return;
+        }
+
         let mut total = 0usize;
         while let Some(result) = self.pty.try_read() {
             match result {
                 Ok(data) => {
                     total += data.len();
 
-                    // ── Respond to Device Status Report ──────────────
-                    // Windows ConPTY sends \x1b[6n on startup and expects
-                    // \x1b[<row>;<col>R back.  Without this response the
-                    // shell may never output its prompt.
-                    if data.windows(4).any(|w| w == b"\x1b[6n") {
-                        if let Err(e) = self.pty.write(b"\x1b[1;1R") {
-                            log::error!("failed to write DSR response: {e}");
-                        } else {
-                            log::debug!("pump_pty: responded to DSR query");
+                    // Feed the terminal state machine — this also collects
+                    // response bytes for any terminal queries (DA, DSR,
+                    // DECRPM, OSC colour queries, …) that were embedded
+                    // in the PTY output.
+                    let replies = self.terminal.feed(&data);
+                    if !replies.is_empty() {
+                        log::debug!("pump_pty: writing {} reply bytes: {:02x?}", replies.len(), &replies);
+                        if let Err(e) = self.pty.write(&replies) {
+                            log::error!("failed to write pty reply: {e}");
                         }
                     }
-
-                    self.terminal.feed(&data);
                 }
                 Err(e) => {
-                    log::error!("PTY error: {e}");
+                    log::info!("PTY session ended ({e}), exiting");
+                    self.pty_exited = true;
                     break;
                 }
             }
@@ -1017,6 +1025,68 @@ impl eframe::App for ZentermApp {
 
         // 1. Read pending PTY bytes and feed the terminal parser.
         self.pump_pty();
+
+        // 1.5. Consume terminal side-effects produced during feed().
+        //
+        //      These are terminal-escape-sequence-driven requests that
+        //      cannot be satisfied by merely writing bytes back to the PTY.
+        //
+        //      — Window title changes (OSC 0 / OSC 2)
+        //      — Bell (BEL)
+        //      — Exit / child-exit (shell termination → close app)
+        //      — Clipboard store (OSC 52)
+        //      — Clipboard load (OSC 52)
+        {
+            // Window title.
+            if let Some(title) = self.terminal.take_title() {
+                log::debug!("update: setting window title to {:?}", title);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+            }
+
+            // Bell — log for now; a visual / audio bell can be added later.
+            if self.terminal.take_bell() {
+                log::debug!("update: bell");
+            }
+
+            // Exit / child-exit → close the application.
+            if self.terminal.take_exit() || self.terminal.take_child_exit().is_some() {
+                log::info!("update: terminal requested exit, closing");
+                self.pty_exited = true;
+            }
+
+            // Clipboard store (application wants us to save text).
+            if let Some(text) = self.terminal.take_clipboard_store() {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    if let Err(e) = cb.set_text(text) {
+                        log::error!("failed to store clipboard text: {e}");
+                    }
+                }
+            }
+
+            // Clipboard load (application wants us to read clipboard and
+            // send the contents back to it as an escape sequence).
+            if let Some(formatter) = self.terminal.take_clipboard_load() {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    match cb.get_text() {
+                        Ok(text) => {
+                            let seq = formatter(&text);
+                            if let Err(e) = self.pty.write(seq.as_bytes()) {
+                                log::error!("failed to write clipboard-load response: {e}");
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("failed to read clipboard for terminal: {e}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // 1.6. Close the application if the PTY/shell has exited.
+        if self.pty_exited {
+            log::info!("update: shell has exited, closing window");
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
 
         // 2. Handle keyboard input.
         //

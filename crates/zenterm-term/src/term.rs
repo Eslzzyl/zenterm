@@ -6,16 +6,26 @@
 //! The `vte::ansi::Processor` converts raw byte streams into semantic
 //! `Handler` calls on the `Term`, so we do **not** need to implement
 //! `vte::Perform` ourselves.
+//!
+//! # Event handling
+//!
+//! A custom [`Listener`] replaces the default [`VoidListener`] so that
+//! terminal queries (DA, DSR, DECRPM, OSC colour queries, etc.) are
+//! properly answered.  Events from the `Handler` are collected via an
+//! `mpsc` channel during [`Terminal::feed()`]; response bytes are returned
+//! to the caller, and other side effects (title changes, clipboard ops,
+//! bell, exit) are stored for the app to consume via `take_*` methods.
 
 use std::fmt;
+use std::sync::{mpsc, Arc};
 
-use alacritty_terminal::event::VoidListener;
+use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Direction, Line, Point};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
-use alacritty_terminal::term::{Config as TermConfig, Term, TermDamage, TermMode};
+use alacritty_terminal::term::{ClipboardType, Config as TermConfig, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorStyle, NamedColor, Processor, Rgb};
 
 use zenterm_core::cell::Cell;
@@ -40,6 +50,26 @@ impl Dimensions for TermDimensions {
 
     fn columns(&self) -> usize {
         self.0.cols as usize
+    }
+}
+
+// ── Event listener ──────────────────────────────────────────────────────
+
+/// Collects [`Event`]s from the alacritty `Handler` via an `mpsc` channel.
+///
+/// The channel receiver lives in [`Terminal`] and is drained during
+/// [`Terminal::feed()`] so that response bytes can be written back to the
+/// PTY and other side-effects (title changes, clipboard operations, bell,
+/// exit) can be handled by the application.
+struct Listener {
+    tx: mpsc::Sender<Event>,
+}
+
+impl EventListener for Listener {
+    fn send_event(&self, event: Event) {
+        if self.tx.send(event).is_err() {
+            log::warn!("Terminal event channel closed, dropping event");
+        }
     }
 }
 
@@ -156,11 +186,20 @@ impl<'a> GridView<'a> {
 /// Owns `alacritty_terminal::Term` for grid state and `vte::ansi::Processor`
 /// for byte processing.
 pub struct Terminal {
-    term: Term<VoidListener>,
+    term: Term<Listener>,
+    rx: mpsc::Receiver<Event>,
     processor: Processor,
     damage: DamageSet,
     scheme: ColorScheme,
     grid_cache: Vec<Vec<Cell>>,
+
+    // ── Pending side-effects (consumed by the app after each feed()) ────
+    pending_title: Option<String>,
+    pending_bell: bool,
+    pending_exit: bool,
+    pending_child_exit: Option<std::process::ExitStatus>,
+    pending_clipboard_store: Option<String>,
+    pending_clipboard_load: Option<Arc<dyn Fn(&str) -> String + Sync + Send + 'static>>,
 }
 
 impl Terminal {
@@ -168,17 +207,30 @@ impl Terminal {
     pub fn new(size: TermSize, scheme: ColorScheme) -> Self {
         let config = TermConfig::default();
         let dim = TermDimensions(size);
-        let term = Term::new(config, &dim, VoidListener);
+
+        // Create the event channel and listener — this replaces the previous
+        // `VoidListener` so that terminal queries (DA, DSR, DECRPM, OSC
+        // colour queries, …) are properly answered.
+        let (tx, rx) = mpsc::channel();
+        let listener = Listener { tx };
+        let term = Term::new(config, &dim, listener);
 
         let cols = dim.columns();
         let rows = dim.screen_lines();
 
         Self {
             term,
+            rx,
             processor: Processor::new(),
             damage: DamageSet::new(rows),
             scheme,
             grid_cache: vec![vec![Cell::blank(); cols]; rows],
+            pending_title: None,
+            pending_bell: false,
+            pending_exit: false,
+            pending_child_exit: None,
+            pending_clipboard_store: None,
+            pending_clipboard_load: None,
         }
     }
 
@@ -187,9 +239,15 @@ impl Terminal {
     /// The processor calls `Handler` methods on the inner `Term`, updating
     /// grid state.  Damage is propagated from `alacritty_terminal`'s
     /// internal tracking so only changed rows are re-resolved.
-    pub fn feed(&mut self, bytes: &[u8]) {
+    ///
+    /// Returns response bytes that the caller **must** write back to the PTY
+    /// (terminal query replies such as DA, DSR, DECRPM, OSC colour reports,
+    /// clipboard load, …).  Other side-effects (title changes, bell, exit,
+    /// clipboard store) are stored internally and can be retrieved via the
+    /// `take_*` methods after this call.
+    pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
         if bytes.is_empty() {
-            return;
+            return Vec::new();
         }
         log::debug!("Terminal::feed: {} bytes: {:02x?}", bytes.len(), bytes);
         self.processor.advance(&mut self.term, bytes);
@@ -206,6 +264,82 @@ impl Terminal {
             }
         }
         self.term.reset_damage();
+
+        // ── Drain the event channel ────────────────────────────────────
+        // The custom `Listener` (above) receives every `Event::PtyWrite`,
+        // `ColorRequest`, etc. that the `Handler` emits.  We process them
+        // here and return the collected response bytes.
+        let mut replies = Vec::new();
+        while let Ok(event) = self.rx.try_recv() {
+            match event {
+                Event::PtyWrite(text) => {
+                    log::debug!("Terminal::feed: PtyWrite({:?})", text);
+                    replies.extend_from_slice(text.as_bytes());
+                }
+                Event::ColorRequest(index, formatter) => {
+                    log::debug!("Terminal::feed: ColorRequest(index={})", index);
+                    let colors = self.term.colors();
+                    if let Some(rgb) = colors[index] {
+                        let response = formatter(rgb);
+                        replies.extend_from_slice(response.as_bytes());
+                    }
+                }
+                Event::TextAreaSizeRequest(formatter) => {
+                    log::debug!("Terminal::feed: TextAreaSizeRequest");
+                    let size = WindowSize {
+                        num_lines: self.term.screen_lines() as u16,
+                        num_cols: self.term.columns() as u16,
+                        cell_width: 0,
+                        cell_height: 0,
+                    };
+                    let response = formatter(size);
+                    replies.extend_from_slice(response.as_bytes());
+                }
+                Event::ClipboardStore(_ty, text) => {
+                    log::debug!(
+                        "Terminal::feed: ClipboardStore({}, {} bytes)",
+                        match _ty {
+                            ClipboardType::Clipboard => "clipboard",
+                            ClipboardType::Selection => "selection",
+                        },
+                        text.len(),
+                    );
+                    self.pending_clipboard_store = Some(text);
+                }
+                Event::ClipboardLoad(_ty, formatter) => {
+                    log::debug!("Terminal::feed: ClipboardLoad");
+                    self.pending_clipboard_load = Some(formatter);
+                }
+                Event::Title(title) => {
+                    log::debug!("Terminal::feed: Title({:?})", title);
+                    self.pending_title = Some(title);
+                }
+                Event::ResetTitle => {
+                    log::debug!("Terminal::feed: ResetTitle");
+                    self.pending_title = Some("Zenterm".to_string());
+                }
+                Event::Bell => {
+                    log::debug!("Terminal::feed: Bell");
+                    self.pending_bell = true;
+                }
+                Event::Exit => {
+                    log::debug!("Terminal::feed: Exit");
+                    self.pending_exit = true;
+                }
+                Event::ChildExit(status) => {
+                    log::debug!("Terminal::feed: ChildExit({:?})", status);
+                    self.pending_child_exit = Some(status);
+                }
+                Event::CursorBlinkingChange
+                | Event::MouseCursorDirty
+                | Event::Wakeup => {
+                    // These events are handled internally by the term or
+                    // are noise that we don't need to act on.
+                }
+            }
+        }
+
+        replies
     }
 
     /// Resize the terminal grid.
@@ -295,6 +429,54 @@ impl Terminal {
     /// Get the current colour scheme (for inspection).
     pub fn scheme(&self) -> &ColorScheme {
         &self.scheme
+    }
+
+    // ── Pending side-effect accessors ──────────────────────────────────
+    //
+    // These are populated during [`Self::feed()`] and should be queried by
+    // the application after each feed call so it can react to terminal
+    // requests that cannot be satisfied by merely writing bytes back to the
+    // PTY.
+
+    /// Take a pending window title change, if any.
+    pub fn take_title(&mut self) -> Option<String> {
+        self.pending_title.take()
+    }
+
+    /// Take a pending bell request.
+    pub fn take_bell(&mut self) -> bool {
+        let val = self.pending_bell;
+        self.pending_bell = false;
+        val
+    }
+
+    /// Take a pending exit request.
+    pub fn take_exit(&mut self) -> bool {
+        let val = self.pending_exit;
+        self.pending_exit = false;
+        val
+    }
+
+    /// Take a pending child-exit notification.
+    pub fn take_child_exit(&mut self) -> Option<std::process::ExitStatus> {
+        self.pending_child_exit.take()
+    }
+
+    /// Take text that the terminal wants stored in the system clipboard.
+    pub fn take_clipboard_store(&mut self) -> Option<String> {
+        self.pending_clipboard_store.take()
+    }
+
+    /// Take a clipboard-load request.
+    ///
+    /// The returned closure is a formatter: the application should read the
+    /// current system clipboard text and pass it to the closure.  The
+    /// closure returns the escape-sequence bytes that must be written back
+    /// to the PTY.
+    pub fn take_clipboard_load(
+        &mut self,
+    ) -> Option<Arc<dyn Fn(&str) -> String + Sync + Send + 'static>> {
+        self.pending_clipboard_load.take()
     }
 
     // ── Selection support ──────────────────────────────────────────────────
