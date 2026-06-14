@@ -1,13 +1,19 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/zenterm",
-    "crates/zenterm-core",
-    "crates/zenterm-pty",
-    "crates/zenterm-term",
-    "crates/zenterm-glyph",
-    "crates/zenterm-render",
-    "crates/zenterm-input",
-    "crates/zenterm-ui",
-    "crates/zenterm-config",
+  "crates/zenterm",
+  "crates/zenterm-core",
+  "crates/zenterm-pty",
+  "crates/zenterm-term",
+  "crates/zenterm-glyph",
+  "crates/zenterm-render",
+  "crates/zenterm-input",
+  "crates/zenterm-ui",
+  "crates/zenterm-config",
 ]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
