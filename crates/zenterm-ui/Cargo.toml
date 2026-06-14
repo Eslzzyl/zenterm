@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+zenterm-config = { path = "../zenterm-config" }
 zenterm-core = { path = "../zenterm-core" }
 zenterm-pty = { path = "../zenterm-pty" }
 zenterm-term = { path = "../zenterm-term" }

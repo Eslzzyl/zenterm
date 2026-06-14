@@ -5,6 +5,8 @@
 //! full ANSI 16-colour palette.  It is designed to be cheaply cloneable
 //! so each terminal tab can hold its own copy.
 
+use std::borrow::Cow;
+
 use crate::color::Rgba;
 
 // ── Helper ─────────────────────────────────────────────────────────────
@@ -37,7 +39,10 @@ pub enum ThemePreference {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
     /// Human-readable name (e.g. `"Dark"`, `"Light"`, `"Catppuccin Mocha"`).
-    pub name: &'static str,
+    ///
+    /// `Cow::Borrowed` for built-in themes, `Cow::Owned` for custom themes
+    /// constructed at runtime from the config file.
+    pub name: Cow<'static, str>,
 
     // ── Terminal basic colours ───────────────────────────────────────
     /// Default foreground colour.
@@ -78,15 +83,19 @@ pub struct Theme {
 impl Theme {
     /// Resolve a [`ThemePreference`] + system-dark-mode flag into a
     /// concrete theme.
-    pub fn resolve(pref: ThemePreference, system_dark: bool) -> &'static Theme {
+    ///
+    /// Returns an owned clone so the caller can further customise colours
+    /// (e.g. apply config-file overrides) without mutating the built-in
+    /// statics.
+    pub fn resolve(pref: ThemePreference, system_dark: bool) -> Theme {
         match pref {
-            ThemePreference::Dark => &THEME_DARK,
-            ThemePreference::Light => &THEME_LIGHT,
+            ThemePreference::Dark => THEME_DARK.clone(),
+            ThemePreference::Light => THEME_LIGHT.clone(),
             ThemePreference::System => {
                 if system_dark {
-                    &THEME_DARK
+                    THEME_DARK.clone()
                 } else {
-                    &THEME_LIGHT
+                    THEME_LIGHT.clone()
                 }
             }
         }
@@ -98,7 +107,7 @@ impl Theme {
 /// The default **dark** theme — a classic terminal look with black
 /// background and light-grey text.
 pub static THEME_DARK: Theme = Theme {
-    name: "Dark",
+    name: Cow::Borrowed("Dark"),
     foreground: srgb(220, 220, 220),
     background: srgb(0, 0, 0),
     cursor: srgb(220, 220, 220),
@@ -144,7 +153,7 @@ pub static THEME_DARK: Theme = Theme {
 /// "bright" variants are *saturated* (rather than light) so they remain
 /// legible instead of washing out.
 pub static THEME_LIGHT: Theme = Theme {
-    name: "Light",
+    name: Cow::Borrowed("Light"),
     foreground: srgb(30, 30, 30),
     background: srgb(255, 255, 255),
     cursor: srgb(30, 30, 30),
@@ -194,33 +203,33 @@ mod tests {
     #[test]
     fn dark_theme_has_black_background() {
         assert_eq!(THEME_DARK.background, Rgba::BLACK);
-        assert_eq!(THEME_DARK.name, "Dark");
+        assert_eq!(THEME_DARK.name.as_ref(), "Dark");
     }
 
     #[test]
     fn light_theme_has_white_background() {
         assert_eq!(THEME_LIGHT.background, Rgba::WHITE);
-        assert_eq!(THEME_LIGHT.name, "Light");
+        assert_eq!(THEME_LIGHT.name.as_ref(), "Light");
     }
 
     #[test]
     fn resolve_system_dark_returns_dark() {
         let t = Theme::resolve(ThemePreference::System, true);
-        assert_eq!(t.name, "Dark");
+        assert_eq!(t.name.as_ref(), "Dark");
     }
 
     #[test]
     fn resolve_system_light_returns_light() {
         let t = Theme::resolve(ThemePreference::System, false);
-        assert_eq!(t.name, "Light");
+        assert_eq!(t.name.as_ref(), "Light");
     }
 
     #[test]
     fn resolve_explicit_preference() {
         let t = Theme::resolve(ThemePreference::Dark, false);
-        assert_eq!(t.name, "Dark");
+        assert_eq!(t.name.as_ref(), "Dark");
 
         let t = Theme::resolve(ThemePreference::Light, true);
-        assert_eq!(t.name, "Light");
+        assert_eq!(t.name.as_ref(), "Light");
     }
 }

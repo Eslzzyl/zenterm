@@ -21,6 +21,7 @@ use alacritty_terminal::vte::ansi::CursorShape;
 
 use zenterm_core::{Rgba, SubpixelLayout, TermSize};
 use zenterm_core::theme::{Theme, ThemePreference, THEME_DARK};
+use zenterm_config::Config;
 use zenterm_glyph::{GlyphAtlas, GlyphContentType};
 use zenterm_input::InputMapper;
 use zenterm_pty::PtySession;
@@ -127,7 +128,7 @@ pub struct ZentermApp {
     ///
     /// Set during construction and updated when the system theme changes
     /// or the user explicitly switches themes.
-    pub theme: &'static Theme,
+    pub theme: Theme,
 
     /// The user's theme preference (Dark / Light / System).
     pub theme_preference: ThemePreference,
@@ -140,6 +141,13 @@ pub struct ZentermApp {
     /// emits an `Exit`/`ChildExit` event.  When `true`, [`pump_pty()`] is
     /// skipped to avoid logging "PTY reader disconnected" every frame.
     pty_exited: bool,
+
+    /// Loaded configuration (TOML).
+    config: Config,
+
+    /// Error message to display as an overlay, typically from a failed
+    /// config reload.  `None` means no error.
+    error_toast: Option<String>,
 }
 
 impl ZentermApp {
@@ -152,16 +160,20 @@ impl ZentermApp {
         queue: wgpu::Queue,
         target_format: wgpu::TextureFormat,
         pixels_per_point: f32,
+        config: Config,
     ) -> Self {
-        let size = TermSize::new(24, 80);
+        let size = TermSize::new(
+            config.window.dimensions.lines,
+            config.window.dimensions.columns,
+        );
 
         let pty = PtySession::spawn(size).expect("failed to spawn PTY");
         let terminal = Terminal::new(size, Default::default());
 
-        // Font size in physical pixels: logical points × DPI scale factor.
-        // At 200% scaling, 18pt → 36 physical pixels.
-        let font_size = 18.0 * pixels_per_point;
-        let font_family = GlyphAtlas::default_font_family();
+        // Font size in physical pixels: config.font.size (logical units at
+        // 1× DPI) × DPI scale factor.  At 200% scaling, 18 → 36 physical px.
+        let font_size = config.font.size * pixels_per_point;
+        let font_family = std::borrow::Cow::Owned(config.font.normal.family.clone());
         let mut glyph_atlas = GlyphAtlas::new(
             font_size,
             font_family,
@@ -231,12 +243,18 @@ impl ZentermApp {
             terminal_dirty: true,
             last_resize_at: None,
             frame_count: 0,
-            blink_interval: 30,
-            theme: &THEME_DARK,
-            theme_preference: ThemePreference::System,
+            blink_interval: config.cursor.blink_interval,
+            theme: THEME_DARK.clone(),
+            theme_preference: match config.colors.theme {
+                zenterm_config::colors::ThemePreference::Dark => ThemePreference::Dark,
+                zenterm_config::colors::ThemePreference::Light => ThemePreference::Light,
+                zenterm_config::colors::ThemePreference::System => ThemePreference::System,
+            },
             last_system_dark: true,
             default_bg: theme_bg_to_color32(&THEME_DARK),
             pty_exited: false,
+            config,
+            error_toast: None,
         }
     }
 
@@ -258,11 +276,10 @@ impl ZentermApp {
             }
         });
 
-        let new_theme = Theme::resolve(self.theme_preference, system_dark);
+        let new_theme = self.config.colors.to_theme(system_dark);
 
         // Detect transitions.
-        let changed = !std::ptr::eq(new_theme, self.theme)
-            || system_dark != self.last_system_dark;
+        let changed = new_theme != self.theme || system_dark != self.last_system_dark;
 
         // Always update the cached flag so we can detect future changes.
         self.last_system_dark = system_dark;
@@ -274,12 +291,12 @@ impl ZentermApp {
                 self.theme_preference,
                 system_dark,
             );
-            self.theme = new_theme;
-            self.default_bg = theme_bg_to_color32(new_theme);
+            self.theme = new_theme.clone();
+            self.default_bg = theme_bg_to_color32(&new_theme);
 
             // Push the new colour scheme into the terminal state machine so
             // that future `visible_cells()` calls resolve colours correctly.
-            let scheme = ColorScheme::from_theme(new_theme);
+            let scheme = ColorScheme::from_theme(&new_theme);
             self.terminal.set_scheme(scheme);
         }
     }
@@ -954,8 +971,8 @@ impl ZentermApp {
     /// factor.  Called when the window moves between monitors with different
     /// DPI settings.
     fn reinit_for_dpi(&mut self, new_ppp: f32) {
-        let new_font_size = 18.0 * new_ppp;
-        let font_family = GlyphAtlas::default_font_family();
+        let new_font_size = self.config.font.size * new_ppp;
+        let font_family = std::borrow::Cow::Owned(self.config.font.normal.family.clone());
 
         // Rebuild the glyph atlas (clears all cached glyphs so they are
         // re-rasterised at the new font size on the next `ensure_glyph`).
@@ -1003,6 +1020,100 @@ impl ZentermApp {
             "DPI reinit: new_ppp={new_ppp:.2} font_size={new_font_size:.1} \
              cw={cw:.1} ch={ch:.1}",
         );
+    }
+
+    // ── Config hot-reload ─────────────────────────────────────────────
+
+    /// Re-read the config file from disk and apply changes that can be
+    /// applied at runtime.
+    ///
+    /// Settings that require a restart (window dimensions, shell, …) are
+    /// silently deferred — the user will see them after the next launch.
+    fn reload_config(&mut self, egui_ctx: &egui::Context) {
+        match Config::reload() {
+            Ok(Some(cfg)) => {
+                log::info!("config reloaded, applying changes");
+                let old_config = std::mem::replace(&mut self.config, cfg);
+
+                // ── Theme changes ─────────────────────────────────────
+                // Rebuild colour scheme from the new config + current
+                // system theme state.
+                let system_dark = egui_ctx.input(|i| {
+                    match i.raw.system_theme {
+                        Some(egui::Theme::Dark) => true,
+                        Some(egui::Theme::Light) => false,
+                        None => true,
+                    }
+                });
+                let new_theme = self.config.colors.to_theme(system_dark);
+                self.theme = new_theme.clone();
+                self.default_bg = theme_bg_to_color32(&new_theme);
+                let scheme = ColorScheme::from_theme(&new_theme);
+                self.terminal.set_scheme(scheme);
+
+                // ── Cursor / blink ────────────────────────────────────
+                self.blink_interval = self.config.cursor.blink_interval;
+
+                // ── Font size ─────────────────────────────────────────
+                // Rebuild glyph atlas only when the *logical* size changed
+                // (the physical size depends on DPI which is handled by
+                // `reinit_for_dpi`).
+                let font_size_changed =
+                    (self.config.font.size - old_config.font.size).abs() > f32::EPSILON;
+                if font_size_changed {
+                    let new_font_size = self.config.font.size * self.pixels_per_point;
+                    let font_family =
+                        std::borrow::Cow::Owned(self.config.font.normal.family.clone());
+                    self.glyph_atlas = GlyphAtlas::new(
+                        new_font_size,
+                        font_family,
+                        self.pixels_per_point,
+                        SubpixelLayout::detect(),
+                    );
+                    let (cw, ch) = self
+                        .glyph_atlas
+                        .cell_size()
+                        .expect("cell_size after font-size reload");
+                    self.cell_width = cw;
+                    self.cell_height = ch;
+                    // Re-seed ASCII.
+                    for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,!?;:-=+*/\\|()[]{}<>\"'`~@#$%^&_"
+                        .chars()
+                    {
+                        let _ = self.glyph_atlas.ensure_glyph(c);
+                    }
+                    // Push atlas to GPU.
+                    let tex_size = self.glyph_atlas.texture_size;
+                    {
+                        let mut update = self.shared.atlas_update.lock().unwrap();
+                        *update = Some(AtlasUpdate {
+                            size: tex_size,
+                            data: self.glyph_atlas.texture_data.clone(),
+                            resized: true,
+                        });
+                    }
+                    self.shared.atlas_dirty.store(true, Ordering::Release);
+                    self.last_atlas_size = tex_size;
+                }
+
+                self.terminal_dirty = true;
+                self.error_toast = None;
+
+                log::info!("config reload complete");
+            }
+            Ok(None) => {
+                // File removed — keep current config, just ack.
+                log::info!("config file removed, keeping current settings");
+                self.error_toast = None;
+            }
+            Err(e) => {
+                log::error!("config reload failed: {e}");
+                self.error_toast = Some(format!(
+                    "Config error — keeping old settings:\n{}",
+                    e
+                ));
+            }
+        }
     }
 }
 
@@ -1101,13 +1212,14 @@ impl eframe::App for ZentermApp {
 
         // 2. Handle keyboard input.
         //
-        //    Some key combinations (Ctrl+Shift+C, Ctrl+Shift+V) are
-        //    terminal-emulator commands rather than shell input — check
+        //    Some key combinations (Ctrl+Shift+C, Ctrl+Shift+V, Ctrl+Shift+R)
+        //    are terminal-emulator commands rather than shell input — check
         //    for those first by iterating events outside the ctx.input
         //    borrow so we can call ctx.copy_text() / clipboard_text().
-        let (copy_requested, paste_requested) = ctx.input(|input| {
+        let (copy_requested, paste_requested, reload_requested) = ctx.input(|input| {
             let mut copy = false;
             let mut paste = false;
+            let mut reload = false;
             for event in &input.events {
                 match event {
                     egui::Event::Key {
@@ -1126,11 +1238,23 @@ impl eframe::App for ZentermApp {
                     } if modifiers.ctrl && modifiers.shift && !modifiers.alt => {
                         paste = true;
                     }
+                    egui::Event::Key {
+                        key: egui::Key::R,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if modifiers.ctrl && modifiers.shift && !modifiers.alt => {
+                        reload = true;
+                    }
                     _ => {}
                 }
             }
-            (copy, paste)
+            (copy, paste, reload)
         });
+
+        if reload_requested {
+            self.reload_config(ctx);
+        }
 
         if copy_requested && self.terminal.has_selection() {
             if let Some(text) = self.terminal.selected_text() {
@@ -1180,6 +1304,26 @@ impl eframe::App for ZentermApp {
     /// Builds cell instance data from the terminal grid and registers the
     /// wgpu-based paint callback inside a `CentralPanel`.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // ── Config error toast ────────────────────────────────────────
+        // Show a non-blocking error banner at the top when a config reload
+        // failed.  The user can dismiss it with the "×" button.
+        if let Some(msg) = &self.error_toast.clone() {
+            let resp = egui::Panel::top("config_error")
+                .resizable(false)
+                .show_inside(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(egui::Color32::RED, "⚠ Config error");
+                        ui.label(msg);
+                        if ui.button("×").clicked() {
+                            self.error_toast = None;
+                        }
+                    });
+                });
+            // Prevent the error panel from consuming space if dismissed
+            // later — TopBottomPanel already handles this via the `show`
+            // guard above.
+            let _ = resp;
+        }
         // Use `Frame::NONE` for the CentralPanel so egui's default panel
         // fill (which is opaque) doesn't cover the transparent clear and
         // the OS desktop.  Our own `rect_filled` below provides the

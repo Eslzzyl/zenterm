@@ -9,4 +9,5 @@ members = [
     "crates/zenterm-render",
     "crates/zenterm-input",
     "crates/zenterm-ui",
+    "crates/zenterm-config",
 ]
