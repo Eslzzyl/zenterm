@@ -18,3 +18,7 @@
 	path = cosmic-text
 	url = https://github.com/pop-os/cosmic-text.git
 	shallow = true
+[submodule "swash"]
+	path = swash
+	url = https://github.com/dfrg/swash.git
+	shallow = true
