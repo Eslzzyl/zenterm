@@ -432,10 +432,8 @@ impl ZentermApp {
         // and wezterm's `cell_height + descender - bearing_y` (with descender
         // negative).  See `GlyphAtlas::cell_baseline_offset`.
         let baseline = self.glyph_atlas.cell_baseline_offset();
-
         let mut bg_instances = Vec::with_capacity(rows * cols);
         let mut glyph_instances = Vec::with_capacity(rows * cols);
-        let mut cursor_bg_instances = Vec::with_capacity(rows * cols);
         let mut deco_instances = Vec::with_capacity(rows * cols);
         let mut blank_count = 0u32;
         let mut glyph_fail = 0u32;
@@ -459,6 +457,14 @@ impl ZentermApp {
 
                 let ch_char = cell.c;
                 let is_blank = ch_char == ' ' && cell.bg == Rgba::BLACK && !is_cursor;
+
+                // Block cursor: swap fg/bg so the cell renders with
+                // inverted colours — exactly as Alacritty does.
+                let (draw_fg, draw_bg) = if is_block_cursor {
+                    (cell.bg, cell.fg)
+                } else {
+                    (cell.fg, cell.bg)
+                };
 
                 // Skip spacer cells of wide characters (CJK / emoji).
                 // The wide char itself occupies the leading cell; spacers
@@ -499,9 +505,9 @@ impl ZentermApp {
                 // we never draw a quad for non-selection cells, the
                 // underlying `rect_filled` (BLACK by default) shows
                 // through and the TUI's light background disappears.
-                if !is_cursor {
-                    let cell_bg = if is_sel { sel_bg } else { cell.bg };
-                    if cell_bg != default_bg {
+                if !is_cursor || is_block_cursor {
+                    let cell_bg = if is_sel { sel_bg } else { draw_bg };
+                    if is_block_cursor || cell_bg != default_bg {
                         // `cw` and `ch` are both integers (see
                         // `GlyphAtlas::cell_size`), so the cell positions
                         // align perfectly with the pixel grid: no sub-pixel
@@ -612,64 +618,7 @@ impl ZentermApp {
                             GlyphContentType::Color => glyph_type::COLOR,
                         };
 
-                        if is_block_cursor {
-                            // ── DEBUG: log cursor geometry ─────────────
-                            let cell_top = (row as f32 * ch).round();
-                            let cell_bot = ((row as f32 + 1.0) * ch).round();
-                            let gtop =
-                                (row as f32 * ch + (baseline - sby)).round();
-                            let gbot = gtop + scaled_h;
-                            log::debug!(
-                                "CURSOR row={} col={} ch={} baseline={} cell=[{:.0},{:.0}] \
-                                 glyph=[{:.0},{:.0}] atlas_h={} scale={:.3} use_glyph={}",
-                                row, col, ch, baseline, cell_top, cell_bot,
-                                gtop, gbot, atlas_h, scale,
-                                atlas_w > 0.0 && atlas_h > 0.0,
-                            );
-
-                            // Deferred cursor block: rendered AFTER all
-                            // other glyphs so it stays on top.
-                            // Background quad is CELL-sized and fills the
-                            // whole cell with the cell's fg colour.
-                            let bqy = 1.0 - cell_top * y_scale;
-                            let bqx = px_to_clip_x((col as f32 * cw).round());
-                            let bqw = cw * x_scale;
-                            let bqh = ch * y_scale;
-                            // ── Background: SOLID fill with cell's fg colour ──
-                            cursor_bg_instances.push(CellInstance {
-                                clip_pos: [bqx, bqy],
-                                uv_min: [0.0; 2],
-                                uv_max: [0.0; 2],
-                                clip_cell_size: [bqw, bqh],
-                                glyph_size: [0.0; 2],
-                                glyph_offset: [0.0; 2],
-                                fg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
-                                bg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
-                                flags: glyph_type::SOLID,
-                            });
-                            // ── Glyph: inverse video, drawn at the GLYPH's ──────
-                            //   natural position and size (not the cell size).
-                            // Using cell-sized quads here stretches the small
-                            // glyph texture across the whole cell, which
-                            // produces a chunky/pixelated "magnified" S, the
-                            // bug visible in the block-cursor screenshot.
-                            // The alacritty / wezterm cursor paths reuse
-                            // the glyph's natural quad for the same reason.
-                            cursor_bg_instances.push(CellInstance {
-                                clip_pos: [gqx, gqy],
-                                uv_min: [u_min, v_min],
-                                uv_max: [u_max, v_max],
-                                clip_cell_size: [gqw, gqh],
-                                glyph_size: [scaled_w, scaled_h],
-                                glyph_offset: [
-                                    sbx,
-                                    baseline - sby,
-                                ],
-                                fg_color: [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0],
-                                bg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
-                                flags: gtype,
-                            });
-                        } else if is_cursor {
+                        if is_cursor && !is_block_cursor {
                             // Non-block cursor: draw glyph normally.
                             glyph_instances.push(CellInstance {
                                 clip_pos: [gqx, gqy],
@@ -702,7 +651,8 @@ impl ZentermApp {
                             bg_color: [sel_bg.r(), sel_bg.g(), sel_bg.b(), 1.0],
                             flags: gtype,
                         });                        } else {
-                            // Normal cell.
+                            // Normal cell (including block cursor
+                            // whose draw_fg/draw_bg are already swapped).
                             glyph_instances.push(CellInstance {
                                 clip_pos: [gqx, gqy],
                                 uv_min: [u_min, v_min],
@@ -713,8 +663,8 @@ impl ZentermApp {
                                     sbx,
                                     baseline - sby,
                                 ],
-                                fg_color: [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0],
-                                bg_color: [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0],
+                                fg_color: [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0],
+                                bg_color: [draw_bg.r(), draw_bg.g(), draw_bg.b(), 1.0],
                                 flags: gtype,
                             });
                         }
@@ -728,6 +678,9 @@ impl ZentermApp {
                 // These are emitted even for blank cells (e.g. selected
                 // blank cells with underline flags).
                 let deco_color = if is_cursor {
+                    // Match the glyph colour: both block and non-block
+                    // cursors use cell.bg (the original, unswapped value)
+                    // as the text colour.
                     [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0]
                 } else if is_sel {
                     [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0]
@@ -887,30 +840,26 @@ impl ZentermApp {
             }
         }
 
-        // Concatenate: backgrounds → glyphs → cursor_bg → decorations.
+        // Concatenate: backgrounds → glyphs → decorations.
         // This ensures correct z-order:
-        //   1. Selection backgrounds (below all text)
-        //   2. All glyphs (text from all rows)
-        //   3. Cursor block background (above text, covering descenders
-        //      from the row above)
-        //   4. Underline / strikethrough / cursor bars (topmost)
+        //   1. Cell backgrounds (below all text)
+        //   2. All glyphs (text from all rows, including block cursor
+        //      whose fg/bg are already swapped)
+        //   3. Underline / strikethrough / cursor bars (topmost)
         let bg_count = bg_instances.len();
         let glyph_count = glyph_instances.len();
-        let cursor_bg_count = cursor_bg_instances.len();
         let deco_count = deco_instances.len();
         let mut instances = bg_instances;
         instances.extend(glyph_instances);
-        instances.extend(cursor_bg_instances);
         instances.extend(deco_instances);
         let total_instances = instances.len();
 
         log::debug!(
-            "update_cell_instances: {} total ({} bg + {} glyph + {} curs_bg + {} deco), \
+            "update_cell_instances: {} total ({} bg + {} glyph + {} deco), \
              {} blank skipped, {} glyph failures",
             total_instances,
             bg_count,
             glyph_count,
-            cursor_bg_count,
             deco_count,
             blank_count,
             glyph_fail,

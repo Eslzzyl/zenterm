@@ -108,6 +108,16 @@ pub struct GlyphAtlas {
     /// Mirrors `cell_ascent` and is exposed for callers that need to position
     /// decorations (underline / strikethrough) relative to the baseline.
     cell_descent: f32,
+    /// Distance from the baseline to the top of a capital letter, in pixels.
+    ///
+    /// This is the *typographic* cap height (≈ 0.7 em for Menlo), which is
+    /// smaller than `cell_ascent` by the "above-cap-height buffer" — the
+    /// vertical room reserved for diacritics like `Á` / `Ž` that extend
+    /// above capital letters.  Alacritty's block cursor stops at the cap
+    /// height (not the cell top) and includes the full descent below, so
+    /// the cursor visually matches the character body instead of overshooting
+    /// into the "above-cap" buffer.  Cached by [`cap_height()`](Self::cap_height).
+    cap_height: f32,
 }
 
 impl GlyphAtlas {
@@ -155,6 +165,7 @@ impl GlyphAtlas {
             cell_height: 0.0,
             cell_ascent: 0.0,
             cell_descent: 0.0,
+            cap_height: 0.0,
         }
     }
 
@@ -230,6 +241,11 @@ impl GlyphAtlas {
         // see `s_above = 0/placement.top = 0` and clamp W to scale 0.1,
         // making every W on screen collapse to a single invisible dot.
         self.measure_baseline()?;
+        // Cap height is measured from a separate 'M' rasterisation, but it
+        // doesn't depend on cell_ascent / cell_descent so it could in
+        // principle be called in parallel.  We keep it sequential for
+        // simplicity.
+        self.measure_cap_height()?;
         let (entry, _is_new) = self.ensure_glyph('W')?;
         // Integer cell width/height: avoid sub-pixel drift between
         // adjacent columns (width) and rows (height).
@@ -243,11 +259,12 @@ impl GlyphAtlas {
         // function so the 'W' rasterisation above sees valid metrics.)
         log::info!(
             "GlyphAtlas::cell_size: cw={:.2} ch={:.2} ascent={:.2} descent={:.2} \
-             (line_height={:.2} font_size={:.2})",
+             cap_height={:.2} (line_height={:.2} font_size={:.2})",
             self.cell_width,
             self.cell_height,
             self.cell_ascent,
             self.cell_descent,
+            self.cap_height,
             self.metrics.line_height,
             self.font_size,
         );
@@ -300,6 +317,66 @@ impl GlyphAtlas {
         self.cell_ascent = max_ascent;
         self.cell_descent = max_descent;
         Ok(())
+    }
+
+    /// Measure the typographic cap height by rasterising a single capital
+    /// letter (`'M'`) and reading `placement.top` from swash.
+    ///
+    /// `placement.top` is the y-up distance from the baseline to the top
+    /// edge of the glyph bitmap.  For a capital letter with no ascender
+    /// above the cap line, this is exactly the cap height — the height of
+    /// capital letters, distinct from the font ascent (which includes
+    /// extra room for diacritics).
+    ///
+    /// This is what Alacritty implicitly uses to size its block cursor:
+    /// the cursor stops at `cap_height` above the baseline (no
+    /// "above-cap buffer") and includes the full descent below.
+    fn measure_cap_height(&mut self) -> Result<()> {
+        // Shape a single 'M' in its own buffer.  We need a layout run so
+        // cosmic-text hands us a physical glyph we can feed to swash.
+        let mut buf = Buffer::new(&mut self.font_system, self.metrics);
+        let attrs = Attrs::new().family(Family::Name(&self.font_family));
+        buf.set_text("M", &attrs, Shaping::Basic, None);
+        buf.shape_until_scroll(&mut self.font_system, true);
+
+        let gl = match buf
+            .lines
+            .first()
+            .and_then(|l| l.layout_opt())
+            .and_then(|l| l.first())
+            .and_then(|l| l.glyphs.first())
+        {
+            Some(g) => g,
+            None => {
+                // Fallback: use cell_ascent (slightly too tall but never
+                // smaller than the cap height) so the cursor still works.
+                self.cap_height = self.cell_ascent;
+                return Ok(());
+            }
+        };
+
+        let physical_glyph = gl.physical((0.0, 0.0), 1.0);
+        match self.rasterize_swash(&physical_glyph.cache_key) {
+            Some(img) => {
+                // `placement.top` is the y-up distance from the baseline to
+                // the topmost row of the bitmap.  For a capital letter
+                // with no ascender above the cap line, that's the cap
+                // height.  It's an integer in swash's scaled units, so
+                // cast to f32 without losing precision at our sizes.
+                self.cap_height = img.placement.top as f32;
+                Ok(())
+            }
+            None => {
+                self.cap_height = self.cell_ascent;
+                Ok(())
+            }
+        }
+    }
+
+    /// Return the cached cap height in pixels.  Must call
+    /// [`cell_size()`](Self::cell_size) first.
+    pub fn cap_height(&self) -> f32 {
+        self.cap_height
     }
 
     /// Return the cached cell dimensions (must call `cell_size()` first).
