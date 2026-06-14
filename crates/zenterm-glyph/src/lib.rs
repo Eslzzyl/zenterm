@@ -136,13 +136,9 @@ impl GlyphAtlas {
              pixels_per_point={pixels_per_point:.2} subpixel={subpixel_layout:?}",
         );
         let font_system = FontSystem::new();
-        // Tight line-height (1.0): the cell is now sized to exactly the
-        // font's full body height (ascent + descent).  Combined with the
-        // per-glyph `scale` factor computed in `rasterize_glyph` (which
-        // enlarges ASCII to fill the cell, and shrinks CJK that would
-        // otherwise extend above the cell top), this matches the visual
-        // behaviour of alacritty / wezterm: the cursor block and the
-        // character body occupy the same height with no bottom padding.
+        // Initial line_height = font_size (1.0×).  This is intentionally
+        // tight — the real line_height is computed in cell_size() after
+        // measure_baseline() reads the font's actual ascent + descent.
         let metrics = Metrics::new(font_size, font_size);
 
         let initial_size: u32 = 512;
@@ -241,6 +237,12 @@ impl GlyphAtlas {
         // see `s_above = 0/placement.top = 0` and clamp W to scale 0.1,
         // making every W on screen collapse to a single invisible dot.
         self.measure_baseline()?;
+        // Update line_height to the font's actual ascent + descent.
+        // The initial Metrics used font_size * 1.0 which was too tight —
+        // the font's real body height (e.g. 41px for Menlo at 36px) exceeds
+        // font_size, causing glyphs to overflow the cell.  We now use the
+        // measured values so the cell is tall enough to contain all glyphs.
+        self.metrics.line_height = self.cell_ascent + self.cell_descent;
         // Cap height is measured from a separate 'M' rasterisation, but it
         // doesn't depend on cell_ascent / cell_descent so it could in
         // principle be called in parallel.  We keep it sequential for

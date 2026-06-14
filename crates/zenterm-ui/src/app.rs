@@ -618,6 +618,28 @@ impl ZentermApp {
                             GlyphContentType::Color => glyph_type::COLOR,
                         };
 
+                        // ── CURSOR DEBUG: dump all coordinates ──────
+                        if is_cursor {
+                            let cell_x_px = col as f32 * cw;
+                            let cell_y_px = row as f32 * ch;
+                            let glyph_top_in_cell = baseline - sby;
+                            let glyph_bot_in_cell = glyph_top_in_cell + scaled_h;
+                            println!(
+                                "CURSOR_DEBUG | char='{}' row={} col={} | \
+                                 cell: x={:.1} y={:.1} w={:.1} h={:.1} | \
+                                 baseline={:.2} | bearing: sx={:.2} sy={:.2} | \
+                                 scale={:.3} | glyph_px: x={:.1} y={:.1} w={:.1} h={:.1} | \
+                                 glyph_in_cell: top={:.1} bot={:.1} | \
+                                 bg_drawn={} is_sel={}",
+                                ch_char, row, col,
+                                cell_x_px, cell_y_px, cw, ch,
+                                baseline, sbx, sby,
+                                scale, glyph_x_px, glyph_y_px, scaled_w, scaled_h,
+                                glyph_top_in_cell, glyph_bot_in_cell,
+                                !is_cursor || is_block_cursor, is_sel,
+                            );
+                        }
+
                         if is_cursor && !is_block_cursor {
                             // Non-block cursor: draw glyph normally.
                             glyph_instances.push(CellInstance {
