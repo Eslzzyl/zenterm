@@ -593,23 +593,64 @@ impl ZentermApp {
                         // strategy wezterm uses (`glyph.scale`).  For ASCII
                         // glyphs the value is ≈ 1.0.
                         let scale = entry.scale;
-                        let scaled_w = atlas_w * scale;
-                        let scaled_h = atlas_h * scale;
+                        let mut scaled_w = atlas_w * scale;
+                        let mut scaled_h = atlas_h * scale;
                         let sbx = entry.bearing_x * scale;
                         let sby = entry.bearing_y * scale;
 
-                        let glyph_x_px = (col as f32 * cw + sbx).round();
-                        let glyph_y_px = (row as f32 * ch + (baseline - sby)).round();
+                        let mut glyph_x_px = (col as f32 * cw + sbx).round();
+                        let mut glyph_y_px = (row as f32 * ch + (baseline - sby)).round();
+
+                        // ── UV coordinates (pre-clip) ──────────────
+                        let mut u_min = (entry.atlas_rect.min.x as f32 + 0.5) / tex_size;
+                        let mut v_min = (entry.atlas_rect.min.y as f32 + 0.5) / tex_size;
+                        let mut u_max = (entry.atlas_rect.max.x as f32 - 0.5) / tex_size;
+                        let mut v_max = (entry.atlas_rect.max.y as f32 - 0.5) / tex_size;
+
+                        // ── Clip glyph quad to cell boundaries ─────
+                        // Bitmap padding (empty rows/columns from
+                        // swash's bounding-box rounding) can extend
+                        // beyond the cell.  Clip the quad and adjust
+                        // UV so only the visible part is rendered.
+                        let cell_left = col as f32 * cw;
+                        let cell_top = row as f32 * ch;
+                        let cell_right = cell_left + cw;
+                        let cell_bottom = cell_top + ch;
+
+                        // Vertical clip
+                        let glyph_bot_px = glyph_y_px + scaled_h;
+                        let clipped_top = glyph_y_px.max(cell_top);
+                        let clipped_bot = glyph_bot_px.min(cell_bottom);
+                        let clipped_h = (clipped_bot - clipped_top).max(0.0);
+                        if clipped_h < scaled_h && scaled_h > 0.0 {
+                            let r_top = (clipped_top - glyph_y_px) / scaled_h;
+                            let r_bot = (clipped_bot - glyph_y_px) / scaled_h;
+                            let v_range = v_max - v_min;
+                            v_min = v_min + v_range * r_top;
+                            v_max = v_min + v_range * (r_bot - r_top);
+                            glyph_y_px = clipped_top;
+                            scaled_h = clipped_h;
+                        }
+
+                        // Horizontal clip
+                        let glyph_right_px = glyph_x_px + scaled_w;
+                        let clipped_left = glyph_x_px.max(cell_left);
+                        let clipped_right = glyph_right_px.min(cell_right);
+                        let clipped_w = (clipped_right - clipped_left).max(0.0);
+                        if clipped_w < scaled_w && scaled_w > 0.0 {
+                            let r_left = (clipped_left - glyph_x_px) / scaled_w;
+                            let r_right = (clipped_right - glyph_x_px) / scaled_w;
+                            let u_range = u_max - u_min;
+                            u_min = u_min + u_range * r_left;
+                            u_max = u_min + u_range * (r_right - r_left);
+                            glyph_x_px = clipped_left;
+                            scaled_w = clipped_w;
+                        }
+
                         let gqx = px_to_clip_x(glyph_x_px);
                         let gqy = px_to_clip_y(glyph_y_px);
                         let gqw = scaled_w * x_scale;
                         let gqh = scaled_h * y_scale;
-
-                        // ── UV coordinates ──────────────────────────────────
-                        let u_min = (entry.atlas_rect.min.x as f32 + 0.5) / tex_size;
-                        let v_min = (entry.atlas_rect.min.y as f32 + 0.5) / tex_size;
-                        let u_max = (entry.atlas_rect.max.x as f32 - 0.5) / tex_size;
-                        let v_max = (entry.atlas_rect.max.y as f32 - 0.5) / tex_size;
 
                         // Map from atlas content type to shader dispatch flag.
                         let gtype = match entry.content_type {
@@ -617,28 +658,6 @@ impl ZentermApp {
                             GlyphContentType::Mask => glyph_type::MASK,
                             GlyphContentType::Color => glyph_type::COLOR,
                         };
-
-                        // ── CURSOR DEBUG: dump all coordinates ──────
-                        if is_cursor {
-                            let cell_x_px = col as f32 * cw;
-                            let cell_y_px = row as f32 * ch;
-                            let glyph_top_in_cell = baseline - sby;
-                            let glyph_bot_in_cell = glyph_top_in_cell + scaled_h;
-                            println!(
-                                "CURSOR_DEBUG | char='{}' row={} col={} | \
-                                 cell: x={:.1} y={:.1} w={:.1} h={:.1} | \
-                                 baseline={:.2} | bearing: sx={:.2} sy={:.2} | \
-                                 scale={:.3} | glyph_px: x={:.1} y={:.1} w={:.1} h={:.1} | \
-                                 glyph_in_cell: top={:.1} bot={:.1} | \
-                                 bg_drawn={} is_sel={}",
-                                ch_char, row, col,
-                                cell_x_px, cell_y_px, cw, ch,
-                                baseline, sbx, sby,
-                                scale, glyph_x_px, glyph_y_px, scaled_w, scaled_h,
-                                glyph_top_in_cell, glyph_bot_in_cell,
-                                !is_cursor || is_block_cursor, is_sel,
-                            );
-                        }
 
                         if is_cursor && !is_block_cursor {
                             // Non-block cursor: draw glyph normally.
