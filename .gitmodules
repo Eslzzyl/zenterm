@@ -22,3 +22,7 @@
 	path = swash
 	url = https://github.com/dfrg/swash.git
 	shallow = true
+[submodule "egui_dock"]
+	path = egui_dock
+	url = https://github.com/anhosh/egui_dock.git
+	shallow = true
