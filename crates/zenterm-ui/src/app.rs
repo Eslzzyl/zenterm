@@ -682,22 +682,36 @@ impl ZentermApp {
                     egui::SidePanel::right("zenterm_sidebar")
                 }
             };
-            // Collect immutable data we need to display.  Doing this
-            // before the panel closure lets the panel borrow the
-            // closures (which mutably borrow `self`) without conflict.
-            let dock_snapshot: Vec<(egui_dock::NodeIndex, egui_dock::TabIndex, SessionId)> = self
+
+            // Snapshot all workspaces and their tabs so the closure
+            // doesn't need to borrow `self`.
+            let ws_snapshot: Vec<(
+                crate::workspace::WorkspaceId,
+                String,
+                bool,
+                Vec<(egui_dock::NodeIndex, egui_dock::TabIndex, SessionId, String, Option<std::path::PathBuf>)>,
+            )> = self
                 .workspaces
-                .active_workspace()
-                .dock
-                .iter_all_tabs()
-                .map(|(path, tab)| (path.node, path.tab, *tab))
-                .collect();
-            let active = self.active_session_id;
-            let sessions_snapshot: std::collections::HashMap<SessionId, (String, Option<std::path::PathBuf>)> = self
-                .sessions
+                .workspaces
                 .iter()
-                .map(|(id, s)| (*id, (s.title.clone(), s.cwd.clone())))
+                .map(|ws| {
+                    let tabs = ws
+                        .dock
+                        .iter_all_tabs()
+                        .filter_map(|(path, tab)| {
+                            let s = self.sessions.get(tab)?;
+                            Some((path.node, path.tab, *tab, s.title.clone(), s.cwd.clone()))
+                        })
+                        .collect();
+                    (
+                        ws.id,
+                        ws.name.clone(),
+                        ws.id == self.workspaces.active_workspace_id,
+                        tabs,
+                    )
+                })
                 .collect();
+            let active_session = self.active_session_id;
 
             panel
                 .resizable(true)
@@ -705,53 +719,165 @@ impl ZentermApp {
                 .min_width(min_w)
                 .max_width(max_w)
                 .show_inside(ui, |ui| {
-                    // Render the sidebar with snapshots; the actual
-                    // spawn / focus mutations are queued via the
-                    // helper closures and applied below.
                     let mut queued_new_tab = false;
+                    let mut queued_new_ws = false;
+                    let mut queued_switch_ws: Option<crate::workspace::WorkspaceId> = None;
                     let mut queued_focus: Option<(egui_dock::NodeIndex, egui_dock::TabIndex)> = None;
+                    let mut queued_rename_ws: Option<(crate::workspace::WorkspaceId, String)> =
+                        None;
+                    let mut queued_close_ws: Option<crate::workspace::WorkspaceId> = None;
 
                     ui.vertical(|ui| {
                         ui.add_space(6.0);
                         ui.heading("Workspaces");
                         ui.add_space(4.0);
                         ui.separator();
-                        if ui.button("+  New shell").clicked() {
-                            queued_new_tab = true;
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("+  New shell").clicked() {
+                                queued_new_tab = true;
+                            }
+                            if ui.button("+  New WS").clicked() {
+                                queued_new_ws = true;
+                            }
+                        });
                         ui.add_space(2.0);
                         ui.separator();
                         egui::ScrollArea::vertical()
                             .auto_shrink([false; 2])
                             .show(ui, |ui| {
-                                for (node, tab, id) in &dock_snapshot {
-                                    let Some((title, cwd)) = sessions_snapshot.get(id) else {
-                                        continue;
-                                    };
-                                    let is_active = Some(*id) == active;
-                                    let label = if is_active {
-                                        egui::RichText::new(title)
+                                for (ws_id, ws_name, is_active_ws, tabs) in &ws_snapshot {
+                                    // ── Workspace header ─────────
+                                    let header_label = if *is_active_ws {
+                                        egui::RichText::new(ws_name)
                                             .strong()
                                             .color(ui.visuals().strong_text_color())
                                     } else {
-                                        egui::RichText::new(title)
+                                        egui::RichText::new(ws_name)
                                     };
-                                    let resp = ui.selectable_label(is_active, label);
-                                    if resp.clicked() {
-                                        queued_focus = Some((*node, *tab));
+                                    let header_resp =
+                                        ui.selectable_label(*is_active_ws, header_label);
+                                    if header_resp.clicked() {
+                                        queued_switch_ws = Some(*ws_id);
                                     }
-                                    if let Some(cwd) = cwd {
-                                        ui.weak(cwd.display().to_string());
-                                    }
+                                    // Right-click context menu on workspace header.
+                                    header_resp.context_menu(|ui| {
+                                        if ui.button("New Tab").clicked() {
+                                            queued_new_tab = true;
+                                            queued_switch_ws = Some(*ws_id);
+                                            ui.close();
+                                        }
+                                        ui.separator();
+                                        let mut rename_buf = ws_name.clone();
+                                        ui.horizontal(|ui| {
+                                            ui.label("Rename:");
+                                            if ui
+                                                .text_edit_singleline(&mut rename_buf)
+                                                .lost_focus()
+                                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                            {
+                                                queued_rename_ws = Some((*ws_id, rename_buf));
+                                                ui.close();
+                                            }
+                                        });
+                                        ui.separator();
+                                        if ui.button("Close workspace").clicked() {
+                                            queued_close_ws = Some(*ws_id);
+                                            ui.close();
+                                        }
+                                    });
+
+                                    // ── Tabs under this workspace ─
+                                    ui.indent(egui::Id::new(("ws_tabs", ws_id.0)), |ui| {
+                                        if tabs.is_empty() {
+                                            ui.weak("(no tabs)");
+                                        }
+                                        for (node, tab, id, title, cwd) in tabs {
+                                            let is_active_tab = Some(*id) == active_session;
+                                            let label = if is_active_tab {
+                                                egui::RichText::new(title)
+                                                    .strong()
+                                                    .color(ui.visuals().strong_text_color())
+                                            } else {
+                                                egui::RichText::new(title)
+                                            };
+                                            let resp =
+                                                ui.selectable_label(is_active_tab, label);
+                                            if resp.clicked() {
+                                                // Switch to the tab's workspace first, then
+                                                // focus the tab.
+                                                queued_switch_ws = Some(*ws_id);
+                                                queued_focus = Some((*node, *tab));
+                                            }
+                                            if let Some(cwd) = cwd {
+                                                ui.weak(cwd.display().to_string());
+                                            }
+                                        }
+                                    });
+
+                                    // Small gap between workspace sections.
+                                    ui.add_space(4.0);
                                 }
                             });
                     });
 
+                    // ── Apply queued actions ──────────────────────
+                    if queued_new_ws {
+                        self.workspaces.create_workspace("workspace");
+                        // Also spawn a first tab in the new workspace.
+                        let id = self.workspaces.new_session_id();
+                        let scheme = ColorScheme::from_theme(&self.theme);
+                        let size = zenterm_core::size::TermSize::new(
+                            self.config.window.dimensions.lines,
+                            self.config.window.dimensions.columns,
+                        );
+                        let session = TerminalSession::new(
+                            id,
+                            size,
+                            scheme,
+                            self.config.cursor.blink_interval,
+                            self.default_bg,
+                            self.gpu.clone(),
+                            self.atlas.clone(),
+                            self.callback.clone(),
+                        );
+                        self.sessions.insert(id, session);
+                        self.workspaces.active_workspace_mut().new_tab(id);
+                        self.active_session_id = Some(id);
+                        self.mark_layout_dirty();
+                    }
+                    if let Some(ws_id) = queued_switch_ws {
+                        self.workspaces.switch_to(ws_id);
+                        self.mark_layout_dirty();
+                    }
                     if queued_new_tab {
                         self.spawn_session();
                     }
                     if let Some((node, tab)) = queued_focus {
                         self.focus_tab(node, tab);
+                    }
+                    if let Some((ws_id, new_name)) = queued_rename_ws {
+                        self.workspaces.rename_workspace(ws_id, new_name);
+                        self.mark_layout_dirty();
+                    }
+                    if let Some(ws_id) = queued_close_ws {
+                        // Collect sessions to close from the workspace.
+                        let sessions_to_close: Vec<SessionId> = self
+                            .workspaces
+                            .find_workspace(ws_id)
+                            .map(|ws| ws.all_tab_ids())
+                            .unwrap_or_default();
+                        self.workspaces.close_workspace(ws_id);
+                        for id in sessions_to_close {
+                            self.sessions.remove(&id);
+                        }
+                        // Re-focus on the now-active workspace.
+                        self.active_session_id = self
+                            .workspaces
+                            .active_workspace()
+                            .all_tab_ids()
+                            .first()
+                            .copied();
+                        self.mark_layout_dirty();
                     }
                 });
         }
