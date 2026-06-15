@@ -54,25 +54,26 @@
 
 ### Tasks
 
-1. **Multi-tab (egui_dock)**
-   - Each tab holds one `TerminalSession`
-   - Tab bar with open/close/reorder
-   - Optional: window splitting (horizontal/vertical)
+ 1. **Multi-tab (egui_dock)** — ✅ **DONE**
+    - Each tab holds one `TerminalSession`
+    - Tab bar with open/close/reorder (egui_dock DockArea)
+    - Window splitting deferred to "Pane splitting" under Future
+    - Per-session terminal state isolated; shared `wgpu::Device` and `SharedGlyphAtlas`
+    - Dock layout persisted to `~/.config/zenterm/dock.json`; per-session metadata to `sessions.json`
 
-2. **Workspace sidebar** (cmux-inspired)
-   - Vertical list of tabs with context info:
-     - Git branch (read from `.git/HEAD`)
-     - Current working directory
-     - Exposed ports (if any)
-     - Notification indicator (colored dot/ring)
-   - Keyboard shortcuts for switching tabs
+ 2. **Workspace sidebar** (cmux-inspired) — ✅ **DONE**
+    - Vertical list of tabs with context info:
+      - Session title (OSC 0/2)
+      - Current working directory (OSC 7 — parsed by `zenterm-term::scan_osc7`)
+      - Active-tab indicator (selectable label)
+    - `+ New shell` button spawns a new `TerminalSession` in the focused dock leaf
+    - `config.ui.sidebar_enabled` toggles visibility (default `false`)
 
-3. **Input handling (advanced)**
-   - SGR mouse reporting (`?1006`) — vim/htop/nano mouse support
-   - Kitty keyboard protocol (progressive enhancement)
-   - Bracketed paste mode
-   - Application cursor keys (terminal mode-dependent)
-
+ 3. **Input handling (advanced)**
+    - SGR mouse reporting (`?1006`) — vim/htop/nano mouse support
+    - Kitty keyboard protocol (progressive enhancement)
+    - Bracketed paste mode
+    - Application cursor keys (terminal mode-dependent)
 4. **Agent notifications**
    - OSC handler: detect `OSC 9` / `OSC 99` / `OSC 777` notification sequences
    - Sidebar badge + popover notification

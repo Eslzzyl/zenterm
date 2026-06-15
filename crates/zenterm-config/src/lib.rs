@@ -41,6 +41,7 @@ pub mod keyboard;
 pub mod mouse;
 pub mod selection;
 pub mod terminal;
+pub mod ui;
 pub mod window;
 
 pub use config::{Config, ConfigError};

@@ -144,10 +144,15 @@ zenterm/
 │   │
 │   ├── ui/                     # egui UI chrome
 │   │   ├── mod.rs
-│   │   ├── tab.rs              # egui_dock integration
-│   │   ├── sidebar.rs          # Workspace sidebar (like cmux)
-│   │   ├── status_bar.rs       # Status bar
-│   │   └── notification.rs     # Notification popovers
+│   │   ├── app.rs              # Top-level eframe::App orchestrator
+│   │   ├── gpu.rs              # SharedGpuContext (device/queue/SharedRenderState)
+│   │   ├── glyph_cache.rs      # SharedGlyphAtlas (Arc<Mutex<GlyphAtlas>>)
+│   │   ├── session.rs          # TerminalSession (per-tab: PTY + Terminal + view)
+│   │   ├── tab.rs              # TabsState (egui_dock::DockState wrapper)
+│   │   ├── tab_viewer.rs       # egui_dock::TabViewer implementation
+│   │   ├── sidebar.rs          # Cmux-style vertical tab list
+│   │   ├── layout_io.rs        # dock.json / sessions.json persistence
+│   │   └── legacy.rs           # Single-terminal fallback (tabs_enabled=false)
 │   │
 │   ├── terminal/               # Terminal engine + session management
 │   │   ├── mod.rs

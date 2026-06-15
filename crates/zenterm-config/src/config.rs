@@ -17,6 +17,7 @@ use crate::keyboard::KeyboardConfig;
 use crate::mouse::MouseConfig;
 use crate::selection::SelectionConfig;
 use crate::terminal::TerminalConfig;
+use crate::ui::UiConfig;
 use crate::window::WindowConfig;
 
 // ── Config ─────────────────────────────────────────────────────────────
@@ -50,6 +51,10 @@ pub struct Config {
 
     #[serde(default)]
     pub keyboard: KeyboardConfig,
+
+    /// UI chrome (tabs + sidebar).  Defaults to all-off.
+    #[serde(default)]
+    pub ui: UiConfig,
 }
 
 impl Config {
@@ -172,6 +177,7 @@ impl Default for Config {
             mouse: MouseConfig::default(),
             terminal: TerminalConfig::default(),
             keyboard: KeyboardConfig::default(),
+            ui: UiConfig::default(),
         }
     }
 }

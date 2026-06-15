@@ -299,6 +299,64 @@ bindings = []
 
 ---
 
+## `[ui]` — UI chrome (tabs + sidebar)
+
+Controls the optional **multi-tab workspace** and **cmux-style
+sidebar**.  Both features are **opt-in**: with the default config
+(`tabs_enabled = false`, `sidebar_enabled = false`), the application
+behaves exactly like a single-terminal emulator (Phase 1).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `tabs_enabled` | `bool` | `false` | Render the `egui_dock` tab bar.  When `false`, the app runs a single terminal session with no tab UI. |
+| `sidebar_enabled` | `bool` | `false` | Render the workspace sidebar (vertical tab list with cwd).  Has no effect when `tabs_enabled = false`. |
+| `sidebar_position` | `string` | `"Left"` | One of `"Left"` or `"Right"`. |
+| `sidebar_width` | `float` | `220.0` | Default sidebar width in logical pixels. |
+| `sidebar_min_width` | `float` | `160.0` | Minimum sidebar width (user-resize clamp). |
+| `sidebar_max_width` | `float` | `480.0` | Maximum sidebar width (user-resize clamp). |
+| `show_add_tab_button` | `bool` | `true` | Show the `+` button on the tab bar. |
+| `show_close_tab_button` | `bool` | `true` | Show a `×` close button on each tab. |
+| `tab_close_on_middle_click` | `bool` | `true` | Allow middle-click on a tab to close it. |
+| `restore_layout_on_startup` | `bool` | `true` | Restore the dock layout from `~/.config/zenterm/dock.json` on startup when present. |
+| `persist_layout` | `bool` | `true` | Persist dock layout / session metadata to disk as the user mutates them. |
+| `layout_debounce_ms` | `int` | `500` | Debounce window (milliseconds) between a layout mutation and the disk write. |
+
+### Layout persistence
+
+When `restore_layout_on_startup = true` and the file
+`~/.config/zenterm/dock.json` exists, Zenterm reads it on startup
+and restores the previous dock tree.  Per-session metadata
+(title, working directory) is read from `sessions.json` in the
+same directory.
+
+Both files are written atomically (write to `*.tmp` then `rename`)
+so a crash mid-write cannot leave a half-written file.  The
+write is debounced by `layout_debounce_ms` to avoid hammering
+the disk on every drag.  On clean exit (`App::on_exit`) the
+layout is forced to disk.
+
+> **Override the directory:** the persistence directory follows
+> the active `config.toml` path (i.e. it respects the
+> `ZENTERM_CONFIG` environment variable and the `~/.config/zenterm/`
+> default).
+
+### Example
+
+```toml
+[ui]
+tabs_enabled = true
+sidebar_enabled = true
+sidebar_position = "Left"
+sidebar_width = 240.0
+show_add_tab_button = true
+show_close_tab_button = true
+restore_layout_on_startup = true
+persist_layout = true
+layout_debounce_ms = 500
+```
+
+---
+
 ## Built-in keyboard shortcuts
 
 These shortcuts are currently hardcoded and not yet overridable via config:
@@ -368,6 +426,10 @@ hide_when_typing = false
 
 [terminal]
 osc52 = "CopyPaste"
+
+[ui]
+tabs_enabled = true
+sidebar_enabled = true
 ```
 
 ---

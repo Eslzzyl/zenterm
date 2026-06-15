@@ -200,6 +200,11 @@ pub struct Terminal {
     pending_child_exit: Option<std::process::ExitStatus>,
     pending_clipboard_store: Option<String>,
     pending_clipboard_load: Option<Arc<dyn Fn(&str) -> String + Sync + Send + 'static>>,
+    /// Most recent OSC 7 working-directory URL (e.g. `file://host/path`).
+    /// Populated by [`Self::feed`] by scanning the input stream for
+    /// `\x1b]7;…\x07` / `\x1b]7;…\x1b\\` sequences.  Consumed via
+    /// [`Self::take_current_directory`].
+    pending_current_directory: Option<String>,
 }
 
 impl Terminal {
@@ -231,6 +236,7 @@ impl Terminal {
             pending_child_exit: None,
             pending_clipboard_store: None,
             pending_clipboard_load: None,
+            pending_current_directory: None,
         }
     }
 
@@ -250,6 +256,17 @@ impl Terminal {
             return Vec::new();
         }
         log::debug!("Terminal::feed: {} bytes: {:02x?}", bytes.len(), bytes);
+
+        // ── OSC 7 (current working directory) scan ──────────────────────
+        // alacritty_terminal does not emit an `Event` for OSC 7, so we
+        // scan the input stream ourselves.  Many shells (fish, zsh with
+        // `set_term_title` patches, bash-preexec, etc.) emit
+        //     ESC ] 7 ; file://host/path BEL   (or ESC \)
+        // whenever the CWD changes.  We store the *most recent* one.
+        if let Some(url) = scan_osc7(bytes) {
+            self.pending_current_directory = Some(url);
+        }
+
         self.processor.advance(&mut self.term, bytes);
 
         // Propagate damage from alacritty_terminal's internal tracker.
@@ -467,6 +484,16 @@ impl Terminal {
         self.pending_clipboard_store.take()
     }
 
+    /// Take the most recent OSC 7 working-directory URL (if any).
+    ///
+    /// The value is the raw URL as emitted by the application
+    /// (typically `file://host/path` or just `/abs/path`); callers are
+    /// responsible for URL-decoding and stripping the host component.
+    /// Returns `None` if no new OSC 7 was seen since the last call.
+    pub fn take_current_directory(&mut self) -> Option<String> {
+        self.pending_current_directory.take()
+    }
+
     /// Take a clipboard-load request.
     ///
     /// The returned closure is a formatter: the application should read the
@@ -623,5 +650,94 @@ fn named_color_default_rgb(named: NamedColor) -> Rgb {
         NamedColor::DimForeground => Rgb { r: 140, g: 140, b: 140 },
         NamedColor::BrightForeground => Rgb { r: 255, g: 255, b: 255 },
         _ => Rgb { r: 255, g: 255, b: 255 },
+    }
+}
+
+// ── OSC 7 scanner ──────────────────────────────────────────────────────
+
+/// Find the first OSC 7 sequence in `bytes` and return its URL
+/// payload (without the OSC introducer or terminator).
+///
+/// Recognised forms:
+///
+/// ```text
+/// ESC ] 7 ; <url> BEL         (iTerm2 / most shells)
+/// ESC ] 7 ; <url> ESC \       (ECMA-48 string terminator)
+/// ```
+///
+/// Returns `None` if no well-formed OSC 7 is found.  The scan is
+/// byte-oriented and intentionally cheap (no regex, no allocation
+/// beyond the returned `String`).
+fn scan_osc7(bytes: &[u8]) -> Option<String> {
+    // Find `ESC ] 7 ;` introducer.
+    let mut i = 0;
+    while i + 3 < bytes.len() {
+        if bytes[i] == 0x1B
+            && bytes[i + 1] == b']'
+            && bytes[i + 2] == b'7'
+            && bytes[i + 3] == b';'
+        {
+            // Found the start.  Read until BEL or ST.
+            let payload_start = i + 4;
+            let mut j = payload_start;
+            while j < bytes.len() {
+                if bytes[j] == 0x07 {
+                    // BEL terminator.
+                    let payload = &bytes[payload_start..j];
+                    if let Ok(s) = std::str::from_utf8(payload) {
+                        return Some(s.to_string());
+                    }
+                    return None;
+                }
+                if bytes[j] == 0x1B && j + 1 < bytes.len() && bytes[j + 1] == b'\\' {
+                    // ST terminator.
+                    let payload = &bytes[payload_start..j];
+                    if let Ok(s) = std::str::from_utf8(payload) {
+                        return Some(s.to_string());
+                    }
+                    return None;
+                }
+                j += 1;
+            }
+            // Unterminated — give up on this attempt.
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
+#[cfg(test)]
+mod osc7_tests {
+    use super::scan_osc7;
+
+    #[test]
+    fn parses_bel_terminated() {
+        let bytes = b"\x1b]7;file://localhost/Users/me\x07";
+        assert_eq!(scan_osc7(bytes).as_deref(), Some("file://localhost/Users/me"));
+    }
+
+    #[test]
+    fn parses_st_terminated() {
+        let bytes = b"\x1b]7;file://h/p\x1b\\";
+        assert_eq!(scan_osc7(bytes).as_deref(), Some("file://h/p"));
+    }
+
+    #[test]
+    fn finds_osc7_among_other_bytes() {
+        let bytes = b"hello\x1b[31mred\x1b[0m\x1b]7;file://x/y\x07done";
+        assert_eq!(scan_osc7(bytes).as_deref(), Some("file://x/y"));
+    }
+
+    #[test]
+    fn no_osc7_returns_none() {
+        let bytes = b"just normal bytes";
+        assert_eq!(scan_osc7(bytes), None);
+    }
+
+    #[test]
+    fn unterminated_returns_none() {
+        let bytes = b"\x1b]7;file://x/y";
+        assert_eq!(scan_osc7(bytes), None);
     }
 }
