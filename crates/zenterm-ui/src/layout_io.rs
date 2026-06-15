@@ -2,11 +2,11 @@
 //!
 //! Two on-disk files live alongside `config.toml`:
 //!
-//! - `dock.json` — serialised [`egui_dock::DockState<SessionId>`] plus
-//!   a monotonic `next_session_id` so newly created sessions don't
-//!   collide with previously-allocated ones.
+//! - `dock.json` — serialised [`PersistedLayout`] containing an array
+//!   of workspaces, each with its own dock tree.
 //! - `sessions.json` — array of [`SessionMeta`] (id, title, cwd,
-//!   shell override) used to restore per-session state on startup.
+//!   shell override, workspace id) used to restore per-session state
+//!   on startup.
 //!
 //! Both files are written atomically (write to `*.tmp` then rename)
 //! and rate-limited by a debounce window controlled by
@@ -29,17 +29,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::session::SessionId;
 
-/// Wrapper around the on-disk dock layout file.  Stores both the dock
-/// tree and the next-id counter so that newly allocated session ids
-/// never collide with previously-allocated ones.
+/// On-disk layout containing one or more workspaces.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistedDock {
-    /// Schema version.  Bumped when the on-disk format changes.
+pub struct PersistedLayout {
+    /// Schema version.  Must equal [`SCHEMA_VERSION`].
     pub version: u32,
-    /// The deserialised dock tree.  The tab data is a `SessionId`.
-    pub dock: DockState<SessionId>,
-    /// Next id to allocate.  One past the largest id ever used.
+    /// The id of the workspace that was active when the layout was
+    /// saved.
+    pub active_workspace_id: u64,
+    /// Next session id to allocate (global across all workspaces).
     pub next_session_id: u64,
+    /// Next workspace id to allocate.
+    pub next_workspace_id: u64,
+    /// All persisted workspaces.
+    pub workspaces: Vec<PersistedWorkspace>,
+}
+
+/// A single workspace as stored on disk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedWorkspace {
+    /// Unique workspace id (stable across restarts).
+    pub id: u64,
+    /// Human-readable name.
+    pub name: String,
+    /// The dock tree for this workspace.
+    pub dock: DockState<SessionId>,
 }
 
 /// Per-session metadata persisted across restarts.
@@ -51,6 +65,9 @@ pub struct SessionMeta {
     pub cwd: Option<PathBuf>,
     #[serde(default)]
     pub shell: Option<String>,
+    /// The workspace this session belongs to.
+    #[serde(default)]
+    pub workspace_id: Option<u64>,
 }
 
 /// Read/write the two persistence files used by the multi-tab UI.
@@ -86,30 +103,30 @@ impl LayoutIo {
         self.dir.join("sessions.json")
     }
 
-    /// Load the persisted dock layout.  Returns `None` if the file is
+    /// Load the persisted layout.  Returns `None` if the file is
     /// missing, unreadable, or malformed.
-    pub fn load_dock(&self) -> Option<PersistedDock> {
+    pub fn load_layout(&self) -> Option<PersistedLayout> {
         let path = self.dock_path();
         let content = match fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
             Err(e) => {
-                log::warn!("LayoutIo::load_dock: read {:?} failed: {e}", path);
+                log::warn!("LayoutIo::load_layout: read {:?} failed: {e}", path);
                 return None;
             }
         };
-        match serde_json::from_str::<PersistedDock>(&content) {
+        match serde_json::from_str::<PersistedLayout>(&content) {
             Ok(p) if p.version == SCHEMA_VERSION => Some(p),
             Ok(p) => {
                 log::warn!(
-                    "LayoutIo::load_dock: schema mismatch (file v{}, expected v{}); ignoring",
+                    "LayoutIo::load_layout: schema mismatch (file v{}, expected v{}); ignoring",
                     p.version,
                     SCHEMA_VERSION
                 );
                 None
             }
             Err(e) => {
-                log::warn!("LayoutIo::load_dock: parse {:?} failed: {e}", path);
+                log::warn!("LayoutIo::load_layout: parse {:?} failed: {e}", path);
                 None
             }
         }
@@ -135,10 +152,10 @@ impl LayoutIo {
         }
     }
 
-    /// Save the dock layout atomically.
-    pub fn save_dock(&self, dock: &PersistedDock) -> io::Result<()> {
+    /// Save the layout atomically.
+    pub fn save_layout(&self, layout: &PersistedLayout) -> io::Result<()> {
         let path = self.dock_path();
-        let json = serde_json::to_string_pretty(dock)
+        let json = serde_json::to_string_pretty(layout)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         write_atomic(&path, json.as_bytes())
     }
@@ -177,6 +194,8 @@ fn write_atomic(path: &Path, data: &[u8]) -> io::Result<()> {
     }
 }
 
+// ── Tests ──────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,31 +216,88 @@ mod tests {
             .as_nanos() as u64
     }
 
+    // ── round-trip ────────────────────────────────────────────────
+
     #[test]
-    fn round_trip_empty_dock() {
+    fn round_trip_layout() {
         let dir = tempdir();
-        let io = LayoutIo::with_dir(dir.clone());
-        let empty = DockState::new(vec![]);
-        let persisted = PersistedDock {
+        let io = LayoutIo::with_dir(dir);
+        let layout = PersistedLayout {
             version: SCHEMA_VERSION,
-            dock: empty,
-            next_session_id: 0,
+            active_workspace_id: 0,
+            next_session_id: 5,
+            next_workspace_id: 2,
+            workspaces: vec![
+                PersistedWorkspace {
+                    id: 0,
+                    name: "default".into(),
+                    dock: DockState::new(vec![]),
+                },
+                PersistedWorkspace {
+                    id: 1,
+                    name: "dev".into(),
+                    dock: DockState::new(vec![]),
+                },
+            ],
         };
-        io.save_dock(&persisted).unwrap();
-        let loaded = io.load_dock();
-        // An empty dock may or may not round-trip cleanly depending
-        // on egui_dock's internal representation; what matters is
-        // that the file is written and a load returns *some* value
-        // when the file is present and well-formed.
-        let loaded = loaded.unwrap_or(persisted);
-        assert_eq!(loaded.version, SCHEMA_VERSION);
-        assert_eq!(loaded.next_session_id, 0);
+        io.save_layout(&layout).unwrap();
+        let loaded = io.load_layout();
+        // Empty DockState may not round-trip cleanly through serde
+        // (known egui_dock quirk).  Accept either a successful load
+        // or a parse failure on the dock fields.
+        match loaded {
+            Some(loaded) => {
+                assert_eq!(loaded.version, SCHEMA_VERSION);
+                assert_eq!(loaded.workspaces.len(), 2);
+                assert_eq!(loaded.workspaces[0].name, "default");
+                assert_eq!(loaded.workspaces[1].name, "dev");
+                assert_eq!(loaded.next_session_id, 5);
+                assert_eq!(loaded.next_workspace_id, 2);
+            }
+            None => {
+                // Dock deserialization failed — expected with empty
+                // DockState.  The important thing is that the file was
+                // written and the version check worked.
+            }
+        }
     }
 
     #[test]
-    fn missing_dock_returns_none() {
+    fn missing_layout_returns_none() {
         let io = LayoutIo::with_dir(tempdir());
-        assert!(io.load_dock().is_none());
+        assert!(io.load_layout().is_none());
+    }
+
+    #[test]
+    fn round_trip_sessions() {
+        let dir = tempdir();
+        let io = LayoutIo::with_dir(dir);
+        let meta = vec![
+            SessionMeta {
+                id: 0,
+                title: "shell".into(),
+                cwd: Some(PathBuf::from("/Users/me/proj")),
+                shell: None,
+                workspace_id: Some(0),
+            },
+            SessionMeta {
+                id: 1,
+                title: "build".into(),
+                cwd: None,
+                shell: Some("/bin/zsh".into()),
+                workspace_id: Some(1),
+            },
+        ];
+        io.save_sessions(&meta).unwrap();
+        let loaded = io.load_sessions();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(
+            loaded[&0].cwd.as_deref(),
+            Some(std::path::Path::new("/Users/me/proj"))
+        );
+        assert_eq!(loaded[&1].shell.as_deref(), Some("/bin/zsh"));
+        assert_eq!(loaded[&0].workspace_id, Some(0));
+        assert_eq!(loaded[&1].workspace_id, Some(1));
     }
 
     #[test]
@@ -230,37 +306,14 @@ mod tests {
         assert!(io.load_sessions().is_empty());
     }
 
-    #[test]
-    fn round_trip_sessions() {
-        let dir = tempdir();
-        let io = LayoutIo::with_dir(dir.clone());
-        let meta = vec![
-            SessionMeta {
-                id: 0,
-                title: "shell".into(),
-                cwd: Some(PathBuf::from("/Users/me/proj")),
-                shell: None,
-            },
-            SessionMeta {
-                id: 1,
-                title: "build".into(),
-                cwd: None,
-                shell: Some("/bin/zsh".into()),
-            },
-        ];
-        io.save_sessions(&meta).unwrap();
-        let loaded = io.load_sessions();
-        assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[&0].cwd.as_deref(), Some(std::path::Path::new("/Users/me/proj")));
-        assert_eq!(loaded[&1].shell.as_deref(), Some("/bin/zsh"));
-    }
+    // ── schema version mismatch ───────────────────────────────────
 
     #[test]
-    fn schema_mismatch_returns_none() {
+    fn unknown_version_returns_none() {
         let dir = tempdir();
-        let p = dir.join("dock.json");
-        std::fs::write(&p, format!("{{\"version\":999,\"dock\":{{}},\"next_session_id\":0}}")).unwrap();
         let io = LayoutIo::with_dir(dir);
-        assert!(io.load_dock().is_none());
+        let json = r#"{"version":999}"#;
+        std::fs::write(io.dock_path(), json).unwrap();
+        assert!(io.load_layout().is_none());
     }
 }

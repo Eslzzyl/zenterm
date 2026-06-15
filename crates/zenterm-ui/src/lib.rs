@@ -6,7 +6,7 @@
 //! - [`gpu`] — shared wgpu::Device/Queue/SharedRenderState handle
 //! - [`glyph_cache`] — shared glyph atlas across all sessions
 //! - [`session`] — per-tab `TerminalSession`
-//! - [`tab`] — `egui_dock::DockState` wrapper + change tracking
+//! - [`workspace`] — workspace management (WorkspaceManager, WorkspaceState)
 //! - [`tab_viewer`] — `egui_dock::TabViewer` implementation
 //! - [`sidebar`] — cmux-style vertical tab list
 //! - [`layout_io`] — `dock.json` + `sessions.json` persistence
@@ -19,8 +19,9 @@ mod layout_io;
 mod legacy;
 mod session;
 mod sidebar;
-mod tab;
 mod tab_viewer;
+mod workspace;
 
 pub use app::ZentermApp;
 pub use session::{SessionEffect, SessionId, TerminalSession};
+pub use workspace::{WorkspaceId, WorkspaceManager, WorkspaceState};

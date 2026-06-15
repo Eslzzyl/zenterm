@@ -7,6 +7,8 @@
 //! `HashMap<SessionId, TerminalSession>`; the heavy lifting lives
 //! in [`crate::session`], [`crate::tab_viewer`], [`crate::sidebar`],
 //! and [`crate::legacy`].
+//!
+//! Workspaces are managed by [`crate::workspace::WorkspaceManager`].
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,11 +25,11 @@ use zenterm_term::ColorScheme;
 
 use crate::glyph_cache::SharedGlyphAtlas;
 use crate::gpu::SharedGpuContext;
-use crate::layout_io::{LayoutIo, PersistedDock, SessionMeta, SCHEMA_VERSION};
+use crate::layout_io::{LayoutIo, PersistedLayout, PersistedWorkspace, SessionMeta, SCHEMA_VERSION};
 use crate::legacy::render_legacy_single;
 use crate::session::{SessionEffect, SessionId, TerminalSession};
-use crate::tab::TabsState;
 use crate::tab_viewer::TabViewerContext;
+use crate::workspace::WorkspaceManager;
 
 // ── App-level state ────────────────────────────────────────────────────
 
@@ -40,7 +42,7 @@ pub struct ZentermApp {
 
     // ── Multi-session state ────────────────────────────────────────
     pub sessions: HashMap<SessionId, TerminalSession>,
-    pub tabs: TabsState,
+    pub workspaces: WorkspaceManager,
     pub active_session_id: Option<SessionId>,
 
     // ── Layout persistence ─────────────────────────────────────────
@@ -126,17 +128,35 @@ impl ZentermApp {
         let mut sessions = HashMap::new();
         sessions.insert(first_id, session);
 
-        // ── Restore layout if config says so ──────────────────────
-        let mut tabs = TabsState::empty();
+        // ── Restore workspaces if config says so ──────────────────
+        let mut workspaces = WorkspaceManager::new();
         if config.ui.restore_layout_on_startup {
-            if let Some(persisted) = layout_io.load_dock() {
-                tabs = TabsState::with_dock(persisted.dock, persisted.next_session_id);
+            if let Some(persisted) = layout_io.load_layout() {
+                let mut ws_states = Vec::new();
+                for pw in &persisted.workspaces {
+                    let ws_id = crate::workspace::WorkspaceId::new(pw.id);
+                    ws_states.push(crate::workspace::WorkspaceState::from_dock(
+                        ws_id,
+                        pw.name.clone(),
+                        pw.dock.clone(),
+                    ));
+                }
+                if !ws_states.is_empty() {
+                    let active_ws_id =
+                        crate::workspace::WorkspaceId::new(persisted.active_workspace_id);
+                    workspaces = WorkspaceManager::from_persisted(
+                        ws_states,
+                        active_ws_id,
+                        persisted.next_session_id,
+                        persisted.next_workspace_id,
+                    );
+                }
             }
         }
-        if tabs.dock.iter_all_tabs().next().is_none() {
-            // Fresh install or no restored layout: register the
-            // existing first session as a single dock tab.
-            tabs.dock.push_to_focused_leaf(first_id);
+        // Ensure the first session is registered in the active workspace.
+        let first_ws = workspaces.active_workspace();
+        if first_ws.all_tab_ids().is_empty() {
+            workspaces.active_workspace_mut().new_tab(first_id);
         }
 
         // Hydrate session titles / cwd from sessions.json.
@@ -157,7 +177,7 @@ impl ZentermApp {
             atlas,
             callback,
             sessions,
-            tabs,
+            workspaces,
             active_session_id: Some(first_id),
             layout_io,
             layout_dirty: false,
@@ -178,8 +198,8 @@ impl ZentermApp {
     // ── Theme sync (app-level) ─────────────────────────────────────
 
     /// Sync the active theme with the user's preference and the OS
-    /// system theme.  Rebuilds each session's colour scheme when
-    /// the theme changes.
+    /// system theme.  Rebuilds each session's colour scheme when the
+    /// theme changes.
     fn sync_theme(&mut self, egui_ctx: &Context) {
         let system_dark = egui_ctx.input(|i| match i.raw.system_theme {
             Some(egui::Theme::Dark) => true,
@@ -205,10 +225,10 @@ impl ZentermApp {
 
     // ── Session lifecycle ─────────────────────────────────────────
 
-    /// Spawn a new session in the currently focused dock leaf and
-    /// return its id.
+    /// Spawn a new session in the active workspace's currently focused
+    /// dock leaf and return its id.
     pub fn spawn_session(&mut self) -> SessionId {
-        let id = self.tabs.new_tab();
+        let id = self.workspaces.new_session_id();
         let scheme = ColorScheme::from_theme(&self.theme);
         let size = zenterm_core::size::TermSize::new(
             self.config.window.dimensions.lines,
@@ -225,51 +245,47 @@ impl ZentermApp {
             self.callback.clone(),
         );
         self.sessions.insert(id, session);
+        self.workspaces.active_workspace_mut().new_tab(id);
         self.active_session_id = Some(id);
         self.mark_layout_dirty();
         id
     }
 
-    /// Close a session and remove its tab from the dock.
+    /// Close a session and remove its tab from whichever workspace
+    /// owns it.
     pub fn close_session(&mut self, id: SessionId) {
-        // Locate the tab path; we may have already removed it
-        // (egui_dock calls on_close AFTER the tab is dropped from
-        // the tree in some flows).  `find_tab` on `DockState` returns
-        // an `Option<TabPath>` in egui_dock 0.19.
-        let path = self
-            .tabs
-            .dock
-            .find_tab(&id);
-        if let Some(path) = path {
-            if self.tabs.dock.remove_tab(path).is_some() {
-                self.tabs.mark_changed();
-            }
-        }
+        // Remove the tab from the workspace that owns it.
+        self.workspaces.remove_tab_from_any_workspace(id);
+
         // Drop the session (its `Drop` kills the PTY).
         self.sessions.remove(&id);
+
+        // Re-focus: pick the first tab in the active workspace.
         if self.active_session_id == Some(id) {
             self.active_session_id = self
-                .tabs
-                .dock
-                .iter_all_tabs()
-                .next()
-                .map(|(_, tab)| *tab);
+                .workspaces
+                .active_workspace()
+                .all_tab_ids()
+                .first()
+                .copied();
         }
         self.mark_layout_dirty();
     }
 
-    /// Switch the active tab to the given `(node, tab)` pair.
+    /// Switch the active tab to the given `(node, tab)` pair in the
+    /// active workspace.
     pub fn focus_tab(&mut self, node: egui_dock::NodeIndex, tab: egui_dock::TabIndex) {
         let path = egui_dock::TabPath {
             surface: egui_dock::SurfaceIndex::main(),
             node,
             tab,
         };
-        if self.tabs.dock.set_active_tab(path).is_ok() {
-            if let Some(tp) = self.tabs.dock.iter_all_tabs().next() {
+        let ws = self.workspaces.active_workspace_mut();
+        if ws.dock.set_active_tab(path).is_ok() {
+            if let Some(tp) = ws.dock.iter_all_tabs().next() {
                 self.active_session_id = Some(*tp.1);
             }
-            self.tabs.mark_changed();
+            ws.mark_changed();
         }
     }
 
@@ -301,22 +317,40 @@ impl ZentermApp {
     /// Force a layout write.  Called from [`Self::on_exit`] and from
     /// [`Self::maybe_persist_layout`] after the debounce window.
     pub fn persist_layout_now(&mut self) {
-        let persisted = PersistedDock {
+        let persisted = PersistedLayout {
             version: SCHEMA_VERSION,
-            dock: self.tabs.dock.clone(),
-            next_session_id: self.tabs.next_session_id,
+            active_workspace_id: self.workspaces.active_workspace_id.raw(),
+            next_session_id: self.workspaces.next_session_id,
+            next_workspace_id: self.workspaces.next_workspace_id,
+            workspaces: self
+                .workspaces
+                .workspaces
+                .iter()
+                .map(|ws| PersistedWorkspace {
+                    id: ws.id.raw(),
+                    name: ws.name.clone(),
+                    dock: ws.dock.clone(),
+                })
+                .collect(),
         };
-        if let Err(e) = self.layout_io.save_dock(&persisted) {
-            log::error!("persist_layout_now: save_dock failed: {e}");
+        if let Err(e) = self.layout_io.save_layout(&persisted) {
+            log::error!("persist_layout_now: save_layout failed: {e}");
         }
         let metas: Vec<SessionMeta> = self
             .sessions
             .iter()
-            .map(|(id, s)| SessionMeta {
-                id: id.0,
-                title: s.title.clone(),
-                cwd: s.cwd.clone(),
-                shell: None,
+            .map(|(id, s)| {
+                let ws_id = self
+                    .workspaces
+                    .find_tab_workspace(*id)
+                    .map(|ws| ws.id.raw());
+                SessionMeta {
+                    id: id.0,
+                    title: s.title.clone(),
+                    cwd: s.cwd.clone(),
+                    shell: None,
+                    workspace_id: ws_id,
+                }
             })
             .collect();
         if let Err(e) = self.layout_io.save_sessions(&metas) {
@@ -465,7 +499,7 @@ impl ZentermApp {
         false
     }
 
-    // ── Config reload (app-level) ──────────────────────────────────
+    // ── Config reload ─────────────────────────────────────────────
 
     fn reload_config(&mut self, egui_ctx: &Context) {
         match Config::reload() {
@@ -652,7 +686,8 @@ impl ZentermApp {
             // before the panel closure lets the panel borrow the
             // closures (which mutably borrow `self`) without conflict.
             let dock_snapshot: Vec<(egui_dock::NodeIndex, egui_dock::TabIndex, SessionId)> = self
-                .tabs
+                .workspaces
+                .active_workspace()
                 .dock
                 .iter_all_tabs()
                 .map(|(path, tab)| (path.node, path.tab, *tab))
@@ -732,7 +767,8 @@ impl ZentermApp {
                     pending_adds: &mut self.pending_adds,
                 };
                 let style = Style::from_egui(ui.style().as_ref());
-                let mut area = DockArea::new(&mut self.tabs.dock)
+                let ws = self.workspaces.active_workspace_mut();
+                let mut area = DockArea::new(&mut ws.dock)
                     .style(style)
                     .show_close_buttons(self.config.ui.show_close_tab_button)
                     .show_add_buttons(self.config.ui.show_add_tab_button);
