@@ -806,10 +806,10 @@ impl ZentermApp {
             let max_w = self.config.ui.sidebar_max_width;
             let panel = match pos {
                 zenterm_config::ui::SidebarPosition::Left => {
-                    egui::SidePanel::left("zenterm_sidebar")
+                    egui::Panel::left("zenterm_sidebar")
                 }
                 zenterm_config::ui::SidebarPosition::Right => {
-                    egui::SidePanel::right("zenterm_sidebar")
+                    egui::Panel::right("zenterm_sidebar")
                 }
             };
 
@@ -845,9 +845,9 @@ impl ZentermApp {
 
             panel
                 .resizable(true)
-                .default_width(width)
-                .min_width(min_w)
-                .max_width(max_w)
+                .default_size(width)
+                .min_size(min_w)
+                .max_size(max_w)
                 .show_inside(ui, |ui| {
                     let mut queued_new_tab = false;
                     let mut queued_new_ws = false;
