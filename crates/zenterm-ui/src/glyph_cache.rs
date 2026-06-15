@@ -111,9 +111,9 @@ impl SharedGlyphAtlas {
 
     /// Push the latest atlas pixels to the GPU.
     ///
-    /// Cheap when the atlas has not changed (one `Mutex` acquisition,
-    /// no allocation).  Required after any glyph was newly rasterised
-    /// and after [`Self::reinit_for_dpi`].
+    /// Called after new glyphs were rasterised.  The caller already
+    /// guarantees that `texture_data` has changed, so we unconditionally
+    /// stage the payload and mark dirty for `prepare()` to pick up.
     pub fn sync_to_gpu(&self) {
         let atlas = self.inner.lock().unwrap();
         let current_size = atlas.texture_size;
@@ -123,21 +123,13 @@ impl SharedGlyphAtlas {
             *last = current_size;
         }
 
-        // Upload whenever the size grew (texture resize) OR the dirty
-        // flag was set by `ensure_glyph`.  The flag lives on
-        // `SharedRenderState`; we always upload when it is set and
-        // clear it after a successful upload.
-        if !self.shared.atlas_dirty.load(Ordering::Acquire) && !resized {
-            return;
-        }
-
         let mut update = self.shared.atlas_update.lock().unwrap();
         *update = Some(AtlasUpdate {
             size: current_size,
             data: atlas.texture_data.clone(),
             resized,
         });
-        self.shared.atlas_dirty.store(false, Ordering::Release);
+        self.shared.atlas_dirty.store(true, Ordering::Release);
     }
 
     /// Mark the GPU copy as dirty without uploading.  Useful when
