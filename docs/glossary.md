@@ -222,6 +222,9 @@ Wezterm's font stack: wraps FreeType (rasterization), HarfBuzz (shaping + ligatu
 
 ## W
 
+### Workspace
+A named grouping of terminal tabs.  Each workspace owns its own `DockState<SessionId>` (egui_dock layout tree), so different workspaces can have independent tab arrangements.  The session pool is shared — a `SessionId` is globally unique across all workspaces.  Managed by `WorkspaceManager` in `workspace.rs`.  Users can create, rename, switch, and close workspaces via the sidebar or keyboard shortcuts (`Ctrl+1..9`, `Ctrl+Tab`).
+
 ### wgpu
 The standard Rust graphics API. Translates to Vulkan, Metal, DirectX 12, or WebGPU depending on platform. Cross-platform, safe, modern. Successor to OpenGL in the Rust ecosystem.
 

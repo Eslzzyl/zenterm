@@ -111,13 +111,14 @@ impl ZentermApp {
 
         // ── First session (always present, even when tabs are off)
         let first_id = SessionId::new(0);
+        let size = zenterm_core::size::TermSize::new(
+            config.window.dimensions.lines,
+            config.window.dimensions.columns,
+        );
         let mut session = TerminalSession::new(
             first_id,
-            zenterm_core::size::TermSize::new(
-                config.window.dimensions.lines,
-                config.window.dimensions.columns,
-            ),
-            scheme,
+            size,
+            scheme.clone(),
             config.cursor.blink_interval,
             default_bg,
             gpu.clone(),
@@ -130,8 +131,14 @@ impl ZentermApp {
 
         // ── Restore workspaces if config says so ──────────────────
         let mut workspaces = WorkspaceManager::new();
+        let mut restored_session_ids: Vec<SessionId> = Vec::new();
         if config.ui.restore_layout_on_startup {
             if let Some(persisted) = layout_io.load_layout() {
+                for pw in &persisted.workspaces {
+                    for (_, tab) in pw.dock.iter_all_tabs() {
+                        restored_session_ids.push(*tab);
+                    }
+                }
                 let mut ws_states = Vec::new();
                 for pw in &persisted.workspaces {
                     let ws_id = crate::workspace::WorkspaceId::new(pw.id);
@@ -153,9 +160,29 @@ impl ZentermApp {
                 }
             }
         }
+
+        // Create TerminalSessions for all persisted tab ids that
+        // don't already exist (id 0 was created above).
+        for sid in &restored_session_ids {
+            if sessions.contains_key(sid) {
+                continue;
+            }
+            let mut s = TerminalSession::new(
+                *sid,
+                size,
+                scheme.clone(),
+                config.cursor.blink_interval,
+                default_bg,
+                gpu.clone(),
+                atlas.clone(),
+                callback.clone(),
+            );
+            s.title = "shell".into();
+            sessions.insert(*sid, s);
+        }
+
         // Ensure the first session is registered in the active workspace.
-        let first_ws = workspaces.active_workspace();
-        if first_ws.all_tab_ids().is_empty() {
+        if workspaces.active_workspace().all_tab_ids().is_empty() {
             workspaces.active_workspace_mut().new_tab(first_id);
         }
 
@@ -172,13 +199,21 @@ impl ZentermApp {
             }
         }
 
+        // Determine the active session from the active workspace.
+        let active_session_id = workspaces
+            .active_workspace()
+            .all_tab_ids()
+            .first()
+            .copied()
+            .or(Some(first_id));
+
         Self {
             gpu,
             atlas,
             callback,
             sessions,
             workspaces,
-            active_session_id: Some(first_id),
+            active_session_id,
             layout_io,
             layout_dirty: false,
             last_persist_at: None,
@@ -221,6 +256,34 @@ impl ZentermApp {
                 session.terminal_dirty = true;
             }
         }
+    }
+
+    /// Generate a unique workspace name based on the current working
+    /// directory.  Falls back to a numbered name if the cwd is
+    /// unavailable or the name already exists.
+    fn generate_workspace_name(workspaces: &WorkspaceManager) -> String {
+        let cwd_name = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+
+        let base = cwd_name.unwrap_or_else(|| "workspace".into());
+
+        // Ensure uniqueness by appending a suffix if needed.
+        let existing: std::collections::HashSet<String> = workspaces
+            .workspaces
+            .iter()
+            .map(|ws| ws.name.clone())
+            .collect();
+        if !existing.contains(&base) {
+            return base;
+        }
+        for i in 2.. {
+            let candidate = format!("{base}-{i}");
+            if !existing.contains(&candidate) {
+                return candidate;
+            }
+        }
+        unreachable!()
     }
 
     // ── Session lifecycle ─────────────────────────────────────────
@@ -435,13 +498,17 @@ impl ZentermApp {
         });
     }
 
-    /// Handle Ctrl+Shift+C / Ctrl+Shift+V / Ctrl+Shift+R at the app
-    /// level (these are terminal-emulator commands, not shell input).
+    /// Handle app-level keyboard shortcuts.
+    ///
+    /// Returns `true` if a shortcut was consumed (skip forwarding to
+    /// the active session).
     fn handle_shortcuts(&mut self, ctx: &Context) -> bool {
-        let (copy, paste, reload) = ctx.input(|input| {
+        let (copy, paste, reload, ws_switch, ws_cycle) = ctx.input(|input| {
             let mut c = false;
             let mut p = false;
             let mut r = false;
+            let mut ws_switch: Option<usize> = None;
+            let mut ws_cycle: Option<isize> = None;
             for event in &input.events {
                 if let egui::Event::Key {
                     key,
@@ -450,23 +517,83 @@ impl ZentermApp {
                     ..
                 } = event
                 {
+                    // Ctrl+Shift+C / V / R
                     let shift_ctrl = modifiers.ctrl && modifiers.shift && !modifiers.alt;
-                    if !shift_ctrl {
-                        continue;
+                    if shift_ctrl {
+                        match key {
+                            egui::Key::C => c = true,
+                            egui::Key::V => p = true,
+                            egui::Key::R => r = true,
+                            _ => {}
+                        }
                     }
-                    match key {
-                        egui::Key::C => c = true,
-                        egui::Key::V => p = true,
-                        egui::Key::R => r = true,
-                        _ => {}
+                    // Ctrl+1..9 → switch to workspace by index
+                    if modifiers.ctrl && !modifiers.shift && !modifiers.alt {
+                        match key {
+                            egui::Key::Num1 => ws_switch = Some(0),
+                            egui::Key::Num2 => ws_switch = Some(1),
+                            egui::Key::Num3 => ws_switch = Some(2),
+                            egui::Key::Num4 => ws_switch = Some(3),
+                            egui::Key::Num5 => ws_switch = Some(4),
+                            egui::Key::Num6 => ws_switch = Some(5),
+                            egui::Key::Num7 => ws_switch = Some(6),
+                            egui::Key::Num8 => ws_switch = Some(7),
+                            egui::Key::Num9 => ws_switch = Some(8),
+                            _ => {}
+                        }
+                    }
+                    // Ctrl+Tab → next workspace, Ctrl+Shift+Tab → prev
+                    if modifiers.ctrl && !modifiers.alt {
+                        match key {
+                            egui::Key::Tab if !modifiers.shift => ws_cycle = Some(1),
+                            egui::Key::Tab if modifiers.shift => ws_cycle = Some(-1),
+                            _ => {}
+                        }
                     }
                 }
             }
-            (c, p, r)
+            (c, p, r, ws_switch, ws_cycle)
         });
         if reload {
             self.reload_config(ctx);
             return true;
+        }
+        // Workspace switching shortcuts.
+        if let Some(idx) = ws_switch {
+            if let Some(ws) = self.workspaces.workspaces.get(idx) {
+                let ws_id = ws.id;
+                self.workspaces.switch_to(ws_id);
+                self.active_session_id = self
+                    .workspaces
+                    .active_workspace()
+                    .all_tab_ids()
+                    .first()
+                    .copied();
+                self.mark_layout_dirty();
+                return true;
+            }
+        }
+        if let Some(dir) = ws_cycle {
+            let len = self.workspaces.workspaces.len();
+            if len > 0 {
+                let current_idx = self
+                    .workspaces
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.id == self.workspaces.active_workspace_id)
+                    .unwrap_or(0);
+                let new_idx = ((current_idx as isize + dir).rem_euclid(len as isize)) as usize;
+                let ws_id = self.workspaces.workspaces[new_idx].id;
+                self.workspaces.switch_to(ws_id);
+                self.active_session_id = self
+                    .workspaces
+                    .active_workspace()
+                    .all_tab_ids()
+                    .first()
+                    .copied();
+                self.mark_layout_dirty();
+                return true;
+            }
         }
         if copy {
             if let Some(id) = self.active_session_id {
@@ -747,44 +874,83 @@ impl ZentermApp {
                             .show(ui, |ui| {
                                 for (ws_id, ws_name, is_active_ws, tabs) in &ws_snapshot {
                                     // ── Workspace header ─────────
-                                    let header_label = if *is_active_ws {
-                                        egui::RichText::new(ws_name)
-                                            .strong()
-                                            .color(ui.visuals().strong_text_color())
-                                    } else {
-                                        egui::RichText::new(ws_name)
-                                    };
-                                    let header_resp =
-                                        ui.selectable_label(*is_active_ws, header_label);
-                                    if header_resp.clicked() {
-                                        queued_switch_ws = Some(*ws_id);
-                                    }
-                                    // Right-click context menu on workspace header.
-                                    header_resp.context_menu(|ui| {
-                                        if ui.button("New Tab").clicked() {
-                                            queued_new_tab = true;
-                                            queued_switch_ws = Some(*ws_id);
-                                            ui.close();
+                                    let rename_id =
+                                        egui::Id::new(("ws_rename", ws_id.0));
+                                    let is_renaming = ui.memory(|m| {
+                                        m.data
+                                            .get_temp::<bool>(rename_id)
+                                            .unwrap_or(false)
+                                    });
+
+                                    if is_renaming {
+                                        // Inline rename mode.
+                                        let mut buf = ws_name.clone();
+                                        let resp = ui.text_edit_singleline(&mut buf);
+                                        if resp.lost_focus()
+                                            || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                        {
+                                            // Commit rename.
+                                            ui.memory_mut(|m| {
+                                                m.data.remove_temp::<bool>(rename_id);
+                                            });
+                                            if !buf.is_empty() && buf != *ws_name {
+                                                queued_rename_ws =
+                                                    Some((*ws_id, buf));
+                                            }
                                         }
-                                        ui.separator();
-                                        let mut rename_buf = ws_name.clone();
-                                        ui.horizontal(|ui| {
-                                            ui.label("Rename:");
-                                            if ui
-                                                .text_edit_singleline(&mut rename_buf)
-                                                .lost_focus()
-                                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                            {
-                                                queued_rename_ws = Some((*ws_id, rename_buf));
+                                        // Also cancel on Escape.
+                                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                            ui.memory_mut(|m| {
+                                                m.data.remove_temp::<bool>(rename_id);
+                                            });
+                                        }
+                                        // Keep focus on the text edit.
+                                        resp.request_focus();
+                                    } else {
+                                        // Normal display mode.
+                                        let header_label = if *is_active_ws {
+                                            egui::RichText::new(ws_name)
+                                                .strong()
+                                                .color(ui.visuals().strong_text_color())
+                                        } else {
+                                            egui::RichText::new(ws_name)
+                                        };
+                                        let header_resp =
+                                            ui.selectable_label(*is_active_ws, header_label);
+                                        if header_resp.clicked() {
+                                            queued_switch_ws = Some(*ws_id);
+                                        }
+                                        // Double-click to rename.
+                                        if header_resp.double_clicked() {
+                                            ui.memory_mut(|m| {
+                                                m.data.insert_temp::<bool>(
+                                                    rename_id, true,
+                                                );
+                                            });
+                                        }
+                                        // Right-click context menu.
+                                        header_resp.context_menu(|ui| {
+                                            if ui.button("New Tab").clicked() {
+                                                queued_new_tab = true;
+                                                queued_switch_ws = Some(*ws_id);
+                                                ui.close();
+                                            }
+                                            ui.separator();
+                                            if ui.button("Rename...").clicked() {
+                                                ui.memory_mut(|m| {
+                                                    m.data.insert_temp::<bool>(
+                                                        rename_id, true,
+                                                    );
+                                                });
+                                                ui.close();
+                                            }
+                                            ui.separator();
+                                            if ui.button("Close workspace").clicked() {
+                                                queued_close_ws = Some(*ws_id);
                                                 ui.close();
                                             }
                                         });
-                                        ui.separator();
-                                        if ui.button("Close workspace").clicked() {
-                                            queued_close_ws = Some(*ws_id);
-                                            ui.close();
-                                        }
-                                    });
+                                    }
 
                                     // ── Tabs under this workspace ─
                                     ui.indent(egui::Id::new(("ws_tabs", ws_id.0)), |ui| {
@@ -822,7 +988,10 @@ impl ZentermApp {
 
                     // ── Apply queued actions ──────────────────────
                     if queued_new_ws {
-                        self.workspaces.create_workspace("workspace");
+                        let ws_name = Self::generate_workspace_name(
+                            &self.workspaces,
+                        );
+                        self.workspaces.create_workspace(ws_name);
                         // Also spawn a first tab in the new workspace.
                         let id = self.workspaces.new_session_id();
                         let scheme = ColorScheme::from_theme(&self.theme);

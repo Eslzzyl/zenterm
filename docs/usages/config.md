@@ -434,6 +434,32 @@ sidebar_enabled = true
 
 ---
 
+## Keyboard shortcuts
+
+Built-in shortcuts that work when `tabs_enabled = true`:
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+Shift+C` | Copy selection to clipboard |
+| `Ctrl+Shift+V` | Paste from clipboard |
+| `Ctrl+Shift+R` | Reload config file |
+| `Ctrl+1` .. `Ctrl+9` | Switch to workspace by index |
+| `Ctrl+Tab` | Cycle to next workspace |
+| `Ctrl+Shift+Tab` | Cycle to previous workspace |
+
+Sidebar-only shortcuts:
+
+| Action | How |
+|--------|-----|
+| Switch workspace | Click workspace name in sidebar |
+| Rename workspace | Double-click workspace name, or right-click → "Rename..." |
+| Close workspace | Right-click workspace → "Close workspace" |
+| New tab in workspace | Right-click workspace → "New Tab", or click "+ New shell" |
+| New workspace | Click "+ New WS" |
+| Switch to tab | Click tab name in sidebar |
+
+---
+
 ## Behavioural notes
 
 | Scenario | Behaviour |

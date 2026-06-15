@@ -61,12 +61,14 @@
     - Per-session terminal state isolated; shared `wgpu::Device` and `SharedGlyphAtlas`
     - Dock layout persisted to `~/.config/zenterm/dock.json`; per-session metadata to `sessions.json`
 
- 2. **Workspace sidebar** (cmux-inspired) — ✅ **DONE**
-    - Vertical list of tabs with context info:
-      - Session title (OSC 0/2)
-      - Current working directory (OSC 7 — parsed by `zenterm-term::scan_osc7`)
-      - Active-tab indicator (selectable label)
-    - `+ New shell` button spawns a new `TerminalSession` in the focused dock leaf
+ 2. **Workspace management** (cmux-inspired) — ✅ **DONE**
+    - Workspace abstraction: `WorkspaceManager` with named workspace grouping
+    - Sidebar shows workspace → tab tree (hierarchical, not flat)
+    - Workspace operations: create, rename (double-click or context menu), switch, close
+    - Close workspace migrates tabs to another workspace
+    - Auto-naming based on current directory
+    - Keyboard shortcuts: `Ctrl+1..9` switch by index, `Ctrl+Tab` cycle
+    - Session restoration: all persisted tabs are re-created on startup
     - `config.ui.sidebar_enabled` toggles visibility (default `false`)
 
  3. **Input handling (advanced)**
@@ -84,7 +86,7 @@
    - Selection auto-copy (optional, like macOS terminal)
    - OSC 52 clipboard escape sequence support
 
-**Deliverable:** A cmux-equivalent experience — multiple terminal tabs, workspace sidebar, and first-class AI agent notifications.
+**Deliverable:** A cmux-equivalent experience — multiple workspaces with tab grouping, workspace sidebar, and first-class AI agent notifications.
 
 ---
 

@@ -34,7 +34,7 @@ Inspired by [cmux](https://cmux.com/) (macOS-only, Swift + libghostty) — Zente
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  Terminal Sessions (one per tab/workspace)                    │   │
+│  │  Terminal Sessions (one per tab, grouped by workspace)        │   │
 │  │  ┌────────────────┐  ┌─────────────────────┐  ┌──────────┐   │   │
 │  │  │ portable-pty   │  │ alacritty_terminal  │  │ Notific. │   │   │
 │  │  │ (PTY I/O)      │→ │ (vte + grid + term, │  │ System   │   │   │
@@ -43,6 +43,27 @@ Inspired by [cmux](https://cmux.com/) (macOS-only, Swift + libghostty) — Zente
 │  │  └────────────────┘  └─────────────────────┘  └──────────┘   │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 ```
+
+## Workspace Hierarchy
+
+Terminal sessions are organized into **workspaces** — named groups of tabs:
+
+```
+ZentermApp
+ ├── sessions: HashMap<SessionId, TerminalSession>   (shared pool)
+ ├── workspaces: WorkspaceManager
+ │    ├── Workspace { id, name, dock: DockState<SessionId> }
+ │    ├── Workspace { id, name, dock: DockState<SessionId> }
+ │    └── ...
+ └── active_session_id: Option<SessionId>
+```
+
+Each workspace owns its own `DockState` (egui_dock layout tree), so
+different workspaces can have independent tab arrangements.  The
+session pool is shared — a `SessionId` is globally unique.
+
+Keyboard shortcuts: `Ctrl+1..9` switches workspace by index,
+`Ctrl+Tab` / `Ctrl+Shift+Tab` cycles through workspaces.
 
 ## Data Flow (single frame)
 
@@ -148,7 +169,7 @@ zenterm/
 │   │   ├── gpu.rs              # SharedGpuContext (device/queue/SharedRenderState)
 │   │   ├── glyph_cache.rs      # SharedGlyphAtlas (Arc<Mutex<GlyphAtlas>>)
 │   │   ├── session.rs          # TerminalSession (per-tab: PTY + Terminal + view)
-│   │   ├── tab.rs              # TabsState (egui_dock::DockState wrapper)
+│   │   ├── workspace.rs        # WorkspaceManager, WorkspaceState, WorkspaceId
 │   │   ├── tab_viewer.rs       # egui_dock::TabViewer implementation
 │   │   ├── sidebar.rs          # Cmux-style vertical tab list
 │   │   ├── layout_io.rs        # dock.json / sessions.json persistence
