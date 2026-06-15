@@ -44,6 +44,24 @@ if clipped_h < scaled_h && scaled_h > 0.0 {
 裁剪对所有 glyph 生效（不只是光标），确保任何字符的位图 padding
 都不会溢出到相邻 cell。
 
+## 宽字符（CJK / Emoji）处理
+
+全角字符占据两个 cell。裁剪边界通过检查下一列的 `is_spacer` 标志
+来确定字符宽度：
+
+```rust
+let num_cells: f32 = if col + 1 < cols {
+    grid.cell(row, col + 1)
+        .map_or(1.0, |c| if c.is_spacer { 2.0 } else { 1.0 })
+} else {
+    1.0
+};
+
+let cell_right = cell_left + cw * num_cells;  // 半角: +cw, 全角: +2*cw
+```
+
+背景 quad 同样使用 `num_cells` 确保全角字符的背景覆盖完整的两列。
+
 ## 与其他终端的对比
 
 | | 裁剪 | 策略 |

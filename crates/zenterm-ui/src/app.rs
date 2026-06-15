@@ -503,6 +503,17 @@ impl ZentermApp {
                 let px_to_clip_x = |px: f32| px * x_scale - 1.0;
                 let px_to_clip_y = |px: f32| 1.0 - px * y_scale;
 
+                // ── Wide-character detection ─────────────────────────
+                // CJK / emoji characters occupy two cells.  The trailing
+                // cell has `is_spacer == true`; check the next column to
+                // determine the cell count for clipping and background.
+                let num_cells: f32 = if col + 1 < cols {
+                    grid.cell(row, col + 1)
+                        .map_or(1.0, |c| if c.is_spacer { 2.0 } else { 1.0 })
+                } else {
+                    1.0
+                };
+
                 // ── Pass 1: Background quad (all cells except cursor) ──────────
                 // We paint a SOLID quad for every non-cursor cell, using
                 // either the selection color (for selected cells) or the
@@ -537,7 +548,7 @@ impl ZentermApp {
                         let bg_y_px = (row as f32 * ch).round();
                         let bqx = px_to_clip_x(bg_x_px);
                         let bqy = px_to_clip_y(bg_y_px);
-                        let bqw = cw * x_scale;
+                        let bqw = cw * num_cells * x_scale;
                         let bqh = ch * y_scale;
 
                         bg_instances.push(CellInstance {
@@ -629,9 +640,11 @@ impl ZentermApp {
                         // swash's bounding-box rounding) can extend
                         // beyond the cell.  Clip the quad and adjust
                         // UV so only the visible part is rendered.
+                        // Wide characters (CJK / emoji) span 2 cells,
+                        // so clip to the full character width.
                         let cell_left = col as f32 * cw;
                         let cell_top = row as f32 * ch;
-                        let cell_right = cell_left + cw;
+                        let cell_right = cell_left + cw * num_cells;
                         let cell_bottom = cell_top + ch;
 
                         // Vertical clip
