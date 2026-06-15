@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use egui::{Context, Id};
+use egui::{Context, CornerRadius, Id, Margin, Stroke};
 use egui_dock::{DockArea, Style};
 
 use zenterm_config::Config;
@@ -1064,7 +1064,16 @@ impl ZentermApp {
                     pending_close: &mut self.pending_close,
                     pending_adds: &mut self.pending_adds,
                 };
-                let style = Style::from_egui(ui.style().as_ref());
+                let mut style = Style::from_egui(ui.style().as_ref());
+                // Remove rounded corners, inner margin, and border stroke
+                // on the tab body so the terminal fills edge-to-edge without
+                // a visible container wrapper.
+                style.tab.tab_body.corner_radius = CornerRadius::ZERO;
+                style.tab.tab_body.inner_margin = Margin::ZERO;
+                style.tab.tab_body.stroke = Stroke::NONE;
+                // Also flatten the tab bar corners to avoid exposing the
+                // background behind the rounded top-left / top-right edges.
+                style.tab_bar.corner_radius = CornerRadius::ZERO;
                 let ws = self.workspaces.active_workspace_mut();
                 let mut area = DockArea::new(&mut ws.dock)
                     .style(style)
