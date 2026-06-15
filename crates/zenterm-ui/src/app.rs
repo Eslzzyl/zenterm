@@ -89,6 +89,9 @@ impl ZentermApp {
             shared.clone(),
         ));
         atlas.seed_ascii();
+        // Push the seeded atlas to the GPU channel so the very first
+        // prepare() picks up glyphs instead of an all-zero texture.
+        atlas.sync_to_gpu();
 
         // ── Wgpu callback (one per app; reads the shared instance
         //    buffer built by every session's `update_cell_instances`)

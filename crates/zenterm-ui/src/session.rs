@@ -320,6 +320,8 @@ impl TerminalSession {
             zenterm_core::SubpixelLayout::detect(),
         );
         self.atlas.seed_ascii();
+        // Ensure the seeded atlas reaches the GPU before the next prepare().
+        self.atlas.sync_to_gpu();
         self.cell_width = cw;
         self.cell_height = ch;
         self.terminal_dirty = true;
