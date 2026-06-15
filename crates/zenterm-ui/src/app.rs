@@ -1078,7 +1078,9 @@ impl ZentermApp {
                 let mut area = DockArea::new(&mut ws.dock)
                     .style(style)
                     .show_close_buttons(self.config.ui.show_close_tab_button)
-                    .show_add_buttons(self.config.ui.show_add_tab_button);
+                    .show_add_buttons(self.config.ui.show_add_tab_button)
+                    .show_leaf_collapse_buttons(false)
+                    .show_leaf_close_all_buttons(false);
                 area = area.id(Id::new("zenterm_dock"));
                 area.show_inside(ui, &mut viewer);
             });
