@@ -872,9 +872,6 @@ impl ZentermApp {
 
                     ui.vertical(|ui| {
                         ui.add_space(6.0);
-                        ui.heading("Workspaces");
-                        ui.add_space(4.0);
-                        ui.separator();
                         ui.horizontal(|ui| {
                             if ui.button("+  New shell").clicked() {
                                 queued_new_tab = true;
