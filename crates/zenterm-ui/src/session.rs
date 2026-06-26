@@ -116,6 +116,11 @@ pub struct TerminalSession {
 
     // ── Theming ─────────────────────────────────────────────────────
     pub default_bg: egui::Color32,
+
+    // ── Cell-instance cache (avoids full rebuild when terminal is idle) ──
+    cached_bg: Vec<CellInstance>,
+    cached_glyph: Vec<CellInstance>,
+    cached_deco: Vec<CellInstance>,
 }
 
 impl TerminalSession {
@@ -162,6 +167,9 @@ impl TerminalSession {
             blink_interval,
             pty_exited: false,
             default_bg,
+            cached_bg: Vec::new(),
+            cached_glyph: Vec::new(),
+            cached_deco: Vec::new(),
         }
     }
 
@@ -405,6 +413,29 @@ impl TerminalSession {
             return false;
         }
 
+        // Fast path: terminal content hasn't changed — reuse the
+        // cached cell instances from the previous frame.  Cursor
+        // blinking already sets `terminal_dirty = true` every
+        // blink tick (see `app.rs`), so the cursor animation still
+        // works correctly.
+        if !self.terminal_dirty {
+            let has_instances = !self.cached_bg.is_empty()
+                || !self.cached_glyph.is_empty()
+                || !self.cached_deco.is_empty();
+            if has_instances {
+                let mut buf = self
+                    .gpu
+                    .shared
+                    .instances
+                    .lock()
+                    .expect("SharedRenderState.instances poisoned");
+                buf.extend(&self.cached_bg);
+                buf.extend(&self.cached_glyph);
+                buf.extend(&self.cached_deco);
+            }
+            return has_instances;
+        }
+
         let mut atlas = self.atlas.lock();
         let tex_size = atlas.texture_size as f32;
         let cw = self.cell_width;
@@ -438,17 +469,6 @@ impl TerminalSession {
             return false;
         }
 
-        log::debug!(
-            "update_cell_instances: session={} {}x{} viewport {:.0}x{:.0}px cell {:.1}x{:.1}px",
-            self.id.0,
-            cols,
-            rows,
-            vp_width_px,
-            vp_height_px,
-            cw,
-            ch
-        );
-
         // The dock viewport (in pixels) is the union of every leaf
         // node; per-session origin is **not** added here because the
         // wgpu callback is already registered with the session's
@@ -462,8 +482,6 @@ impl TerminalSession {
         let mut bg_instances: Vec<CellInstance> = Vec::with_capacity(rows * cols);
         let mut glyph_instances: Vec<CellInstance> = Vec::with_capacity(rows * cols);
         let mut deco_instances: Vec<CellInstance> = Vec::with_capacity(rows * cols);
-        let mut blank_count = 0u32;
-        let mut glyph_fail = 0u32;
         let mut has_new_glyphs = false;
 
         for row in 0..rows {
@@ -492,11 +510,9 @@ impl TerminalSession {
                 };
 
                 if cell.is_spacer {
-                    blank_count += 1;
                     continue;
                 }
                 if cell.hidden {
-                    blank_count += 1;
                     continue;
                 }
 
@@ -537,9 +553,7 @@ impl TerminalSession {
                 }
 
                 // ── Pass 2: glyph quad ──────────────────────────────
-                if is_blank {
-                    blank_count += 1;
-                } else {
+                if !is_blank {
                     if let Ok((entry, is_new)) = atlas.ensure_glyph(ch_char) {
                         if is_new {
                             has_new_glyphs = true;
@@ -652,7 +666,10 @@ impl TerminalSession {
                             });
                         }
                     } else {
-                        glyph_fail += 1;
+                        log::trace!(
+                            "update_cell_instances: glyph lookup failed for ch={:?}",
+                            ch_char
+                        );
                     }
                 }
 
@@ -748,23 +765,10 @@ impl TerminalSession {
             }
         }
 
-        let bg_count = bg_instances.len();
-        let glyph_count = glyph_instances.len();
-        let deco_count = deco_instances.len();
-        let total_instances =
-            bg_instances.len() + glyph_instances.len() + deco_instances.len();
-
-        log::debug!(
-            "update_cell_instances: session={} {} total ({} bg + {} glyph + {} deco), \
-             {} blank skipped, {} glyph failures",
-            self.id.0,
-            total_instances,
-            bg_count,
-            glyph_count,
-            deco_count,
-            blank_count,
-            glyph_fail,
-        );
+        // Cache rebuilt instances for the fast-path next frame.
+        std::mem::swap(&mut self.cached_bg, &mut bg_instances);
+        std::mem::swap(&mut self.cached_glyph, &mut glyph_instances);
+        std::mem::swap(&mut self.cached_deco, &mut deco_instances);
 
         // Append to the shared instance buffer in draw order.
         let mut buf = self
@@ -773,9 +777,9 @@ impl TerminalSession {
             .instances
             .lock()
             .expect("SharedRenderState.instances poisoned");
-        buf.extend(bg_instances);
-        buf.extend(glyph_instances);
-        buf.extend(deco_instances);
+        buf.extend(&self.cached_bg);
+        buf.extend(&self.cached_glyph);
+        buf.extend(&self.cached_deco);
         drop(buf);
 
         // Mark the GPU side as dirty (instance generation bumped by
