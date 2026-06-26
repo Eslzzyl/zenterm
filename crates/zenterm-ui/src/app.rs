@@ -1037,6 +1037,9 @@ impl ZentermApp {
                 // Also flatten the tab bar corners to avoid exposing the
                 // background behind the rounded top-left / top-right edges.
                 style.tab_bar.corner_radius = CornerRadius::ZERO;
+                // Place the "+" add-tab button right after the last tab
+                // instead of right-aligning it to the tab bar edge.
+                style.buttons.add_tab_align = TabAddAlign::Left;
                 let ws = self.workspaces.active_workspace_mut();
                 let mut area = DockArea::new(&mut ws.dock)
                     .style(style)
