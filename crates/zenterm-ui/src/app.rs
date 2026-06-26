@@ -870,134 +870,57 @@ impl ZentermApp {
                         None;
                     let mut queued_close_ws: Option<crate::workspace::WorkspaceId> = None;
 
-                    ui.vertical(|ui| {
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("+  New shell").clicked() {
-                                queued_new_tab = true;
-                            }
-                            if ui.button("+  New WS").clicked() {
-                                queued_new_ws = true;
-                            }
-                        });
-                        ui.add_space(2.0);
-                        ui.separator();
-                        egui::ScrollArea::vertical()
-                            .auto_shrink([false; 2])
-                            .show(ui, |ui| {
-                                for (ws_id, ws_name, is_active_ws, tabs) in &ws_snapshot {
-                                    // ── Workspace header ─────────
-                                    let rename_id =
-                                        egui::Id::new(("ws_rename", ws_id.0));
-                                    let is_renaming = ui.memory(|m| {
-                                        m.data
-                                            .get_temp::<bool>(rename_id)
-                                            .unwrap_or(false)
-                                    });
-
-                                    if is_renaming {
-                                        // Inline rename mode.
-                                        let mut buf = ws_name.clone();
-                                        let resp = ui.text_edit_singleline(&mut buf);
-                                        if resp.lost_focus()
-                                            || ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                        {
-                                            // Commit rename.
-                                            ui.memory_mut(|m| {
-                                                m.data.remove_temp::<bool>(rename_id);
-                                            });
-                                            if !buf.is_empty() && buf != *ws_name {
-                                                queued_rename_ws =
-                                                    Some((*ws_id, buf));
-                                            }
-                                        }
-                                        // Also cancel on Escape.
-                                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                            ui.memory_mut(|m| {
-                                                m.data.remove_temp::<bool>(rename_id);
-                                            });
-                                        }
-                                        // Keep focus on the text edit.
-                                        resp.request_focus();
-                                    } else {
-                                        // Normal display mode.
-                                        let header_label = if *is_active_ws {
-                                            egui::RichText::new(ws_name)
-                                                .strong()
-                                                .color(ui.visuals().strong_text_color())
-                                        } else {
-                                            egui::RichText::new(ws_name)
-                                        };
-                                        let header_resp =
-                                            ui.selectable_label(*is_active_ws, header_label);
-                                        if header_resp.clicked() {
-                                            queued_switch_ws = Some(*ws_id);
-                                        }
-                                        // Double-click to rename.
-                                        if header_resp.double_clicked() {
-                                            ui.memory_mut(|m| {
-                                                m.data.insert_temp::<bool>(
-                                                    rename_id, true,
-                                                );
-                                            });
-                                        }
-                                        // Right-click context menu.
-                                        header_resp.context_menu(|ui| {
-                                            if ui.button("New Tab").clicked() {
-                                                queued_new_tab = true;
-                                                queued_switch_ws = Some(*ws_id);
-                                                ui.close();
-                                            }
-                                            ui.separator();
-                                            if ui.button("Rename...").clicked() {
-                                                ui.memory_mut(|m| {
-                                                    m.data.insert_temp::<bool>(
-                                                        rename_id, true,
-                                                    );
-                                                });
-                                                ui.close();
-                                            }
-                                            ui.separator();
-                                            if ui.button("Close workspace").clicked() {
-                                                queued_close_ws = Some(*ws_id);
-                                                ui.close();
-                                            }
-                                        });
-                                    }
-
-                                    // ── Tabs under this workspace ─
-                                    ui.indent(egui::Id::new(("ws_tabs", ws_id.0)), |ui| {
-                                        if tabs.is_empty() {
-                                            ui.weak("(no tabs)");
-                                        }
-                                        for (node, tab, id, title, cwd) in tabs {
-                                            let is_active_tab = Some(*id) == active_session;
-                                            let label = if is_active_tab {
-                                                egui::RichText::new(title)
-                                                    .strong()
-                                                    .color(ui.visuals().strong_text_color())
-                                            } else {
-                                                egui::RichText::new(title)
-                                            };
-                                            let resp =
-                                                ui.selectable_label(is_active_tab, label);
-                                            if resp.clicked() {
-                                                // Switch to the tab's workspace first, then
-                                                // focus the tab.
-                                                queued_switch_ws = Some(*ws_id);
-                                                queued_focus = Some((*node, *tab));
-                                            }
-                                            if let Some(cwd) = cwd {
-                                                ui.weak(cwd.display().to_string());
-                                            }
-                                        }
-                                    });
-
-                                    // Small gap between workspace sections.
-                                    ui.add_space(4.0);
+                    let sidebar_data = crate::sidebar::SidebarData {
+                        workspaces: ws_snapshot
+                            .into_iter()
+                            .map(|(id, name, is_active, tabs)| {
+                                crate::sidebar::WorkspaceSidebarEntry {
+                                    id,
+                                    name,
+                                    is_active,
+                                    tabs: tabs
+                                        .into_iter()
+                                        .map(
+                                            |(node, tab, id, title, cwd)| {
+                                                crate::sidebar::TabSidebarEntry {
+                                                    node,
+                                                    tab,
+                                                    id,
+                                                    title,
+                                                    cwd,
+                                                }
+                                            },
+                                        )
+                                        .collect(),
                                 }
-                            });
-                    });
+                            })
+                            .collect(),
+                        active_session_id: active_session,
+                    };
+
+                    let events = crate::sidebar::render_sidebar(ui, &sidebar_data);
+                    for event in events {
+                        match event {
+                            crate::sidebar::SidebarEvent::NewShell => {
+                                queued_new_tab = true
+                            }
+                            crate::sidebar::SidebarEvent::NewWorkspace => {
+                                queued_new_ws = true
+                            }
+                            crate::sidebar::SidebarEvent::SwitchWorkspace(id) => {
+                                queued_switch_ws = Some(id)
+                            }
+                            crate::sidebar::SidebarEvent::CloseWorkspace(id) => {
+                                queued_close_ws = Some(id)
+                            }
+                            crate::sidebar::SidebarEvent::RenameWorkspace(id, name) => {
+                                queued_rename_ws = Some((id, name))
+                            }
+                            crate::sidebar::SidebarEvent::FocusTab(node, tab) => {
+                                queued_focus = Some((node, tab))
+                            }
+                        }
+                    }
 
                     // ── Apply queued actions ──────────────────────
                     if queued_new_ws {
