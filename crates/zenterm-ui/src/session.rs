@@ -33,6 +33,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::selection::SelectionRange;
@@ -121,7 +122,28 @@ pub struct TerminalSession {
     cached_bg: Vec<CellInstance>,
     cached_glyph: Vec<CellInstance>,
     cached_deco: Vec<CellInstance>,
+
+    /// ── Title debounce ──────────────────────────────────────────────────
+    ///
+    /// Some shells (fish, zsh with plugins) send a transient title event
+    /// (e.g. the command name "ls") just before executing a command, and
+    /// then the real prompt title (e.g. "~") shortly after.  Without
+    /// debouncing, both reach the UI as separate frames, causing a visible
+    /// flicker.
+    ///
+    /// We buffer the incoming title and only apply it once it has been
+    /// stable for [`TITLE_DEBOUNCE_MS`].
+    pending_title: Option<(String, Instant)>,
 }
+
+/// Debounce period for window/tab title updates (milliseconds).
+///
+/// Shells like fish send a transient title (the command name) just before
+/// executing a command, then the real prompt title shortly after.  Without
+/// debouncing both reach the UI as separate frames, causing a visible
+/// flicker.  This value should be longer than the typical gap between the
+/// pre-exec and post-exec title events (usually < 20 ms on a local PTY).
+const TITLE_DEBOUNCE_MS: f64 = 80.0;
 
 impl TerminalSession {
     /// Construct a new session: spawn a PTY, initialise the terminal,
@@ -170,6 +192,7 @@ impl TerminalSession {
             cached_bg: Vec::new(),
             cached_glyph: Vec::new(),
             cached_deco: Vec::new(),
+            pending_title: None,
         }
     }
 
@@ -246,15 +269,23 @@ impl TerminalSession {
     ) -> Vec<SessionEffect> {
         let mut effects = Vec::new();
 
+        // Buffer incoming title event (don't apply yet — wait for stability).
         if let Some(title) = self.terminal.take_title() {
-            // Only update when the value actually changes, to avoid redundant
-            // re-renders in the tab bar / sidebar.
-            if self.title != title {
-                log::debug!("update: window title changed: {:?} -> {:?}", self.title, title);
-                self.title = title.clone();
-                effects.push(SessionEffect::WindowTitle(title));
-            } else {
-                log::trace!("update: window title unchanged ({:?}), skipping", self.title);
+            log::trace!("session: title event '{:?}' (debouncing)", title);
+            self.pending_title = Some((title, Instant::now()));
+        }
+
+        // Apply pending title if it has been stable long enough.
+        if let Some((title, at)) = &self.pending_title {
+            if at.elapsed().as_secs_f64() * 1000.0 >= TITLE_DEBOUNCE_MS {
+                if self.title != *title {
+                    log::debug!("session: window title changed: {:?} -> {:?}", self.title, title);
+                    self.title = title.clone();
+                    effects.push(SessionEffect::WindowTitle(title.clone()));
+                } else {
+                    log::trace!("session: window title unchanged ({:?}), skipping", self.title);
+                }
+                self.pending_title = None;
             }
         }
 
