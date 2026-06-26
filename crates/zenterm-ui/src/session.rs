@@ -239,9 +239,15 @@ impl TerminalSession {
         let mut effects = Vec::new();
 
         if let Some(title) = self.terminal.take_title() {
-            log::debug!("update: setting window title to {:?}", title);
-            self.title = title.clone();
-            effects.push(SessionEffect::WindowTitle(title));
+            // Only update when the value actually changes, to avoid redundant
+            // re-renders in the tab bar / sidebar.
+            if self.title != title {
+                log::debug!("update: window title changed: {:?} -> {:?}", self.title, title);
+                self.title = title.clone();
+                effects.push(SessionEffect::WindowTitle(title));
+            } else {
+                log::trace!("update: window title unchanged ({:?}), skipping", self.title);
+            }
         }
 
         if self.terminal.take_bell() {

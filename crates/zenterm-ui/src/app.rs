@@ -62,6 +62,12 @@ pub struct ZentermApp {
     // ── Pending actions accumulated by the dock viewer ─────────────
     pending_close: Vec<SessionId>,
     pending_adds: u32,
+
+    /// Last window title sent to the OS.  Used to deduplicate
+    /// `ViewportCommand::Title` so we don't call `[NSWindow setTitle:]`
+    /// with the same string on every shell prompt (which can cause
+    /// unnecessary title-bar redraws on some platforms).
+    current_window_title: Option<String>,
 }
 
 // ── Construction ───────────────────────────────────────────────────────
@@ -229,6 +235,7 @@ impl ZentermApp {
             error_toast: None,
             pending_close: Vec::new(),
             pending_adds: 0,
+            current_window_title: None,
         }
     }
 
@@ -459,8 +466,21 @@ impl ZentermApp {
                 }
             }
         }
-        if let Some(t) = window_title {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(t));
+        // Only send ViewportCommand::Title when the value actually changes.
+        // Calling [NSWindow setTitle:] with the same string every frame can
+        // cause unnecessary title-bar redraws on some platforms (macOS).
+        if let Some(t) = &window_title {
+            if self.current_window_title.as_ref() != Some(t) {
+                log::debug!(
+                    "app: sending ViewportCommand::Title({:?}) (was {:?})",
+                    t,
+                    self.current_window_title,
+                );
+                self.current_window_title = Some(t.clone());
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(t.clone()));
+            } else {
+                log::trace!("app: window title unchanged ({:?}), skipping ViewportCommand", t);
+            }
         }
         if all_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);

@@ -332,8 +332,15 @@ impl Terminal {
                     self.pending_title = Some(title);
                 }
                 Event::ResetTitle => {
-                    log::debug!("Terminal::feed: ResetTitle");
-                    self.pending_title = Some("Zenterm".to_string());
+                    log::debug!("Terminal::feed: ResetTitle (ignored — keep current title)");
+                    // Do NOT overwrite the current title.  Some shells / prompt
+                    // frameworks use the title-stack push/pop mechanism
+                    // (DECPRA `ESC [ 22 t` / DECRPRA `ESC [ 23 t`) to save
+                    // and restore the title around command execution.  If the
+                    // stack entry is `None` (the terminal's initial state),
+                    // popping it sends `ResetTitle` which would briefly flash
+                    // "Zenterm" every time a command finishes.  Ignoring it
+                    // lets the last non-ResetTitle value persist.
                 }
                 Event::Bell => {
                     log::debug!("Terminal::feed: Bell");
