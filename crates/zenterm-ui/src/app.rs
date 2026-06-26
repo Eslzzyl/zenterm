@@ -449,6 +449,7 @@ impl ZentermApp {
         let ids: Vec<SessionId> = self.sessions.keys().copied().collect();
         let mut all_close = false;
         let mut window_title: Option<String> = None;
+        let mut exit_ids: Vec<SessionId> = Vec::new();
         for id in ids {
             let effects = if let Some(s) = self.sessions.get_mut(&id) {
                 s.handle_side_effects(ctx)
@@ -461,7 +462,7 @@ impl ZentermApp {
                         window_title = Some(t);
                     }
                     SessionEffect::CloseWindow => {
-                        all_close = true;
+                        exit_ids.push(id);
                     }
                 }
             }
@@ -481,6 +482,15 @@ impl ZentermApp {
             } else {
                 log::trace!("app: window title unchanged ({:?}), skipping ViewportCommand", t);
             }
+        }
+        // Handle shell-exited sessions.
+        // Close the tab for any session whose shell exited.
+        // If that was the last session, also close the application.
+        for id in &exit_ids {
+            self.close_session(*id);
+        }
+        if !exit_ids.is_empty() && self.sessions.is_empty() {
+            all_close = true;
         }
         if all_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);

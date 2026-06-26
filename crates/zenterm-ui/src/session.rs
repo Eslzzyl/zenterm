@@ -114,6 +114,9 @@ pub struct TerminalSession {
     pub frame_count: u64,
     pub blink_interval: u64,
     pub pty_exited: bool,
+    /// Whether we have already emitted [`SessionEffect::CloseWindow`] for
+    /// this session.  Guards against repeated emissions across frames.
+    pub exit_effect_sent: bool,
 
     // ── Theming ─────────────────────────────────────────────────────
     pub default_bg: egui::Color32,
@@ -188,6 +191,7 @@ impl TerminalSession {
             frame_count: 0,
             blink_interval,
             pty_exited: false,
+            exit_effect_sent: false,
             default_bg,
             cached_bg: Vec::new(),
             cached_glyph: Vec::new(),
@@ -294,10 +298,16 @@ impl TerminalSession {
             self.notification = NotificationState::Bell;
         }
 
-        if self.terminal.take_exit() || self.terminal.take_child_exit().is_some() {
-            log::info!("update: terminal requested exit, closing");
-            self.pty_exited = true;
-            effects.push(SessionEffect::CloseWindow);
+        if !self.exit_effect_sent {
+            if self.terminal.take_exit() || self.terminal.take_child_exit().is_some() {
+                log::info!("update: terminal requested exit, closing");
+                self.pty_exited = true;
+            }
+            if self.pty_exited {
+                log::info!("handle_side_effects: session exited, emitting CloseWindow");
+                self.exit_effect_sent = true;
+                effects.push(SessionEffect::CloseWindow);
+            }
         }
 
         if let Some(text) = self.terminal.take_clipboard_store() {

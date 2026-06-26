@@ -15,12 +15,15 @@ use zenterm_core::{Error, Result, TermSize};
 ///
 /// Ownership order in the struct is significant for [`Drop`]:
 /// 1. `writer` (dropped first — sends EOF to slave)
-/// 2. `rx` (channel receiver — no side-effects)
-/// 3. `master` (dropped before the reader thread — on Windows this calls
-///    `ClosePseudoConsole`, which closes the output pipes and unblocks the
-///    reader; on Unix the master fd is closed, which triggers EOF on the
-///    cloned reader fd)
-/// 4. `_reader_thread` (joined after pipes are closed — safe on all platforms)
+/// 2. `rx` (channel receiver — no side-effects; dropping it causes the
+///    reader thread's next `tx.send()` to fail, which makes it exit)
+/// 3. `master` (dropped before the reader thread handle so that the
+///    reader can detect the close on platforms where master-drop
+///    unblocks the underlying fd)
+/// 4. `_reader_thread` (dropped last — the handle is taken and dropped
+///    in [`close()`](Self::close()) to **detach** the reader thread;
+///    joining is explicitly avoided to prevent deadlock when the
+///    reader is blocked on a PTY `read()` that never gets EOF)
 pub struct PtySession {
     /// Writer — send keyboard input to the shell (obtained via `take_writer`).
     writer: Option<Box<dyn Write + Send>>,
@@ -167,16 +170,18 @@ impl PtySession {
 
         // 2. Drop master — on Windows this calls ClosePseudoConsole, which
         //    closes the output pipes and unblocks the reader thread.
-        //    Order matters: master must be dropped *before* joining the
-        //    reader thread (see struct-level doc).
+        //    Order matters: master must be dropped *before* the reader
+        //    thread handle is dropped, so that the reader can detect the
+        //    close on any platform where master-drop unblocks the reader.
         drop(self.master.take());
 
-        // 3. Join the reader thread (now unblocked).
-        if let Some(handle) = self._reader_thread.take() {
-            log::debug!("pty close: joining reader thread");
-            let _ = handle.join();
-            log::debug!("pty close: reader thread joined");
-        }
+        // 3. Detach the reader thread (do NOT join — the thread might still
+        //    be blocked on read() if the PTY slave has open fds elsewhere,
+        //    and joining would deadlock the UI thread).  The thread will
+        //    exit on its own when:
+        //      - it reads EOF from the PTY, or
+        //      - it tries to send on the channel after rx is dropped.
+        self._reader_thread.take();
 
         // Drop child handle (reap the zombie).
         self.child.take();
