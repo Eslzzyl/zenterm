@@ -480,25 +480,38 @@ impl ZentermApp {
         }
     }
 
+    /// Forward keyboard input to the active terminal session.
+    ///
+    /// If a UI widget currently has keyboard focus (e.g. a sidebar
+    /// rename text-edit or a focused button), the events are left for
+    /// egui to handle normally — the terminal does not receive them.
+    ///
+    /// When no UI widget is focused, all key events are forwarded to
+    /// the active PTY session via [`InputMapper`].  We also suppress
+    /// egui's built-in focus-navigation for Tab / Shift+Tab so that
+    /// pressing Tab in the terminal doesn't accidentally move focus
+    /// to sidebar buttons.
     fn feed_keyboard_to_active(&mut self, ctx: &Context) {
-        ctx.input(|input| {
-            for event in &input.events {
-                if matches!(
-                    event,
-                    egui::Event::Key { pressed: true, .. }
-                ) {
-                    // Copy / paste / reload are handled at the app
-                    // level in `handle_shortcuts`.  The remaining
-                    // events are forwarded to the active session.
-                }
-            }
-        });
-        // Forward everything via InputMapper.
+        // If a UI widget is focused, keyboard input belongs to it,
+        // not to the terminal.
+        if ctx.memory(|m| m.focused().is_some()) {
+            return;
+        }
+
+        // Forward all key events to the active PTY session.
         ctx.input(|input| {
             for event in &input.events {
                 self.forward_event_to_active(event);
             }
         });
+
+        // Suppress egui's focus-navigation for Tab/Shift+Tab.
+        // egui sets the internal `focus_direction` during
+        // `begin_pass()` (before `update`), so we must both consume
+        // the event from the input state AND reset the direction.
+        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+        ctx.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab));
+        ctx.memory_mut(|mem| mem.move_focus(egui::FocusDirection::None));
     }
 
     /// Handle app-level keyboard shortcuts.
