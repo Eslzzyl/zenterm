@@ -133,7 +133,7 @@ impl WorkspaceManager {
         Self {
             workspaces: vec![WorkspaceState::new(default_ws_id, "default")],
             active_workspace_id: default_ws_id,
-            next_session_id: 0,
+            next_session_id: 1,
             next_workspace_id: 1,
         }
     }
@@ -368,8 +368,8 @@ mod tests {
         let s1 = mgr.new_session_id();
         let s2 = mgr.new_session_id();
         assert_ne!(s1, s2);
-        assert_eq!(s1.raw(), 0);
-        assert_eq!(s2.raw(), 1);
+        assert_eq!(s1.raw(), 1);
+        assert_eq!(s2.raw(), 2);
     }
 
     #[test]
