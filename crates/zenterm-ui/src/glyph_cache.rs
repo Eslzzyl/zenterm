@@ -27,8 +27,8 @@
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use zenterm_core::SubpixelLayout;
-use zenterm_glyph::GlyphAtlas;
+use zenterm_core::{Result, SubpixelLayout};
+use zenterm_glyph::{GlyphAtlas, ShapedGlyph};
 use zenterm_render::callback::{AtlasUpdate, SharedRenderState};use std::sync::atomic::Ordering;
 
 /// Guard returned by [`SharedGlyphAtlas::lock`].  Provides mutable
@@ -48,11 +48,16 @@ pub struct SharedGlyphAtlas {
 impl SharedGlyphAtlas {
     /// Create a new shared atlas and push the initial texture to the
     /// GPU so the very first `prepare()` can create its texture.
+    ///
+    /// `ligatures_enabled` controls whether OpenType ligature features
+    /// are enabled during shaping.  See
+    /// [`GlyphAtlas::ligatures_enabled`].
     pub fn new(
         font_size: f32,
         font_family: Cow<'static, str>,
         pixels_per_point: f32,
         subpixel_layout: SubpixelLayout,
+        ligatures_enabled: bool,
         shared: Arc<SharedRenderState>,
     ) -> Self {
         let atlas = GlyphAtlas::new(
@@ -60,6 +65,7 @@ impl SharedGlyphAtlas {
             font_family,
             pixels_per_point,
             subpixel_layout,
+            ligatures_enabled,
         );
 
         // Pre-seed the GPU with whatever the atlas already has so the
@@ -149,6 +155,7 @@ impl SharedGlyphAtlas {
         font_family: Cow<'static, str>,
         pixels_per_point: f32,
         subpixel_layout: SubpixelLayout,
+        ligatures_enabled: bool,
     ) -> (f32, f32) {
         let (cw, ch, size) = {
             let mut atlas = self.inner.lock().unwrap();
@@ -157,6 +164,7 @@ impl SharedGlyphAtlas {
                 font_family,
                 pixels_per_point,
                 subpixel_layout,
+                ligatures_enabled,
             );
             let (cw, ch) = atlas.cell_size().expect("cell_size after DPI reinit");
             let size = atlas.texture_size;
@@ -184,6 +192,23 @@ impl SharedGlyphAtlas {
         for c in ASCII.chars() {
             let _ = atlas.ensure_glyph(c);
         }
+    }
+
+    /// Shape and rasterise a run of consecutive characters.
+    ///
+    /// Delegates to [`GlyphAtlas::shape_and_rasterize_run`].
+    /// Holds the lock for the duration of the call.
+    ///
+    /// # Preparatory note
+    ///
+    /// Currently each character is shaped individually (see the
+    /// documentation on `GlyphAtlas::shape_and_rasterize_run`).
+    /// When ligature shaping is implemented, this method will
+    /// shape the entire `text` string as a single unit.
+    pub fn shape_and_rasterize_run(&self, text: &str) -> Result<Vec<ShapedGlyph>> {
+        let mut atlas = self.inner.lock().unwrap();
+        let result = atlas.shape_and_rasterize_run(text)?;
+        Ok(result)
     }
 }
 

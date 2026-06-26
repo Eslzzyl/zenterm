@@ -35,8 +35,7 @@ pub enum GlyphContentType {
 
 /// A single glyph's position and metrics within the atlas.
 #[derive(Debug, Clone)]
-pub struct GlyphEntry {
-    /// Allocated rectangle within the atlas texture (in pixels).
+pub struct GlyphEntry {    /// Allocated rectangle within the atlas texture (in pixels).
     pub atlas_rect: etagere::Rectangle,
     /// Horizontal bearing (pixels from origin to glyph left edge).
     pub bearing_x: f32,
@@ -58,6 +57,76 @@ pub struct GlyphEntry {
     /// offsets by this value, and shrinks the sampled UV window so that the
     /// texture is sampled at its native resolution under `Nearest` filtering.
     pub scale: f32,
+}
+
+/// Cache key for a multi-character run that may produce ligature glyphs.
+///
+/// When ligature shaping is implemented, consecutive same-style characters
+/// are shaped together.  The cache stores the resulting [`GlyphEntry`] list
+/// so the same run is only rasterised once.
+///
+/// # Key fields
+///
+/// * `text` — the raw character sequence (e.g. `"->"`, `"!="`).
+/// * `font_size_bits` — the font size in `f32::to_bits()` form, so that
+///   resizing the font invalidates the cache.
+///
+/// # Future extension
+///
+/// When bold/italic style is plumbed through shaping, this key will be
+/// extended with style flags so that `->` in bold gets a different (or
+/// same) cache entry depending on how the font handles bold ligatures.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct RunCacheKey {
+    /// The raw text spanned by the run.
+    pub text: String,
+    /// Font size in `f32::to_bits()` form.
+    pub font_size_bits: u32,
+    // FUTURE: add bold/italic style flags here when ligature-aware shaping
+    // is implemented.  Different OpenType features may be active for
+    // different font weights.
+}
+
+/// One glyph in a shaped run, after rasterisation and atlas packing.
+///
+/// When no ligature substitution occurs, a run of N characters produces N
+/// [`ShapedGlyph`] entries, each covering exactly one cell.
+///
+/// When a ligature *does* occur (e.g. `->` becomes one glyph), a single
+/// [`ShapedGlyph`] entry covers multiple source characters / cells.  The
+/// renderer splits the ligature bitmap into per-cell strips by adjusting
+/// UV coordinates.
+///
+/// # Current (preparatory) state
+///
+/// Without actual ligature shaping, each `ShapedGlyph` always covers
+/// exactly one source character.  The `char_range` and `num_cells` fields
+/// are always `0..1` / `1` respectively.
+#[derive(Debug, Clone)]
+pub struct ShapedGlyph {
+    /// Range in the source text that this glyph originated from.
+    ///
+    /// * No ligature: `char_range = 0..1` for each of N glyphs.
+    /// * Ligature:    `char_range = 0..N` for the single replacement glyph.
+    pub char_range: std::ops::Range<usize>,
+
+    /// Number of terminal cells this glyph covers.
+    ///
+    /// Equal to `char_range.end - char_range.start` for monospace fonts.
+    pub num_cells: usize,
+
+    /// X-offset of this glyph relative to the run origin, in pixels.
+    ///
+    /// For the first glyph in a run this is `0`.  For subsequent glyphs
+    /// it is the sum of previous glyphs' advances.  Ligature glyphs
+    /// always have `run_x_offset = 0`.
+    pub run_x_offset: f32,
+
+    /// The underlying atlas entry (position, metrics, content type).
+    ///
+    /// This is a full copy so that the renderer can build `CellInstance`
+    /// data without additional atlas lookups.
+    pub entry: GlyphEntry,
 }
 
 /// The glyph atlas.
@@ -85,6 +154,14 @@ pub struct GlyphAtlas {
     subpixel_layout: SubpixelLayout,
     metrics: Metrics,
     glyph_cache: HashMap<(char, u32), GlyphEntry>,
+    /// Cache for multi-character runs (ligature support).
+    ///
+    /// Keyed by `(text, font_size_bits)`.  Each entry holds the rasterised
+    /// glyphs produced by shaping the run as a whole.
+    ///
+    /// Currently unused — populated only when ligature shaping is enabled.
+    /// See [`Self::shape_and_rasterize_run`].
+    run_cache: HashMap<RunCacheKey, Vec<ShapedGlyph>>,
     /// Swash scale context (replaces cosmic-text's `SwashCache`).
     swash_ctx: ScaleContext,
     /// Cached cell width/height in pixels, set by [`cell_size()`](Self::cell_size).
@@ -118,11 +195,32 @@ pub struct GlyphAtlas {
     /// the cursor visually matches the character body instead of overshooting
     /// into the "above-cap" buffer.  Cached by [`cap_height()`](Self::cap_height).
     cap_height: f32,
+
+    /// Whether OpenType ligature features (`liga`/`clig`) are enabled.
+    ///
+    /// When `true`, calls to [`shape_and_rasterize_run`](Self::shape_and_rasterize_run)
+    /// use `Shaping::Advanced` so the font's ligature substitution rules
+    /// can replace multi-character sequences with a single glyph.
+    ///
+    /// When `false`, all shaping uses `Shaping::Basic` (fast path, no
+    /// ligatures, no font fallback).
+    ///
+    /// Set from [`zenterm_config::font::FontConfig::ligatures`].
+    ///
+    /// This field is read by [`shape_and_rasterize_run`](Self::shape_and_rasterize_run)
+    /// to decide whether to use `Shaping::Advanced` (ligatures on) or
+    /// `Shaping::Basic` (ligatures off).  Currently unused — the method
+    /// always delegates to the per-char fast path.
+    #[allow(dead_code)]
+    ligatures_enabled: bool,
 }
 
 impl GlyphAtlas {
     /// Create a new glyph atlas with the given font size (in pixels),
     /// font family, and LCD subpixel layout.
+    ///
+    /// `ligatures_enabled` controls whether OpenType ligature features
+    /// are used during shaping.  See the [`ligatures_enabled`] field.
     ///
     /// The atlas starts at 512×512 and grows as needed.
     pub fn new(
@@ -130,10 +228,12 @@ impl GlyphAtlas {
         font_family: Cow<'static, str>,
         pixels_per_point: f32,
         subpixel_layout: SubpixelLayout,
+        ligatures_enabled: bool,
     ) -> Self {
         log::info!(
             "GlyphAtlas: font_size={font_size:.1} family={font_family:?} \
-             pixels_per_point={pixels_per_point:.2} subpixel={subpixel_layout:?}",
+             pixels_per_point={pixels_per_point:.2} subpixel={subpixel_layout:?} \
+             ligatures={ligatures_enabled}",
         );
         let font_system = FontSystem::new();
         // Initial line_height = font_size (1.0×).  This is intentionally
@@ -156,12 +256,14 @@ impl GlyphAtlas {
             subpixel_layout,
             metrics,
             glyph_cache: HashMap::new(),
+            run_cache: HashMap::new(),
             swash_ctx: ScaleContext::new(),
             cell_width: 0.0,
             cell_height: 0.0,
             cell_ascent: 0.0,
             cell_descent: 0.0,
             cap_height: 0.0,
+            ligatures_enabled,
         }
     }
 
@@ -193,6 +295,86 @@ impl GlyphAtlas {
         }
 
         Ok((self.glyph_cache.get(&key).unwrap(), is_new))
+    }
+
+    /// Shape and rasterise a run of consecutive characters.
+    ///
+    /// A "run" is a group of characters with the same visual style
+    /// (same font, same bold/italic state) that can be shaped together
+    /// as a single string.  When ligatures are enabled, `cosmic-text`'s
+    /// `Shaping::Advanced` consults the font's OpenType `liga`/`clig`
+    /// tables and may substitute multi-character sequences with a
+    /// single glyph (e.g. `->` → one arrow glyph).
+    ///
+    /// # Current (preparatory) behaviour
+    ///
+    /// This method does **not** yet perform multi-character shaping.
+    /// It iterates over each character individually, calling the
+    /// existing single-char `ensure_glyph` path, and wraps each result
+    /// in a [`ShapedGlyph`] with `char_range = i..i+1` and
+    /// `num_cells = 1`.
+    ///
+    /// This establishes the API contract: callers always use
+    /// `shape_and_rasterize_run` for runs, and when ligature shaping
+    /// is later enabled, the internal implementation switches from
+    /// per-char iteration to a single `Shaping::Advanced` call on the
+    /// whole `text` string.  The return type, and therefore all
+    /// callers, remain unchanged.
+    ///
+    /// # Returns
+    ///
+    /// A vector of [`ShapedGlyph`] entries, one per character when no
+    /// ligature substitution occurs.  Each entry references the
+    /// corresponding atlas [`GlyphEntry`] by index.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to [`ensure_glyph`](Self::ensure_glyph) for each
+    /// character.  Atlas growth failures propagate up.
+    pub fn shape_and_rasterize_run(&mut self, text: &str) -> Result<Vec<ShapedGlyph>> {
+        // ── Cache lookup ──────────────────────────────────────────────
+        let key = RunCacheKey {
+            text: text.to_string(),
+            font_size_bits: self.font_size.to_bits(),
+        };
+
+        // Check the run cache first.
+        if let Some(cached) = self.run_cache.get(&key) {
+            return Ok(cached.clone());
+        }
+
+        // ── Shape the run ────────────────────────────────────────────
+        //
+        // FUTURE (ligature shaping):
+        // When ligatures_enabled is true, create a cosmic-text Buffer
+        // with Shaping::Advanced and the full text, then iterate over
+        // the resulting LayoutGlyph slice.  For each LayoutGlyph where
+        //   end - start > 1,
+        // a ligature substitution occurred — rasterise it once and
+        // produce a single ShapedGlyph covering multiple cells.
+        //
+        // The per-char loop below is the placeholder until that logic
+        // is implemented.
+
+        let mut shaped: Vec<ShapedGlyph> = Vec::with_capacity(text.len());
+        let mut run_x_offset: f32 = 0.0;
+
+        for (i, c) in text.chars().enumerate() {
+            let (entry, _is_new) = self.ensure_glyph(c)?;
+
+            shaped.push(ShapedGlyph {
+                char_range: i..i + 1,
+                num_cells: 1,
+                run_x_offset,
+                entry: entry.clone(),
+            });
+
+            run_x_offset += entry.advance;
+        }
+
+        // Cache and return.
+        self.run_cache.insert(key, shaped.clone());
+        Ok(shaped)
     }
 
     /// Font metrics for layout calculations.

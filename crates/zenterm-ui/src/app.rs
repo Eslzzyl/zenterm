@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use egui::{Context, CornerRadius, Id, Margin, Stroke};
-use egui_dock::{DockArea, Style};
+use egui_dock::{DockArea, Style, TabAddAlign};
 
 use zenterm_config::Config;
 use zenterm_core::SubpixelLayout;
@@ -92,6 +92,7 @@ impl ZentermApp {
             font_family,
             pixels_per_point,
             SubpixelLayout::detect(),
+            config.font.ligatures,
             shared.clone(),
         ));
         atlas.seed_ascii();
@@ -711,6 +712,7 @@ impl ZentermApp {
                         font_family,
                         self.pixels_per_point,
                         SubpixelLayout::detect(),
+                        self.config.font.ligatures,
                     );
                     self.atlas.seed_ascii();
                     self.atlas.sync_to_gpu();
@@ -748,7 +750,7 @@ impl eframe::App for ZentermApp {
         let current_ppp = ctx.pixels_per_point();
         if (current_ppp - self.pixels_per_point).abs() > 0.01 {
             for (_, session) in self.sessions.iter_mut() {
-                session.reinit_for_dpi(current_ppp);
+                session.reinit_for_dpi(current_ppp, self.config.font.ligatures);
             }
             self.pixels_per_point = current_ppp;
         }

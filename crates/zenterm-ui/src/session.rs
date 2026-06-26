@@ -48,7 +48,7 @@ use zenterm_pty::PtySession;
 use zenterm_render::callback::CallbackHandle;
 use zenterm_render::glyph_type;
 use zenterm_render::CellInstance;
-use zenterm_term::{ColorScheme, Terminal};
+use zenterm_term::{ColorScheme, GridView, Terminal};
 
 use crate::glyph_cache::SharedGlyphAtlas;
 use crate::gpu::SharedGpuContext;
@@ -77,6 +77,68 @@ pub enum NotificationState {
     None,
     Bell,
     Pending,
+}
+
+// ── Ligature run detection ────────────────────────────────────────────
+
+/// Find the end column of a consecutive same-style run starting at `(row, col)`.
+///
+/// A run is a group of cells whose characters should be shaped together
+/// as a single string.  When ligature shaping is enabled, the run text
+/// is passed to [`GlyphAtlas::shape_and_rasterize_run`] so that
+/// OpenType ligature rules (`liga`/`clig`) can substitute multi-cell
+/// glyphs (e.g. `->` → one arrow glyph).
+///
+/// Run boundaries occur at:
+///
+/// * **End of row** — no more cells.
+/// * **Space character** — spaces never participate in ligatures.
+/// * **Spacer cell** — a CJK / emoji wide-character continuation.
+/// * **Hidden cell** — invisible content should not be shaped.
+/// * **Style change** — different `bold` or `italic` flags require
+///   separate shaping with different [`cosmic_text::Attrs`].
+///
+/// # Current behaviour
+///
+/// Every single character forms its own run (`run_end = col + 1`).
+/// When ligature shaping is implemented, multi-character runs will
+/// be detected and returned here.
+fn detect_run_end(
+    grid: &GridView,
+    row: usize,
+    start_col: usize,
+    _cols: usize, // FUTURE: used in multi-run detection loop
+) -> usize {
+    let first = match grid.cell(row, start_col) {
+        Some(c) => c,
+        None => return start_col + 1,
+    };
+
+    // ── Fast path (non-ligature) ──────────────────────────────────
+    // Without actual ligature shaping, every character is an
+    // independent run.  The loop below is the placeholder for
+    // multi-char run detection.
+    //
+    // FUTURE: uncomment the loop and remove the early return.
+    let _ = first;
+    start_col + 1
+
+    // FUTURE (ligature shaping):
+    // let mut col = start_col + 1;
+    // while col < _cols {
+    //     let cell = match grid.cell(row, col) {
+    //         Some(c) => c,
+    //         None => break,
+    //     };
+    //     if cell.c == ' ' || cell.is_spacer || cell.hidden {
+    //         break;
+    //     }
+    //     if cell.bold != first.bold || cell.italic != first.italic {
+    //         break;
+    //     }
+    //     col += 1;
+    // }
+    // col
 }
 
 // ── TerminalSession ────────────────────────────────────────────────────
@@ -365,7 +427,7 @@ impl TerminalSession {
     /// Re-initialise the (shared) glyph atlas and cell metrics for a
     /// new DPI scale factor.  Called when the window moves between
     /// monitors with different DPI settings.
-    pub fn reinit_for_dpi(&mut self, new_ppp: f32) {
+    pub fn reinit_for_dpi(&mut self, new_ppp: f32, ligatures_enabled: bool) {
         let new_font_size = self.config_font_size() * new_ppp;
         let font_family = std::borrow::Cow::Owned(self.config_font_family());
         let (cw, ch) = self.atlas.reinit_for_dpi(
@@ -373,6 +435,7 @@ impl TerminalSession {
             font_family,
             new_ppp,
             zenterm_core::SubpixelLayout::detect(),
+            ligatures_enabled,
         );
         self.atlas.seed_ascii();
         // Ensure the seeded atlas reaches the GPU before the next prepare().
@@ -526,10 +589,23 @@ impl TerminalSession {
         let mut has_new_glyphs = false;
 
         for row in 0..rows {
-            for col in 0..cols {
+            // ── Per-row: consecutive-cells "run" iterator ──────────────
+            //
+            // Instead of a simple `for col in 0..cols`, we use a `while`
+            // loop and detect runs via `detect_run_end`.  This prepares
+            // the renderer for ligature shaping: when enabled, a run of
+            // multiple same-style characters will be shaped as a single
+            // string, and the resulting glyphs (which may span multiple
+            // cells) are distributed across the run's cells.
+            //
+            // For now, each run is exactly one cell wide, so the
+            // per-character behaviour is identical to the old nested
+            // for loop.
+            let mut col = 0;
+            while col < cols {
                 let cell = match grid.cell(row, col) {
                     Some(c) => c,
-                    None => continue,
+                    None => { col += 1; continue; },
                 };
 
                 let is_cursor = cursor_visible && row == cursor_row && col == cursor_col;
@@ -551,11 +627,31 @@ impl TerminalSession {
                 };
 
                 if cell.is_spacer {
+                    col += 1;
                     continue;
                 }
                 if cell.hidden {
+                    col += 1;
                     continue;
                 }
+
+                // ── Run boundary detection ────────────────────────────
+                //
+                // FUTURE (ligature shaping): when this cell is part of a
+                // multi-character ligature run, `run_end` points past the
+                // last cell in the run, and `run_text` is the concatenated
+                // character sequence.  Instead of shaping each char
+                // individually, call:
+                //
+                //   let shaped = atlas.shape_and_rasterize_run(&run_text)?;
+                //
+                // Then distribute each ShapedGlyph across its covering
+                // cells (run_start .. run_start + glyph.num_cells) by
+                // adjusting UV coordinates and glyph positions per-cell.
+                //
+                // For now, each run is 1 cell (run_end = col + 1).
+                let _run_start = col;
+                let _run_end = detect_run_end(&grid, row, col, cols);
 
                 // ── Geometry helpers (session-local; no origin) ───
                 let px_to_clip_x = |px: f32| px * x_scale - 1.0;
@@ -803,6 +899,11 @@ impl TerminalSession {
                         _ => {}
                     }
                 }
+
+                // ── Advance to next cell ──────────────────────────
+                // FUTURE (ligature shaping): set `col = _run_end`
+                // to skip past the entire ligature run.
+                col += 1;
             }
         }
 

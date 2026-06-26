@@ -51,6 +51,29 @@ pub struct FontConfig {
     /// points are looked up from the font like any other character.
     #[serde(default = "default_builtin_box_drawing")]
     pub builtin_box_drawing: bool,
+
+    /// Enable OpenType ligature features (`liga`, `clig`).
+    ///
+    /// When `true`, consecutive same-style characters are shaped as a
+    /// single run so that fonts (e.g. Fira Code, JetBrains Mono) can
+    /// substitute multi-character sequences like `->`, `!=`, `<=` with
+    /// a single ligature glyph spanning multiple cells.
+    ///
+    /// When `false`, every character is shaped independently using
+    /// `Shaping::Basic` (fast path, no ligatures).
+    ///
+    /// # Note
+    ///
+    /// Some fonts (Menlo, Monaco on macOS) include ligatures for
+    /// common letter pairs (`fi`, `fl`) that may be undesirable in
+    /// a terminal.  If you use one of those fonts and see unexpected
+    /// ligatures, set this to `false`.
+    ///
+    /// This field is the user-visible toggle.  The actual shaping
+    /// behaviour is selected in [`GlyphAtlas`](zenterm_glyph::GlyphAtlas)
+    /// via the `ligatures_enabled` field.
+    #[serde(default = "default_ligatures")]
+    pub ligatures: bool,
 }
 
 impl Default for FontConfig {
@@ -64,6 +87,7 @@ impl Default for FontConfig {
             offset: GlyphOffset::default(),
             glyph_offset: GlyphOffset::default(),
             builtin_box_drawing: default_builtin_box_drawing(),
+            ligatures: default_ligatures(),
         }
     }
 }
@@ -73,6 +97,15 @@ fn default_font_size() -> f32 {
 }
 
 fn default_builtin_box_drawing() -> bool {
+    true
+}
+
+/// Default: ligatures on.
+/// Some terminals (WezTerm) disable ligatures on macOS for Menlo/Monaco,
+/// but that decision belongs at the font-family level, not a hard-coded
+/// default.  Users who see unwanted `fi`/`fl` ligatures can set
+/// `font.ligatures = false` in their config.
+fn default_ligatures() -> bool {
     true
 }
 
