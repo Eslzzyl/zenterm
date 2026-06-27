@@ -944,6 +944,7 @@ impl eframe::App for ZentermApp {
         //      only when there are no sessions at all).
         if self.sessions.is_empty() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return; // Don't render an empty frame — avoids a black flash.
         }
 
         // 2. Keyboard shortcuts (copy/paste/reload/settings).
