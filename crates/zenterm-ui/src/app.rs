@@ -1157,11 +1157,23 @@ impl ZentermApp {
                     session.set_dock_viewport(dock_origin_px, dock_size_px);
                 }
 
+                // Determine whether the active-panel border indicator
+                // should be shown: hide it when the dock is a single
+                // leaf (no split), even if that leaf has multiple tabs.
+                let show_active_indicator = self
+                    .workspaces
+                    .active_workspace()
+                    .dock
+                    .iter_leaves()
+                    .count()
+                    > 1;
+
                 let mut viewer = TabViewerContext {
                     sessions: &mut self.sessions,
                     active_session_id: &mut self.active_session_id,
                     pending_close: &mut self.pending_close,
                     pending_adds: &mut self.pending_adds,
+                    show_active_indicator,
                 };
                 let mut style = Style::from_egui(ui.style().as_ref());
                 // Remove rounded corners, inner margin, and border stroke

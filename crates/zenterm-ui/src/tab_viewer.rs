@@ -29,6 +29,9 @@ pub struct TabViewerContext<'a> {
     pub pending_close: &'a mut Vec<SessionId>,
     /// Counts `on_add` invocations that should result in a new tab.
     pub pending_adds: &'a mut u32,
+    /// Whether to draw the active-panel border indicator.
+    /// Should be `false` when there is only a single tab (no split).
+    pub show_active_indicator: bool,
 }
 
 impl<'a> TabViewer for TabViewerContext<'a> {
@@ -102,10 +105,11 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         }
 
         // Visual indicator: draw a thin border around the active
-        // (keyboard-focus) panel.  The colour comes from the terminal's
+        // (keyboard-focus) panel when the layout has more than one
+        // tab (split or tabbed).  The colour comes from the terminal's
         // selection background, which is designed to be visible on any
         // foreground/background combination.
-        if *self.active_session_id == Some(*tab) {
+        if self.show_active_indicator && *self.active_session_id == Some(*tab) {
             let sel = session.terminal.scheme().selection_bg;
             let accent = egui::Color32::from_rgba_premultiplied(
                 (sel.r() * 255.0).round().clamp(0.0, 255.0) as u8,
