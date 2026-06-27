@@ -34,6 +34,10 @@ pub fn render_legacy_single(
     let size_px = [available.x * ppp, available.y * ppp];
 
     session.set_viewport([0.0, 0.0], size_px);
+
+    // For the legacy single-session mode, the dock viewport is the
+    // same as the session viewport (no multi-tab coordination needed).
+    session.set_dock_viewport([0.0, 0.0], size_px);
     session.resize_to_viewport(size_px, ppp);
     session.update_cell_instances([0.0, 0.0], size_px);
 
@@ -41,6 +45,7 @@ pub fn render_legacy_single(
     let (cell_rect, response) = ui.allocate_exact_size(available, sense);
     session.handle_mouse(ui, cell_rect, size_px, &response);
 
+    // Legacy mode has one session → one callback → no cross-contamination.
     let callback =
         egui_wgpu::Callback::new_paint_callback(cell_rect, session.callback.clone());
     ui.painter().rect_filled(cell_rect, 0.0, session.default_bg);

@@ -169,6 +169,10 @@ pub struct TerminalSession {
     pub last_vp_size_px: [f32; 2],
     pub last_vp_origin_px: [f32; 2],
 
+    // ── Dock-area viewport (single callback coordinate system) ────────
+    pub dock_vp_origin_px: [f32; 2],
+    pub dock_vp_size_px: [f32; 2],
+
     // ── Per-session flags ───────────────────────────────────────────
     pub selecting: bool,
     pub terminal_dirty: bool,
@@ -247,6 +251,8 @@ impl TerminalSession {
             cell_height,
             last_vp_size_px: [0.0, 0.0],
             last_vp_origin_px: [0.0, 0.0],
+            dock_vp_origin_px: [0.0, 0.0],
+            dock_vp_size_px: [0.0, 0.0],
             selecting: false,
             terminal_dirty: true,
             last_resize_at: None,
@@ -267,9 +273,23 @@ impl TerminalSession {
     /// Update the session's tracked viewport.  Called by the
     /// `TabViewer::ui` implementation before the session draws.
     pub fn set_viewport(&mut self, origin_px: [f32; 2], size_px: [f32; 2]) {
-        self.last_vp_origin_px = origin_px;
-        if self.last_vp_size_px != size_px {
+        if self.last_vp_origin_px != origin_px || self.last_vp_size_px != size_px {
+            self.last_vp_origin_px = origin_px;
             self.last_vp_size_px = size_px;
+            self.terminal_dirty = true;
+        }
+    }
+
+    /// Set the dock-area viewport for the single-callback coordinate
+    /// system.  All sessions share the same dock viewport; cell clip
+    /// positions are computed relative to this rect so a single wgpu
+    /// callback can render every tab.
+    ///
+    /// Must be called before `update_cell_instances` each frame.
+    pub fn set_dock_viewport(&mut self, origin_px: [f32; 2], size_px: [f32; 2]) {
+        if self.dock_vp_origin_px != origin_px || self.dock_vp_size_px != size_px {
+            self.dock_vp_origin_px = origin_px;
+            self.dock_vp_size_px = size_px;
             self.terminal_dirty = true;
         }
     }
@@ -498,17 +518,20 @@ impl TerminalSession {
     /// Build GPU instance data for this session's visible cells and
     /// append it to the shared `SharedRenderState.instances` buffer.
     ///
-    /// The dock-relative `origin_px` and `size_px` together define the
-    /// session's sub-rectangle of the dock viewport.  All cell
-    /// positions are translated by `origin_px` before the
-    /// pixel→clip-space conversion so the wgpu callback can render
-    /// all tabs in a single instanced draw call without knowing
-    /// which session a given instance belongs to.
+    /// `origin_px` is the session's top-left corner in screen pixels
+    /// (relative to the window origin).  `size_px` is the session's
+    /// pixel size (used for resize detection, but not for clip-space
+    /// conversion — that uses the shared dock viewport set via
+    /// [`set_dock_viewport`]).
+    ///
+    /// Because all sessions share the same dock viewport, the clip-space
+    /// coordinates produced here are valid for a single wgpu callback
+    /// whose viewport covers the entire dock area.
     ///
     /// Returns `true` if instances were added.
     pub fn update_cell_instances(
         &mut self,
-        _origin_px: [f32; 2], // unused: wgpu callback handles rect transform
+        origin_px: [f32; 2],
         size_px: [f32; 2],
     ) -> bool {
         let vp_width_px = size_px[0];
@@ -516,6 +539,28 @@ impl TerminalSession {
         if vp_width_px <= 0.0 || vp_height_px <= 0.0 {
             return false;
         }
+
+        // Clip-space conversion uses the DOCK viewport (the union of
+        // all tab rects) so a single wgpu callback can render every
+        // tab.  The per-tab `origin_px` offsets each cell to its
+        // correct screen position within the dock coordinate system.
+        //
+        //   dock_clip_x = (dock_px - dock_origin) * 2 / dock_size - 1
+        //
+        // where dock_px = tab_origin + local_cell_px.
+        let dock_w = self.dock_vp_size_px[0];
+        let dock_h = self.dock_vp_size_px[1];
+        let dock_ox = self.dock_vp_origin_px[0];
+        let dock_oy = self.dock_vp_origin_px[1];
+        if dock_w <= 0.0 || dock_h <= 0.0 {
+            return false;
+        }
+        let x_scale = 2.0 / dock_w;
+        let y_scale = 2.0 / dock_h;
+
+        // How far this session's top-left is from the dock origin.
+        let x_off = origin_px[0] - dock_ox;
+        let y_off = origin_px[1] - dock_oy;
 
         // Fast path: terminal content hasn't changed — reuse the
         // cached cell instances from the previous frame.  Cursor
@@ -573,15 +618,6 @@ impl TerminalSession {
             return false;
         }
 
-        // The dock viewport (in pixels) is the union of every leaf
-        // node; per-session origin is **not** added here because the
-        // wgpu callback is already registered with the session's
-        // own `cell_rect`, and egui_wgpu applies the transform from
-        // local NDC to that rect automatically.  Adding the dock
-        // origin here would be a *double* translation and push the
-        // cells off-screen.
-        let x_scale = 2.0 / vp_width_px;
-        let y_scale = 2.0 / vp_height_px;
         let baseline = atlas.cell_baseline_offset();
         let mut bg_instances: Vec<CellInstance> = Vec::with_capacity(rows * cols);
         let mut glyph_instances: Vec<CellInstance> = Vec::with_capacity(rows * cols);
@@ -653,7 +689,7 @@ impl TerminalSession {
                 let _run_start = col;
                 let _run_end = detect_run_end(&grid, row, col, cols);
 
-                // ── Geometry helpers (session-local; no origin) ───
+                // ── Geometry helpers (dock-relative coords) ──────────
                 let px_to_clip_x = |px: f32| px * x_scale - 1.0;
                 let px_to_clip_y = |px: f32| 1.0 - px * y_scale;
 
@@ -668,8 +704,8 @@ impl TerminalSession {
                 if !is_cursor || is_block_cursor {
                     let cell_bg = if is_sel { sel_bg } else { draw_bg };
                     if is_block_cursor || cell_bg != default_bg {
-                        let bg_x_px = (col as f32 * cw).round();
-                        let bg_y_px = (row as f32 * ch).round();
+                        let bg_x_px = x_off + (col as f32 * cw).round();
+                        let bg_y_px = y_off + (row as f32 * ch).round();
                         let bqx = px_to_clip_x(bg_x_px);
                         let bqy = px_to_clip_y(bg_y_px);
                         let bqw = cw * num_cells * x_scale;
@@ -707,9 +743,9 @@ impl TerminalSession {
                         let sbx = entry.bearing_x * scale;
                         let sby = entry.bearing_y * scale;
 
-                        let mut glyph_x_px = (col as f32 * cw + sbx).round();
+                        let mut glyph_x_px = x_off + (col as f32 * cw + sbx).round();
                         let mut glyph_y_px =
-                            (row as f32 * ch + (baseline - sby)).round();
+                            y_off + (row as f32 * ch + (baseline - sby)).round();
 
                         let mut u_min =
                             (entry.atlas_rect.min.x as f32 + 0.5) / tex_size;
@@ -720,8 +756,8 @@ impl TerminalSession {
                         let mut v_max =
                             (entry.atlas_rect.max.y as f32 - 0.5) / tex_size;
 
-                        let cell_left = col as f32 * cw;
-                        let cell_top = row as f32 * ch;
+                        let cell_left = x_off + col as f32 * cw;
+                        let cell_top = y_off + row as f32 * ch;
                         let cell_right = cell_left + cw * num_cells;
                         let cell_bottom = cell_top + ch;
 
@@ -822,8 +858,8 @@ impl TerminalSession {
                 if cell.underline {
                     let thickness = 1.0_f32.max((ch * 0.05).round());
                     let deco_y = baseline + 1.0;
-                    let dqy = px_to_clip_y((row as f32 * ch + deco_y).round());
-                    let dqx = px_to_clip_x((col as f32 * cw).round());
+                    let dqy = px_to_clip_y(y_off + (row as f32 * ch + deco_y).round());
+                    let dqx = px_to_clip_x(x_off + (col as f32 * cw).round());
                     let dqw = cw * x_scale;
                     let dqh = thickness * y_scale;
                     deco_instances.push(CellInstance {
@@ -842,8 +878,8 @@ impl TerminalSession {
                 if cell.strikethrough {
                     let thickness = 1.0_f32.max((ch * 0.05).round());
                     let deco_y = (baseline * 0.55).round();
-                    let dqy = px_to_clip_y((row as f32 * ch + deco_y).round());
-                    let dqx = px_to_clip_x((col as f32 * cw).round());
+                    let dqy = px_to_clip_y(y_off + (row as f32 * ch + deco_y).round());
+                    let dqx = px_to_clip_x(x_off + (col as f32 * cw).round());
                     let dqw = cw * x_scale;
                     let dqh = thickness * y_scale;
                     deco_instances.push(CellInstance {
@@ -863,8 +899,8 @@ impl TerminalSession {
                 if is_cursor && !is_block_cursor {
                     let cursor_color = [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0];
                     let thickness = 2.0_f32.max((ch * 0.08).round());
-                    let cx_px = (col as f32 * cw).round();
-                    let cy_px = (row as f32 * ch).round();
+                    let cx_px = x_off + (col as f32 * cw).round();
+                    let cy_px = y_off + (row as f32 * ch).round();
 
                     match cursor_shape {
                         CursorShape::Underline => {

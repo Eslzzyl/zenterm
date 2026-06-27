@@ -1143,6 +1143,20 @@ impl ZentermApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
+                // Compute the dock-area rect (union of all session
+                // viewports) for the single wgpu callback.
+                let dock_rect = ui.available_rect_before_wrap();
+                let ppp = ui.ctx().pixels_per_point();
+                let dock_origin_px = [dock_rect.min.x * ppp, dock_rect.min.y * ppp];
+                let dock_size_px = [dock_rect.size().x * ppp, dock_rect.size().y * ppp];
+
+                // Set the shared dock viewport on every session so
+                // `update_cell_instances` uses it for clip-space
+                // conversion.
+                for (_, session) in self.sessions.iter_mut() {
+                    session.set_dock_viewport(dock_origin_px, dock_size_px);
+                }
+
                 let mut viewer = TabViewerContext {
                     sessions: &mut self.sessions,
                     active_session_id: &mut self.active_session_id,
@@ -1171,6 +1185,16 @@ impl ZentermApp {
                     .show_leaf_close_all_buttons(false);
                 area = area.id(Id::new("zenterm_dock"));
                 area.show_inside(ui, &mut viewer);
+
+                // Single wgpu callback covering the entire dock area.
+                // All sessions append cell instances to the shared
+                // buffer; clip-space coordinates are computed relative
+                // to this viewport so one draw call renders all tabs.
+                let cb = egui_wgpu::Callback::new_paint_callback(
+                    dock_rect,
+                    self.callback.clone(),
+                );
+                ui.painter().add(cb);
             });
 
         // ── Apply pending actions collected by the viewer ─────────

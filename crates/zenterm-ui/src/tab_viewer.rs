@@ -60,7 +60,11 @@ impl<'a> TabViewer for TabViewerContext<'a> {
             }
         };
 
-        // Compute the session's dock-relative pixel rectangle.
+        // Compute the session's dock-relative pixel rectangle and
+        // build GPU instance data appended to the shared buffer.
+        // Cell clip coordinates use the dock-area viewport (set by
+        // the app before `DockArea::show_inside`) so a single wgpu
+        // callback covering the entire dock area renders every tab.
         let rect = ui.max_rect();
         let ppp = ui.ctx().pixels_per_point();
         let origin_px = [rect.min.x * ppp, rect.min.y * ppp];
@@ -71,10 +75,8 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         session.resize_to_viewport(size_px, ppp);
 
         // Build GPU instance data and append to the shared instance
-        // buffer.  The dock viewport (in pixels) is the union of
-        // every leaf node; per-session origin is added inside
-        // `update_cell_instances` so the wgpu callback can draw
-        // every tab in a single instanced call.
+        // buffer.  Instances are positioned in the dock-area clip
+        // space set via `set_dock_viewport`.
         session.update_cell_instances(origin_px, size_px);
 
         // Allocate the terminal area and run mouse / SGR / context-menu.
@@ -82,10 +84,10 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         let (cell_rect, response) = ui.allocate_exact_size(ui.available_size(), sense);
         session.handle_mouse(ui, cell_rect, size_px, &response);
 
-        // Register the wgpu paint callback for this tab.
-        let callback = egui_wgpu::Callback::new_paint_callback(cell_rect, session.callback.clone());
+        // Paint the terminal background (egui shape, not wgpu callback).
+        // The wgpu callback for cell instances is registered once at the
+        // dock level (see `render_tabs_with_dock` in `app.rs`).
         ui.painter().rect_filled(cell_rect, 0.0, session.default_bg);
-        ui.painter().add(callback);
 
         // Right-click context menu: copy / paste.
         session.render_context_menu(ui, &response);
