@@ -321,14 +321,19 @@ impl GlyphAtlas {
     ///
     /// # Returns
     ///
-    /// A vector of [`ShapedGlyph`] entries, one per glyph in the shaped
-    /// output.  When no ligatures occur this equals the source character
-    /// count.
+    /// A tuple of:
+    /// - A vector of [`ShapedGlyph`] entries, one per glyph in the shaped
+    ///   output.  When no ligatures occur this equals the source character
+    ///   count.
+    /// - A `bool` indicating whether the atlas was actually modified
+    ///   (`true` = cache miss, new glyphs rasterised; `false` = cache hit,
+    ///   no atlas change).  Callers should use this to decide whether to
+    ///   upload the atlas texture to the GPU.
     ///
     /// # Errors
     ///
     /// Atlas allocation failures propagate up.
-    pub fn shape_and_rasterize_run(&mut self, text: &str) -> Result<Vec<ShapedGlyph>> {
+    pub fn shape_and_rasterize_run(&mut self, text: &str) -> Result<(Vec<ShapedGlyph>, bool)> {
         // ── Cache lookup ──────────────────────────────────────────────
         let key = RunCacheKey {
             text: text.to_string(),
@@ -337,7 +342,7 @@ impl GlyphAtlas {
 
         // Check the run cache first.
         if let Some(cached) = self.run_cache.get(&key) {
-            return Ok(cached.clone());
+            return Ok((cached.clone(), false));
         }
 
         // ── Shape the whole run via cosmic-text Buffer ───────────────
@@ -416,6 +421,22 @@ impl GlyphAtlas {
             // Rasterize via swash and pack into atlas.
             let entry = self.rasterize_swash_entry(&phys.cache_key, advance)?;
 
+            // ── Populate glyph_cache for single-cell glyphs ─────────
+            // When a glyph covers exactly one cell (no ligature
+            // substitution), write its entry into `glyph_cache` so that
+            // the per-char `ensure_glyph` path finds it cached and skips
+            // re-shaping + re-rasterizing.  This eliminates the double
+            // atlas allocation that would otherwise occur when the
+            // ligature branch falls through to per-char rendering.
+            if num_cells == 1 {
+                for ci in g.start..g.end {
+                    if let Some(c) = text[ci as usize..].chars().next() {
+                        let char_key = (c, self.font_size.to_bits());
+                        self.glyph_cache.entry(char_key).or_insert(entry.clone());
+                    }
+                }
+            }
+
             shaped.push(ShapedGlyph {
                 char_range: g.start as usize .. g.end as usize,
                 num_cells,
@@ -428,7 +449,7 @@ impl GlyphAtlas {
 
         // Cache and return.
         self.run_cache.insert(key, shaped.clone());
-        Ok(shaped)
+        Ok((shaped, true))
     }
 
     /// Rasterize a physical glyph (identified by [`cosmic_text::CacheKey`])

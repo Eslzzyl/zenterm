@@ -280,14 +280,23 @@ fn emit_deco_for_cell(
     }
 }
 
-/// Quick check: only multi-char runs containing ASCII punctuation or
-/// operators are worth shaping with [`Shaping::Advanced`](cosmic_text::Shaping::Advanced).
-/// Everything else can take the per-char fast path.
+/// Quick heuristic: does this run potentially contain a ligature?
 ///
-/// This avoids pointless `cosmic-text` `Buffer` allocation + shaping for
-/// plain alphanumeric sequences that never form ligatures.
+/// Ligatures in programming fonts are always sequences of 2+ consecutive
+/// punctuation characters (e.g. `->`, `=>`, `!=`, `==`).  A single
+/// punctuation character surrounded by non-punctuation cannot form a
+/// ligature, so we skip the expensive shaping path for those runs.
 fn might_ligate(text: &str) -> bool {
-    text.len() > 1 && text.bytes().any(|b| b.is_ascii_punctuation())
+    if text.len() < 2 {
+        return false;
+    }
+    let bytes = text.as_bytes();
+    for window in bytes.windows(2) {
+        if window[0].is_ascii_punctuation() && window[1].is_ascii_punctuation() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Extract the concatenated character text for a run of cells.
@@ -1036,7 +1045,13 @@ impl TerminalSession {
                              text={run_text:?}",
                         );
                         match atlas.shape_and_rasterize_run(&run_text) {
-                            Ok(shaped) => {
+                            Ok((shaped, atlas_modified)) => {
+                                // Atlas was modified (new glyphs may have
+                                // been rasterised).  Mark dirty so
+                                // sync_to_gpu() uploads the updated data.
+                                if atlas_modified {
+                                    has_new_glyphs = true;
+                                }
                                 // Only use the ligature branch when there are
                                 // actual multi-cell ligature glyphs.  Runs
                                 // without real ligatures (all num_cells == 1)

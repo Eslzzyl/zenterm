@@ -205,7 +205,7 @@ impl SharedGlyphAtlas {
     /// documentation on `GlyphAtlas::shape_and_rasterize_run`).
     /// When ligature shaping is implemented, this method will
     /// shape the entire `text` string as a single unit.
-    pub fn shape_and_rasterize_run(&self, text: &str) -> Result<Vec<ShapedGlyph>> {
+    pub fn shape_and_rasterize_run(&self, text: &str) -> Result<(Vec<ShapedGlyph>, bool)> {
         let mut atlas = self.inner.lock().unwrap();
         let result = atlas.shape_and_rasterize_run(text)?;
         Ok(result)
