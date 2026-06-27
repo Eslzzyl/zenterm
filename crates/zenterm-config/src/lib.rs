@@ -44,4 +44,4 @@ pub mod terminal;
 pub mod ui;
 pub mod window;
 
-pub use config::{Config, ConfigError};
+pub use config::{Config, ConfigChanges, ConfigError};

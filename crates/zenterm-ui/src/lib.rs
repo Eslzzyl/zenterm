@@ -11,6 +11,8 @@
 //! - [`sidebar`] — cmux-style vertical tab list
 //! - [`layout_io`] — `dock.json` + `sessions.json` persistence
 //! - [`legacy`] — single-terminal fallback (when `tabs_enabled = false`)
+//! - [`settings`] — settings panel (GUI for all config fields)
+//! - [`settings_widgets`] — reusable egui widgets for settings forms
 
 mod app;
 mod gpu;
@@ -18,6 +20,8 @@ mod glyph_cache;
 mod layout_io;
 mod legacy;
 mod session;
+mod settings;
+mod settings_widgets;
 mod sidebar;
 mod tab_viewer;
 mod workspace;

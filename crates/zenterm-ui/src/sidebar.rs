@@ -53,6 +53,8 @@ pub enum SidebarEvent {
     CloseWorkspace(WorkspaceId),
     RenameWorkspace(WorkspaceId, String),
     FocusTab(egui_dock::NodeIndex, egui_dock::TabIndex),
+    /// Open the settings panel.
+    OpenSettings,
 }
 
 // ── Render ───────────────────────────────────────────────────────────────
@@ -65,7 +67,7 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
     ui.vertical(|ui| {
         ui.add_space(6.0);
 
-        // ── "New shell" / "New WS" buttons ──────────────────────
+        // ── "New shell" / "New WS" / ⚙ buttons ──────────────────
         ui.horizontal(|ui| {
             if ui.button("+  New shell").clicked() {
                 events.push(SidebarEvent::NewShell);
@@ -73,6 +75,12 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
             if ui.button("+  New WS").clicked() {
                 events.push(SidebarEvent::NewWorkspace);
             }
+            // Push settings gear to the right.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("⚙").clicked() {
+                    events.push(SidebarEvent::OpenSettings);
+                }
+            });
         });
         ui.add_space(2.0);
         ui.separator();

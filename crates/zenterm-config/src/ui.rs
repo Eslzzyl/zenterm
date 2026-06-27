@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 // ── UiConfig ───────────────────────────────────────────────────────────
 
 /// The `[ui]` section of the config file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiConfig {
     /// Render the multi-tab `egui_dock::DockArea`.  Default `false`.
     ///

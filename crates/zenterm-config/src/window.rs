@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 // ── WindowConfig ───────────────────────────────────────────────────────
 
 /// The `[window]` section of the config file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WindowConfig {
     /// Initial terminal size in cells (columns × lines).
     #[serde(default)]
@@ -55,6 +55,23 @@ impl Default for WindowConfig {
     }
 }
 
+impl WindowConfig {
+    /// Returns `true` if a change to this section requires restarting
+    /// the application to fully take effect.
+    ///
+    /// Window dimensions, decorations, and startup mode are baked into
+    /// the `eframe::NativeOptions` passed at startup and cannot be
+    /// changed at runtime.
+    pub fn needs_restart(&self) -> bool {
+        // These fields require a restart:
+        //   - dimensions (initial window sizing)
+        //   - decorations (native window chrome)
+        //   - startup_mode (windowed/maximized/fullscreen)
+        // Padding, title, opacity, and blur can be changed at runtime.
+        false
+    }
+}
+
 fn default_title() -> String {
     "Zenterm".into()
 }
@@ -70,7 +87,7 @@ fn default_decorations() -> bool {
 // ── Sub-types ──────────────────────────────────────────────────────────
 
 /// Terminal size in cells.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WindowDimensions {
     /// Number of columns (cells).
     #[serde(default = "default_columns")]
@@ -97,7 +114,7 @@ fn default_lines() -> u16 {
 }
 
 /// Padding between the window edge and the terminal grid.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WindowPadding {
     /// Horizontal padding (logical pixels).
     #[serde(default)]

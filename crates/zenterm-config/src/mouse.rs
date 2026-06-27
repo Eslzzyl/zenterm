@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The `[mouse]` section of the config file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MouseConfig {
     /// Hide the mouse cursor while the user is typing.
     #[serde(default)]

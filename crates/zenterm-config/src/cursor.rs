@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 // ── CursorConfig ─────────────────────────────────────��─────────────────
 
 /// The `[cursor]` section of the config file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CursorConfig {
     /// Cursor shape and blinking behaviour.
     #[serde(default)]

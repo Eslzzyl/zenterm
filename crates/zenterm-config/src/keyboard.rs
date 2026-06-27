@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// Currently a placeholder — no bindings are parsed.
 /// The `keyboard` section is recognised so that a future version can
 /// add bindings without breaking existing configs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeyboardConfig {
     /// Custom key bindings (not yet implemented).
     #[serde(default)]
@@ -27,7 +27,7 @@ impl Default for KeyboardConfig {
 }
 
 /// A single key binding (reserved for future use).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeyBinding {
     /// Key identifier (e.g. `"V"`, `"F1"`, `"Return"`).
     pub key: String,

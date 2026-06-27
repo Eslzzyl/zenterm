@@ -17,7 +17,7 @@ use zenterm_core::theme::Theme;
 // ── Top-level colors table ─────────────────────────────────────────────
 
 /// The `[colors]` section of the config file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ColorsConfig {
     /// Built-in theme preference: `"Dark"`, `"Light"`, or `"System"`.
     /// Falls back to `System` when absent.
@@ -79,7 +79,7 @@ pub enum ThemePreference {
 // ── Primary colours ────────────────────────────────────────────────────
 
 /// `[colors.primary]` — the two core terminal colours.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PrimaryColors {
     /// Default text colour (hex `"#rrggbb"`).
     pub foreground: Option<String>,
@@ -106,7 +106,7 @@ impl Default for PrimaryColors {
 // ── Cursor colours ─────────────────────────────────────────────────────
 
 /// `[colors.cursor]` — colours for the terminal cursor.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CursorColors {
     /// Colour for the text under the cursor.  `"CellBackground"` means
     /// "use the cell's background colour" (inverse video).
@@ -128,7 +128,7 @@ impl Default for CursorColors {
 // ── Selection colours ──────────────────────────────────────────────────
 
 /// `[colors.selection]` — colours for selected text.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SelectionColors {
     /// Foreground colour of selected text.
     pub foreground: Option<String>,
@@ -149,7 +149,7 @@ impl Default for SelectionColors {
 
 /// The 8-colour ANSI palette (used for both `[colors.normal]` and
 /// `[colors.bright]`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnsiColors {
     pub black: Option<String>,
     pub red: Option<String>,

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 // ── FontConfig ─────────────────────────────────────────────────────────
 
 /// The `[font]` section of the config file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FontConfig {
     /// Font size in *logical pixels* at 1× DPI scaling.
     ///
@@ -112,7 +112,7 @@ fn default_ligatures() -> bool {
 // ── FontDescription ────────────────────────────────────────────────────
 
 /// A font face identified by its family name and optional style.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FontDescription {
     /// Font family name (e.g. `"JetBrains Mono"`, `"Menlo"`, `"monospace"`).
     pub family: String,
@@ -148,7 +148,7 @@ fn default_font_family() -> String {
 // ── GlyphOffset ────────────────────────────────────────────────────────
 
 /// An x/y offset applied to glyphs (in logical pixels at 1× DPI).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GlyphOffset {
     #[serde(default)]
     pub x: f32,

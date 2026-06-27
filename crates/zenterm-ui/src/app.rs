@@ -28,6 +28,7 @@ use crate::gpu::SharedGpuContext;
 use crate::layout_io::{LayoutIo, PersistedLayout, PersistedWorkspace, SessionMeta, SCHEMA_VERSION};
 use crate::legacy::render_legacy_single;
 use crate::session::{SessionEffect, SessionId, TerminalSession};
+use crate::settings::{self, SettingsState};
 use crate::tab_viewer::TabViewerContext;
 use crate::workspace::WorkspaceManager;
 
@@ -52,6 +53,7 @@ pub struct ZentermApp {
 
     // ── App-level state (not per-session) ──────────────────────────
     pub config: Config,
+    settings_state: SettingsState,
     pub theme: Theme,
     pub theme_preference: ThemePreference,
     pub last_system_dark: bool,
@@ -227,6 +229,7 @@ impl ZentermApp {
             layout_io,
             layout_dirty: false,
             last_persist_at: None,
+            settings_state: SettingsState::new(&config),
             config,
             theme,
             theme_preference: ThemePreference::Dark,
@@ -550,10 +553,11 @@ impl ZentermApp {
     /// Returns `true` if a shortcut was consumed (skip forwarding to
     /// the active session).
     fn handle_shortcuts(&mut self, ctx: &Context) -> bool {
-        let (copy, paste, reload, ws_switch, ws_cycle) = ctx.input(|input| {
+        let (copy, paste, reload, settings, ws_switch, ws_cycle) = ctx.input(|input| {
             let mut c = false;
             let mut p = false;
             let mut r = false;
+            let mut s = false;
             let mut ws_switch: Option<usize> = None;
             let mut ws_cycle: Option<isize> = None;
             for event in &input.events {
@@ -572,6 +576,12 @@ impl ZentermApp {
                             egui::Key::V => p = true,
                             egui::Key::R => r = true,
                             _ => {}
+                        }
+                    }
+                    // Cmd/Ctrl+, → toggle settings panel
+                    if (modifiers.ctrl || modifiers.mac_cmd) && !modifiers.shift && !modifiers.alt {
+                        if *key == egui::Key::Comma {
+                            s = true;
                         }
                     }
                     // Ctrl+1..9 → switch to workspace by index
@@ -599,10 +609,18 @@ impl ZentermApp {
                     }
                 }
             }
-            (c, p, r, ws_switch, ws_cycle)
+            (c, p, r, s, ws_switch, ws_cycle)
         });
         if reload {
             self.reload_config(ctx);
+            return true;
+        }
+        if settings {
+            self.settings_state.open = !self.settings_state.open;
+            if self.settings_state.open {
+                // Reset working config to current when opening.
+                self.settings_state.reset_to(&self.config);
+            }
             return true;
         }
         // Workspace switching shortcuts.
@@ -674,53 +692,71 @@ impl ZentermApp {
     }
 
     // ── Config reload ─────────────────────────────────────────────
+    /// Apply a new config in-place, updating all sessions and the
+    /// glyph atlas as needed.  Returns the diff of what changed.
+    fn apply_new_config(&mut self, new_config: Config, egui_ctx: &Context) -> zenterm_config::ConfigChanges {
+        let old_config = std::mem::replace(&mut self.config, new_config);
+        let changes = old_config.diff_to(&self.config);
+
+        // Re-resolve theme.
+        let system_dark = egui_ctx.input(|i| match i.raw.system_theme {
+            Some(egui::Theme::Dark) => true,
+            Some(egui::Theme::Light) => false,
+            None => true,
+        });
+        self.theme = self.config.colors.to_theme(system_dark);
+        self.last_system_dark = system_dark;
+        self.default_bg = theme_bg_to_color32(&self.theme);
+
+        if changes.colors {
+            let scheme = ColorScheme::from_theme(&self.theme);
+            for (_, session) in self.sessions.iter_mut() {
+                session.terminal.set_scheme(scheme.clone());
+                session.default_bg = self.default_bg;
+            }
+        }
+
+        // Apply per-session config changes.
+        if changes.font || changes.cursor || changes.colors {
+            for (_, session) in self.sessions.iter_mut() {
+                session.apply_config_change(self.config.font.size, self.config.cursor.blink_interval);
+                session.terminal_dirty = true;
+            }
+        }
+
+        // Rebuild the glyph atlas if the logical font size changed.
+        let font_size_changed =
+            (self.config.font.size - old_config.font.size).abs() > f32::EPSILON;
+        if (font_size_changed || changes.font)
+            && (self.config.font.size - old_config.font.size).abs() > f32::EPSILON
+        {
+            let new_font_size = self.config.font.size * self.pixels_per_point;
+            let font_family =
+                std::borrow::Cow::Owned(self.config.font.normal.family.clone());
+            let (cw, ch) = self.atlas.reinit_for_dpi(
+                new_font_size,
+                font_family,
+                self.pixels_per_point,
+                SubpixelLayout::detect(),
+                self.config.font.ligatures,
+            );
+            self.atlas.seed_ascii();
+            self.atlas.sync_to_gpu();
+            for (_, session) in self.sessions.iter_mut() {
+                session.cell_width = cw;
+                session.cell_height = ch;
+            }
+        }
+
+        changes
+    }
 
     fn reload_config(&mut self, egui_ctx: &Context) {
         match Config::reload() {
             Ok(Some(cfg)) => {
                 log::info!("config reloaded, applying changes");
-                let old_config = std::mem::replace(&mut self.config, cfg);
-
-                // Re-resolve theme.
-                let system_dark = egui_ctx.input(|i| match i.raw.system_theme {
-                    Some(egui::Theme::Dark) => true,
-                    Some(egui::Theme::Light) => false,
-                    None => true,
-                });
-                self.theme = self.config.colors.to_theme(system_dark);
-                self.last_system_dark = system_dark;
-                self.default_bg = theme_bg_to_color32(&self.theme);
-                let scheme = ColorScheme::from_theme(&self.theme);
-
-                // Apply to every session.
-                let font_size_changed =
-                    (self.config.font.size - old_config.font.size).abs() > f32::EPSILON;
-                for (_, session) in self.sessions.iter_mut() {
-                    session.terminal.set_scheme(scheme.clone());
-                    session.default_bg = self.default_bg;
-                    session.terminal_dirty = true;
-                    session.apply_config_change(self.config.font.size, self.config.cursor.blink_interval);
-                }
-
-                // Rebuild the glyph atlas if the logical font size changed.
-                if font_size_changed {
-                    let new_font_size = self.config.font.size * self.pixels_per_point;
-                    let font_family =
-                        std::borrow::Cow::Owned(self.config.font.normal.family.clone());
-                    let (cw, ch) = self.atlas.reinit_for_dpi(
-                        new_font_size,
-                        font_family,
-                        self.pixels_per_point,
-                        SubpixelLayout::detect(),
-                        self.config.font.ligatures,
-                    );
-                    self.atlas.seed_ascii();
-                    self.atlas.sync_to_gpu();
-                    for (_, session) in self.sessions.iter_mut() {
-                        session.cell_width = cw;
-                        session.cell_height = ch;
-                    }
-                }
+                self.apply_new_config(cfg, egui_ctx);
+                self.settings_state.reset_to(&self.config);
                 self.error_toast = None;
             }
             Ok(None) => {
@@ -735,6 +771,7 @@ impl ZentermApp {
     }
 }
 
+
 // ── eframe::App ────────────────────────────────────────────────────────
 
 impl eframe::App for ZentermApp {
@@ -742,7 +779,7 @@ impl eframe::App for ZentermApp {
         [0.0, 0.0, 0.0, 0.0]
     }
 
-    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
         // 0. Theme sync.
         self.sync_theme(ctx);
 
@@ -768,10 +805,11 @@ impl eframe::App for ZentermApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        // 2. Keyboard shortcuts (copy/paste/reload).
+        // 2. Keyboard shortcuts (copy/paste/reload/settings).
         if self.handle_shortcuts(ctx) {
             // skip forwarding (the shortcut consumed the event)
-        } else {
+        } else if !self.settings_state.open {
+            // Don't forward keyboard when the settings panel is open.
             self.feed_keyboard_to_active(ctx);
         }
 
@@ -788,7 +826,18 @@ impl eframe::App for ZentermApp {
             }
         }
 
-        // 4. Request continuous repaint.
+        // 4. Render the main UI (terminal, tabs, sidebar).
+        #[allow(deprecated)]
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+            self.ui(ui, frame);
+        });
+
+        // 5. Render the settings panel (separate native window).
+        if self.settings_state.open {
+            self.render_settings_viewport(ctx);
+        }
+
+        // 6. Request continuous repaint.
         ctx.request_repaint();
     }
 
@@ -831,6 +880,73 @@ impl eframe::App for ZentermApp {
 
     fn on_exit(&mut self) {
         self.persist_layout_now();
+    }
+}
+
+// ── Settings viewport (native OS window) ─────────────────────────────
+
+impl ZentermApp {
+    /// Show the settings panel in a separate native OS window (no
+    /// minimize/maximize buttons, resizable).
+    fn render_settings_viewport(&mut self, ctx: &egui::Context) {
+        use egui::{ViewportBuilder, ViewportId};
+
+        let viewport_id = ViewportId::from_hash_of("zenterm_settings_viewport");
+        let builder = ViewportBuilder::default()
+            .with_title("Settings")
+            .with_inner_size(egui::vec2(720.0, 520.0))
+            .with_resizable(true)
+            .with_minimize_button(false)
+            .with_maximize_button(false);
+
+        // Extract borrows *before* the closure to satisfy the borrow
+        // checker — show_viewport_immediate borrows the context, and
+        // the closure must not borrow self (which is already mutably
+        // borrowed by update()).
+        let settings_state = &mut self.settings_state;
+        let config = &self.config;
+
+        let output = ctx.show_viewport_immediate(
+            viewport_id,
+            builder,
+            |ctx, _class| {
+                // User clicked the native close button → hide the viewport.
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    settings_state.open = false;
+                    return settings::SettingsOutput::default();
+                }
+
+                // Set the window title (dirty indicator).
+                let dirty = settings_state.is_dirty(config);
+                let title = if dirty {
+                    "Settings ●"
+                } else {
+                    "Settings"
+                };
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.to_owned()));
+
+                // Render the settings form (no egui::Window wrapper).
+                settings::render_settings_viewport(ctx, settings_state, config)
+            },
+        );
+
+        // ── Immediate apply: if working_config changed, apply now ─
+        if settings_state.is_dirty(&self.config) {
+            let new_config = settings_state.working_config.clone();
+            self.apply_new_config(new_config, ctx);
+        }
+
+        // ── Handle Reset All ──────────────────────────────────────
+        if output.reset_all_confirmed {
+            // Reset to defaults, apply, and save.
+            self.settings_state.working_config = Config::default();
+            self.apply_new_config(Config::default(), ctx);
+            if let Err(e) = self.config.save() {
+                log::error!("settings reset + save failed: {e}");
+                self.error_toast = Some(format!("Failed to save reset config: {e}"));
+            }
+            self.settings_state.open = false;
+        }
     }
 }
 
@@ -950,6 +1066,10 @@ impl ZentermApp {
                             }
                             crate::sidebar::SidebarEvent::FocusTab(node, tab) => {
                                 queued_focus = Some((node, tab))
+                            }
+                            crate::sidebar::SidebarEvent::OpenSettings => {
+                                self.settings_state.open = true;
+                                self.settings_state.reset_to(&self.config);
                             }
                         }
                     }

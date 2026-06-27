@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The `[terminal]` section of the config file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TerminalConfig {
     /// OSC 52 clipboard escape sequence support.
     #[serde(default)]
@@ -46,7 +46,7 @@ pub enum Osc52Mode {
 }
 
 /// A program to launch as the shell.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShellConfig {
     /// Path to the executable.
     pub program: String,

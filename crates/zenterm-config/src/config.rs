@@ -26,7 +26,7 @@ use crate::window::WindowConfig;
 ///
 /// Every section is optional in TOML — missing sections fall back to
 /// [`Default`] values that mirror the original hardcoded behaviour.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub window: WindowConfig,
@@ -55,6 +55,30 @@ pub struct Config {
     /// UI chrome (tabs + sidebar).  Defaults to all-off.
     #[serde(default)]
     pub ui: UiConfig,
+}
+
+// ── ConfigChanges ──────────────────────────────────────────────────────
+
+/// Describes which sections of a [`Config`] differ from an earlier copy.
+///
+/// Used by the settings panel to decide what needs re-applying at
+/// runtime.  Fields that require a restart are flagged separately.
+#[derive(Debug, Clone, Default)]
+pub struct ConfigChanges {
+    pub window: bool,
+    pub font: bool,
+    pub colors: bool,
+    pub cursor: bool,
+    pub selection: bool,
+    pub mouse: bool,
+    pub terminal: bool,
+    pub keyboard: bool,
+    pub ui: bool,
+
+    /// `true` when any changed section **requires an application
+    /// restart** to take full effect (e.g. window decorations,
+    /// startup mode, initial dimensions).
+    pub needs_restart: bool,
 }
 
 impl Config {
@@ -163,6 +187,34 @@ impl Config {
         })?;
 
         Ok(())
+    }
+}
+
+impl Config {
+    // ── Diff ────────────────────────────────────────────────────────────
+
+    /// Compare this config against `other` and report which top-level
+    /// sections differ.  The returned [`ConfigChanges`] tells callers
+    /// (e.g. the settings panel or hot-reload handler) exactly what
+    /// needs to be re-applied at runtime.
+    pub fn diff_to(&self, other: &Self) -> ConfigChanges {
+        ConfigChanges {
+            window: self.window != other.window,
+            font: self.font != other.font,
+            colors: self.colors != other.colors,
+            cursor: self.cursor != other.cursor,
+            selection: self.selection != other.selection,
+            mouse: self.mouse != other.mouse,
+            terminal: self.terminal != other.terminal,
+            keyboard: self.keyboard != other.keyboard,
+            ui: self.ui != other.ui,
+            needs_restart: self.window.needs_restart() || other.window.needs_restart(),
+        }
+    }
+
+    /// Returns `true` if any section differs from `other`.
+    pub fn differs_from(&self, other: &Self) -> bool {
+        self != other
     }
 }
 
