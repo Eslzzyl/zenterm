@@ -22,6 +22,7 @@ use zenterm_core::SubpixelLayout;
 use zenterm_core::theme::{Theme, ThemePreference, THEME_DARK};
 use zenterm_render::callback::{CallbackHandle, SharedRenderState, TerminalWgpuCallback};
 use zenterm_term::ColorScheme;
+use alacritty_terminal::term::TermMode;
 
 use crate::glyph_cache::SharedGlyphAtlas;
 use crate::gpu::SharedGpuContext;
@@ -688,6 +689,70 @@ impl ZentermApp {
                 }
             }
         }
+
+        // ── Terminal scroll shortcuts (PageUp/Down/Home/End) ─────
+        let no_ui_focus = !ctx.memory(|m| m.focused().is_some());
+        if no_ui_focus {
+            if let Some(id) = self.active_session_id {
+                if let Some(session) = self.sessions.get_mut(&id) {
+                    if !session.terminal.mode().contains(TermMode::ALT_SCREEN) {
+                        let rows = session.terminal.size().rows as i32;
+                        let mut scrolled = false;
+                        ctx.input(|input| {
+                            for event in &input.events {
+                                if let egui::Event::Key {
+                                    key,
+                                    pressed: true,
+                                    ..
+                                } = event
+                                {
+                                    match key {
+                                        egui::Key::PageUp => {
+                                            session.terminal.scroll_display(rows);
+                                            scrolled = true;
+                                        }
+                                        egui::Key::PageDown => {
+                                            session.terminal.scroll_display(-rows);
+                                            scrolled = true;
+                                        }
+                                        egui::Key::Home => {
+                                            session.terminal.scroll_to_top();
+                                            scrolled = true;
+                                        }
+                                        egui::Key::End => {
+                                            session.terminal.scroll_to_bottom();
+                                            scrolled = true;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        });
+                        if scrolled {
+                            session.terminal_dirty = true;
+                            // Consume the scroll keys so they aren't forwarded to the PTY.
+                            ctx.input_mut(|i| {
+                                i.events.retain(|e| {
+                                    !matches!(
+                                        e,
+                                        egui::Event::Key {
+                                            key: egui::Key::PageUp
+                                            | egui::Key::PageDown
+                                            | egui::Key::Home
+                                            | egui::Key::End,
+                                            pressed: true,
+                                            ..
+                                        }
+                                    )
+                                })
+                            });
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
         false
     }
 

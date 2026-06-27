@@ -92,6 +92,9 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         // dock level (see `render_tabs_with_dock` in `app.rs`).
         ui.painter().rect_filled(cell_rect, 0.0, session.default_bg);
 
+        // Scrollbar overlay (on top of the background).
+        session.render_scrollbar(ui, cell_rect);
+
         // Right-click context menu: copy / paste.
         session.render_context_menu(ui, &response);
 

@@ -20,7 +20,7 @@ use std::fmt;
 use std::sync::{mpsc, Arc};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Direction, Line, Point};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
@@ -411,6 +411,49 @@ impl Terminal {
         )
     }
 
+    // ── Scrollback / display offset ─────────────────────────────────────
+
+    /// Scroll the viewport by `count` lines.
+    ///
+    /// Positive = scroll up (into history), negative = scroll down (toward bottom).
+    /// Returns `true` if the display offset actually changed.
+    pub fn scroll_display(&mut self, count: i32) -> bool {
+        let old = self.term.grid().display_offset();
+        self.term.scroll_display(Scroll::Delta(count));
+        if self.term.grid().display_offset() != old {
+            self.damage.mark_all();
+            return true;
+        }
+        false
+    }
+
+    /// Jump to the bottom of the scrollback (latest output).
+    pub fn scroll_to_bottom(&mut self) {
+        self.term.scroll_display(Scroll::Bottom);
+        self.damage.mark_all();
+    }
+
+    /// Jump to the top of the scrollback (oldest history).
+    pub fn scroll_to_top(&mut self) {
+        self.term.scroll_display(Scroll::Top);
+        self.damage.mark_all();
+    }
+
+    /// Number of lines currently in scrollback history.
+    pub fn history_size(&self) -> usize {
+        self.term.grid().history_size()
+    }
+
+    /// Current scroll position. 0 = at bottom, larger = scrolled into history.
+    pub fn display_offset(&self) -> usize {
+        self.term.grid().display_offset()
+    }
+
+    /// Whether the viewport is at the bottom (showing latest output).
+    pub fn is_at_bottom(&self) -> bool {
+        self.term.grid().display_offset() == 0
+    }
+
     /// Get a view of the visible grid with resolved colours.
     ///
     /// Only dirty rows are re-converted; clean rows come from the cache.
@@ -432,6 +475,9 @@ impl Terminal {
                 self.grid_cache[row_idx][col_idx] = self.resolve_cell(alacell);
             }
         }
+
+        // Clear the damage set — it has been consumed by the re-resolution above.
+        self.damage.clear();
 
         GridView {
             rows: &self.grid_cache[..screen_lines.min(self.grid_cache.len())],
@@ -537,9 +583,15 @@ impl Terminal {
 
     // ── Selection support ──────────────────────────────────────────────────
 
-    /// Start a new selection at the given grid position.
+    /// Start a new selection at the given viewport position.
+    ///
+    /// `line` is a viewport row (0 = top).  It is converted to grid
+    /// coordinates internally so the selection tracks the correct cells
+    /// even when the viewport is scrolled into history.
     pub fn start_selection(&mut self, line: usize, col: usize) {
-        let point = Point::new(Line(line as i32), Column(col));
+        let display_offset = self.term.grid().display_offset();
+        let grid_line = (line as i32) - (display_offset as i32);
+        let point = Point::new(Line(grid_line), Column(col));
         self.term.selection = Some(Selection::new(
             SelectionType::Simple,
             point,
@@ -547,10 +599,12 @@ impl Terminal {
         ));
     }
 
-    /// Extend the current selection to the given grid position.
+    /// Extend the current selection to the given viewport position.
     pub fn update_selection(&mut self, line: usize, col: usize) {
+        let display_offset = self.term.grid().display_offset();
+        let grid_line = (line as i32) - (display_offset as i32);
         if let Some(ref mut sel) = self.term.selection {
-            let point = Point::new(Line(line as i32), Column(col));
+            let point = Point::new(Line(grid_line), Column(col));
             sel.update(point, Direction::Left);
         }
     }
@@ -565,7 +619,7 @@ impl Terminal {
         self.term.selection.is_some()
     }
 
-    /// Check whether a specific cell is within the selection range.
+    /// Check whether a specific cell (in viewport coordinates) is within the selection range.
     pub fn is_selected(&self, line: usize, col: usize) -> bool {
         let range = match self
             .term
@@ -576,7 +630,9 @@ impl Terminal {
             Some(r) => r,
             None => return false,
         };
-        let point = Point::new(Line(line as i32), Column(col));
+        let display_offset = self.term.grid().display_offset();
+        let grid_line = (line as i32) - (display_offset as i32);
+        let point = Point::new(Line(grid_line), Column(col));
         range.contains(point)
     }
 
