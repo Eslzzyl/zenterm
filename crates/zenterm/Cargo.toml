@@ -3,6 +3,11 @@ name = "zenterm"
 version = "0.1.0"
 edition = "2024"
 
+[package.metadata.packager]
+before-packaging-command = "cargo build --release"
+product-name = "Zenterm"
+identifier = "org.eu.eslzzyl.zenterm"
+
 [dependencies]
 zenterm-config = { path = "../zenterm-config" }
 zenterm-ui = { path = "../zenterm-ui" }
