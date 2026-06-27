@@ -662,6 +662,18 @@ impl TerminalSession {
                     (cell.fg, cell.bg)
                 };
 
+                // SGR 2 (dim): reduce foreground brightness by half.
+                let draw_fg = if cell.dim {
+                    Rgba::new(
+                        draw_fg.r() * 0.5,
+                        draw_fg.g() * 0.5,
+                        draw_fg.b() * 0.5,
+                        draw_fg.a(),
+                    )
+                } else {
+                    draw_fg
+                };
+
                 if cell.is_spacer {
                     col += 1;
                     continue;
@@ -850,9 +862,10 @@ impl TerminalSession {
                 let deco_color = if is_cursor {
                     [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0]
                 } else if is_sel {
-                    [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0]
+                    let deco_fg = sel_fg.unwrap_or(cell.fg);
+                    [deco_fg.r(), deco_fg.g(), deco_fg.b(), 1.0]
                 } else {
-                    [cell.fg.r(), cell.fg.g(), cell.fg.b(), 1.0]
+                    [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0]
                 };
 
                 if cell.underline {
