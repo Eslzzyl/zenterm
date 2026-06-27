@@ -7,6 +7,7 @@ edition = "2024"
 before-packaging-command = "cargo build --release"
 product-name = "Zenterm"
 identifier = "org.eu.eslzzyl.zenterm"
+icons = ["../../assets/icon.png"]
 
 [dependencies]
 zenterm-config = { path = "../zenterm-config" }
