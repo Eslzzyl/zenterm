@@ -72,15 +72,15 @@ pub struct ZentermApp {
     /// unnecessary title-bar redraws on some platforms).
     current_window_title: Option<String>,
 
-    // ── Window size persistence ──────────────────────────────────
-    /// Whether the terminal grid dimensions have changed since the
-    /// last disk write.  Set by [`Self::track_window_size`], cleared
-    /// after a successful [`Config::save`].
-    window_size_dirty: bool,
-    /// Timestamp of the most recent terminal resize.  Used to debounce
-    /// the config file write so we don't thrash the disk during a
-    /// window drag-resize.
-    last_window_size_save_at: Option<Instant>,
+    // ── Config persistence ──────────────────────────────────────
+    /// Whether the in-memory config has changed since the last disk
+    /// write.  Set by both settings-panel changes and window-resize
+    /// tracking; cleared after a successful [`Config::save`].
+    config_dirty: bool,
+    /// Timestamp of the most recent config change.  Used to debounce
+    /// the disk write so rapid changes (e.g. slider drag or window
+    /// resize) don't thrash the I/O.
+    last_config_save_at: Option<Instant>,
 }
 
 // ── Construction ───────────────────────────────────────────────────────
@@ -251,8 +251,8 @@ impl ZentermApp {
             pending_close: Vec::new(),
             pending_adds: 0,
             current_window_title: None,
-            window_size_dirty: false,
-            last_window_size_save_at: None,
+            config_dirty: false,
+            last_config_save_at: None,
         }
     }
 
@@ -450,7 +450,30 @@ impl ZentermApp {
         self.last_persist_at = Some(Instant::now());
     }
 
-    // ── Window size persistence ───────────────────────────────────
+    // ── Config persistence ────────────────────────────────────────
+
+    /// If the config has been dirtied longer than the debounce window
+    /// ago, write it to disk.
+    ///
+    /// Called every frame from [`Self::update`].  Both the settings
+    /// panel and the window-resize tracker set `config_dirty`; this
+    /// method coalesces them into a single disk write with a 500 ms
+    /// debounce so rapid slider drags and window resize events don't
+    /// thrash I/O.
+    fn maybe_save_config(&mut self) {
+        if !self.config_dirty {
+            return;
+        }
+        const DEBOUNCE_MS: u64 = 500;
+        if let Some(at) = self.last_config_save_at {
+            if at.elapsed() >= Duration::from_millis(DEBOUNCE_MS) {
+                if let Err(e) = self.config.save() {
+                    log::error!("failed to save config: {e}");
+                }
+                self.config_dirty = false;
+            }
+        }
+    }
 
     /// Track the active terminal's grid dimensions and save them to
     /// the config file with a 2-second debounce.
@@ -486,21 +509,8 @@ impl ZentermApp {
                 self.config.window.last_window_size = Some([size.x, size.y]);
             }
 
-            self.window_size_dirty = true;
-            self.last_window_size_save_at = Some(Instant::now());
-        }
-
-        // Debounced disk write.
-        if self.window_size_dirty {
-            const DEBOUNCE_MS: u64 = 2000;
-            if let Some(at) = self.last_window_size_save_at {
-                if at.elapsed() >= Duration::from_millis(DEBOUNCE_MS) {
-                    if let Err(e) = self.config.save() {
-                        log::error!("failed to save window size: {e}");
-                    }
-                    self.window_size_dirty = false;
-                }
-            }
+            self.config_dirty = true;
+            self.last_config_save_at = Some(Instant::now());
         }
     }
 
@@ -971,7 +981,10 @@ impl eframe::App for ZentermApp {
         // 6. Track terminal grid dimensions and persist with debounce.
         self.track_and_persist_window_size(ctx);
 
-        // 7. Request continuous repaint.
+        // 7. Debounced config write (settings panel + window size).
+        self.maybe_save_config();
+
+        // 8. Request continuous repaint.
         ctx.request_repaint();
     }
 
@@ -1014,13 +1027,13 @@ impl eframe::App for ZentermApp {
 
     fn on_exit(&mut self) {
         self.persist_layout_now();
-        // Save the last-known window size immediately so the next
-        // session starts with the correct dimensions.
-        if self.window_size_dirty {
+        // Save any pending config changes (window size, settings, etc.)
+        // immediately so the next session starts with the correct state.
+        if self.config_dirty {
             if let Err(e) = self.config.save() {
-                log::error!("failed to save window size on exit: {e}");
+                log::error!("failed to save config on exit: {e}");
             }
-            self.window_size_dirty = false;
+            self.config_dirty = false;
         }
     }
 }
@@ -1076,6 +1089,9 @@ impl ZentermApp {
         if settings_state.is_dirty(&self.config) {
             let new_config = settings_state.working_config.clone();
             self.apply_new_config(new_config, ctx);
+            // Persist settings changes to disk (debounced).
+            self.config_dirty = true;
+            self.last_config_save_at = Some(Instant::now());
         }
 
         // ── Handle Reset All ──────────────────────────────────────
