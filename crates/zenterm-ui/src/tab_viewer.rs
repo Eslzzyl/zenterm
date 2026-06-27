@@ -15,7 +15,7 @@
 //!   the borrow checker happy: `TabViewer::ui` cannot mutate the
 //!   session map while the `DockArea` is iterating it.
 
-use egui::WidgetText;
+use egui::{Stroke, StrokeKind, WidgetText};
 use egui_dock::tab_viewer::OnCloseResponse;
 use egui_dock::{NodePath, TabViewer};
 
@@ -92,13 +92,40 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         // Right-click context menu: copy / paste.
         session.render_context_menu(ui, &response);
 
-        // Mark this tab as the active one.
-        *self.active_session_id = Some(*tab);
+        // Switch keyboard focus to this tab only when the user actively
+        // interacts with the terminal body (click, drag, right-click).
+        // Without this guard, the last tab rendered in a split layout
+        // unconditionally becomes active, stealing keyboard input from
+        // the tab the user actually clicked on.
+        if response.clicked() || response.drag_started() || response.secondary_clicked() {
+            *self.active_session_id = Some(*tab);
+        }
+
+        // Visual indicator: draw a thin border around the active
+        // (keyboard-focus) panel.  The colour comes from the terminal's
+        // selection background, which is designed to be visible on any
+        // foreground/background combination.
+        if *self.active_session_id == Some(*tab) {
+            let sel = session.terminal.scheme().selection_bg;
+            let accent = egui::Color32::from_rgba_premultiplied(
+                (sel.r() * 255.0).round().clamp(0.0, 255.0) as u8,
+                (sel.g() * 255.0).round().clamp(0.0, 255.0) as u8,
+                (sel.b() * 255.0).round().clamp(0.0, 255.0) as u8,
+                (sel.a() * 255.0).round().clamp(0.0, 255.0) as u8,
+            );
+            ui.painter().rect_stroke(cell_rect, 0.0, Stroke::new(1.0, accent), StrokeKind::Inside);
+        }
     }
 
     fn on_close(&mut self, tab: &mut Self::Tab) -> OnCloseResponse {
         self.pending_close.push(*tab);
         OnCloseResponse::Close
+    }
+
+    fn on_tab_button(&mut self, tab: &mut Self::Tab, response: &egui::Response) {
+        if response.clicked() {
+            *self.active_session_id = Some(*tab);
+        }
     }
 
     fn on_add(&mut self, _path: NodePath) {
