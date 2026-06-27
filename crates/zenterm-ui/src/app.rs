@@ -71,6 +71,16 @@ pub struct ZentermApp {
     /// with the same string on every shell prompt (which can cause
     /// unnecessary title-bar redraws on some platforms).
     current_window_title: Option<String>,
+
+    // ── Window size persistence ──────────────────────────────────
+    /// Whether the terminal grid dimensions have changed since the
+    /// last disk write.  Set by [`Self::track_window_size`], cleared
+    /// after a successful [`Config::save`].
+    window_size_dirty: bool,
+    /// Timestamp of the most recent terminal resize.  Used to debounce
+    /// the config file write so we don't thrash the disk during a
+    /// window drag-resize.
+    last_window_size_save_at: Option<Instant>,
 }
 
 // ── Construction ───────────────────────────────────────────────────────
@@ -241,6 +251,8 @@ impl ZentermApp {
             pending_close: Vec::new(),
             pending_adds: 0,
             current_window_title: None,
+            window_size_dirty: false,
+            last_window_size_save_at: None,
         }
     }
 
@@ -436,6 +448,60 @@ impl ZentermApp {
         }
         self.layout_dirty = false;
         self.last_persist_at = Some(Instant::now());
+    }
+
+    // ── Window size persistence ───────────────────────────────────
+
+    /// Track the active terminal's grid dimensions and save them to
+    /// the config file with a 2-second debounce.
+    ///
+    /// Called every frame from [`Self::update`] after all sessions
+    /// have been rendered (and possibly resized).  If the terminal
+    /// dimensions changed, the in-memory config is updated immediately;
+    /// the disk write is deferred so that rapid drag-resizing doesn't
+    /// thrash the I/O.
+    fn track_and_persist_window_size(&mut self, ctx: &Context) {
+        // Pick the active session, or any session if none is active.
+        let session = match self
+            .active_session_id
+            .and_then(|id| self.sessions.get(&id))
+            .or_else(|| self.sessions.values().next())
+        {
+            Some(s) => s,
+            None => return,
+        };
+
+        let ts = session.terminal.size();
+        let dims = &mut self.config.window.dimensions;
+
+        if ts.cols != dims.columns || ts.rows != dims.lines {
+            dims.columns = ts.cols;
+            dims.lines = ts.rows;
+
+            // Capture the window's current logical size so we can
+            // restore it exactly on the next startup — bypassing the
+            // inaccurate `font.size * 0.6` estimate.
+            if let Some(inner_rect) = ctx.input(|i| i.viewport().inner_rect) {
+                let size = inner_rect.size();
+                self.config.window.last_window_size = Some([size.x, size.y]);
+            }
+
+            self.window_size_dirty = true;
+            self.last_window_size_save_at = Some(Instant::now());
+        }
+
+        // Debounced disk write.
+        if self.window_size_dirty {
+            const DEBOUNCE_MS: u64 = 2000;
+            if let Some(at) = self.last_window_size_save_at {
+                if at.elapsed() >= Duration::from_millis(DEBOUNCE_MS) {
+                    if let Err(e) = self.config.save() {
+                        log::error!("failed to save window size: {e}");
+                    }
+                    self.window_size_dirty = false;
+                }
+            }
+        }
     }
 
     // ── Keyboard / input (per-active-session) ─────────────────────
@@ -902,7 +968,10 @@ impl eframe::App for ZentermApp {
             self.render_settings_viewport(ctx);
         }
 
-        // 6. Request continuous repaint.
+        // 6. Track terminal grid dimensions and persist with debounce.
+        self.track_and_persist_window_size(ctx);
+
+        // 7. Request continuous repaint.
         ctx.request_repaint();
     }
 
@@ -945,6 +1014,14 @@ impl eframe::App for ZentermApp {
 
     fn on_exit(&mut self) {
         self.persist_layout_now();
+        // Save the last-known window size immediately so the next
+        // session starts with the correct dimensions.
+        if self.window_size_dirty {
+            if let Err(e) = self.config.save() {
+                log::error!("failed to save window size on exit: {e}");
+            }
+            self.window_size_dirty = false;
+        }
     }
 }
 

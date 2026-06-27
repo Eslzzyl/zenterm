@@ -241,10 +241,6 @@ fn render_section(ui: &mut egui::Ui, section: SettingsSection, cfg: &mut Config)
 
 fn render_window_section(ui: &mut egui::Ui, w: &mut WindowConfig) {
     settings_widgets::section_header(ui, "Window", "Window appearance, size, and initial state.");
-    settings_widgets::drag_u16(ui, "Columns", &mut w.dimensions.columns, 1.0,
-        "Number of character columns (requires restart)");
-    settings_widgets::drag_u16(ui, "Lines", &mut w.dimensions.lines, 1.0,
-        "Number of visible rows (requires restart)");
     settings_widgets::drag_f32(ui, "Padding X", &mut w.padding.x, 0.5,
         "Horizontal padding in logical pixels");
     settings_widgets::drag_f32(ui, "Padding Y", &mut w.padding.y, 0.5,

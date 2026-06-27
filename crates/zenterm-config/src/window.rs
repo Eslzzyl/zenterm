@@ -39,6 +39,15 @@ pub struct WindowConfig {
     /// Initial window state.
     #[serde(default)]
     pub startup_mode: StartupMode,
+
+    /// Last known window inner size in logical points.
+    ///
+    /// Saved automatically when the terminal grid is resized, and
+    /// restored on the next startup so the window opens at the exact
+    /// same pixel dimensions.  `None` on first launch or after a
+    /// config reset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_window_size: Option<[f32; 2]>,
 }
 
 impl Default for WindowConfig {
@@ -51,6 +60,7 @@ impl Default for WindowConfig {
             blur: false,
             decorations: default_decorations(),
             startup_mode: StartupMode::default(),
+            last_window_size: None,
         }
     }
 }

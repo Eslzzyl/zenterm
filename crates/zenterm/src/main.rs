@@ -82,12 +82,21 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-/// Roughly estimate the pixel size of a window that can hold the
-/// configured grid at the configured font size.
+/// Pick a pixel size for the initial window.
 ///
-/// This is a best-effort starting size since the real cell dimensions
-/// aren't known until the font atlas is initialised inside the app.
+/// If we have a last-known window size from a previous session, use it
+/// directly — this gives pixel-perfect restoration regardless of font
+/// metrics.  Otherwise, fall back to estimating from the configured
+/// terminal grid and font size.
 fn estimate_window_size(config: &Config) -> egui::Vec2 {
+    // Exact restoration from a previous session.
+    if let Some([w, h]) = config.window.last_window_size {
+        return egui::Vec2::new(w.max(400.0), h.max(200.0));
+    }
+
+    // Rough estimate: convert grid cells → pixels using guessed
+    // font metrics.  This is only used on the very first launch
+    // (before any window resize has been persisted).
     let cols = config.window.dimensions.columns.max(40) as f32;
     let rows = config.window.dimensions.lines.max(10) as f32;
     // At 1× DPI, `config.font.size` is the logical pixel size.

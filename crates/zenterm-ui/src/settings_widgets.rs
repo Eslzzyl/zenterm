@@ -92,19 +92,6 @@ pub fn drag_f32(
     });
 }
 
-/// A labelled drag-value for `u16`.
-pub fn drag_u16(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut u16,
-    speed: f32,
-    description: &str,
-) {
-    row(ui, label, description, |ui| {
-        ui.add(egui::DragValue::new(value).speed(speed).max_decimals(0).range(1..=999));
-    });
-}
-
 /// A labelled drag-value for `u64`.
 pub fn drag_u64(
     ui: &mut egui::Ui,
