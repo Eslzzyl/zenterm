@@ -20,6 +20,10 @@ pub struct BuiltinParams {
     pub cell_width: u32,
     /// Cell height in pixels.
     pub cell_height: u32,
+    /// Baseline offset: y-down distance from cell top to baseline, in pixels.
+    /// Used as `bearing_y` so the glyph bitmap is vertically positioned on
+    /// the baseline like a real font glyph.
+    pub cell_ascent: f32,
 }
 
 /// A software-rasterized built-in glyph.
@@ -61,95 +65,96 @@ pub fn is_builtin(c: char) -> bool {
 pub fn render(c: char, params: &BuiltinParams) -> Option<BuiltinGlyph> {
     let w = params.cell_width;
     let h = params.cell_height;
+    let by = params.cell_ascent;
 
     match c {
         // ── Full block █ (U+2588) ────────────────────────────────────
-        '\u{2588}' => Some(full_block(w, h)),
+        '\u{2588}' => Some(full_block(w, h, by)),
 
         // ── Shade characters ─────────────────────────────────────────
         // ░ Light shade (U+2591) — 25% intensity
         // ▒ Medium shade (U+2592) — 50% intensity
         // ▓ Dark shade (U+2593) — 75% intensity
-        '\u{2591}' => Some(solid_fill(w, h, 64)),   // 25%
-        '\u{2592}' => Some(solid_fill(w, h, 128)),  // 50%
-        '\u{2593}' => Some(solid_fill(w, h, 192)),  // 75%
+        '\u{2591}' => Some(solid_fill(w, h, by, 64)),   // 25%
+        '\u{2592}' => Some(solid_fill(w, h, by, 128)),  // 50%
+        '\u{2593}' => Some(solid_fill(w, h, by, 192)),  // 75%
 
         // ── Half blocks ──────────────────────────────────────────────
         // ▀ Upper half block (U+2580)
-        '\u{2580}' => Some(half_block(w, h, Half::Upper)),
+        '\u{2580}' => Some(half_block(w, h, by, Half::Upper)),
         // ▄ Lower half block (U+2584)
-        '\u{2584}' => Some(half_block(w, h, Half::Lower)),
+        '\u{2584}' => Some(half_block(w, h, by, Half::Lower)),
         // ▌ Left half block (U+258C)
-        '\u{258c}' => Some(half_block(w, h, Half::Left)),
+        '\u{258c}' => Some(half_block(w, h, by, Half::Left)),
         // ▐ Right half block (U+2590)
-        '\u{2590}' => Some(half_block(w, h, Half::Right)),
+        '\u{2590}' => Some(half_block(w, h, by, Half::Right)),
 
         // ── Quadrants (U+2596–U+259F) ────────────────────────────────
         // ▖ Lower left quadrant
-        '\u{2596}' => Some(quadrant_lower_left(w, h)),
+        '\u{2596}' => Some(quadrant_lower_left(w, h, by)),
         // ▗ Lower right quadrant
-        '\u{2597}' => Some(quadrant_lower_right(w, h)),
+        '\u{2597}' => Some(quadrant_lower_right(w, h, by)),
         // ▘ Upper left quadrant
-        '\u{2598}' => Some(quadrant_upper_left(w, h)),
+        '\u{2598}' => Some(quadrant_upper_left(w, h, by)),
         // ▙ Upper left + lower left + lower right
-        '\u{2599}' => Some(quadrant_three(w, h, true, true, false, true)),
+        '\u{2599}' => Some(quadrant_three(w, h, by, true, true, false, true)),
         // ▚ Upper left + lower right
-        '\u{259a}' => Some(quadrant_two_diagonal(w, h)),
+        '\u{259a}' => Some(quadrant_two_diagonal(w, h, by)),
         // ▛ Upper left + upper right + lower left
-        '\u{259b}' => Some(quadrant_three(w, h, true, true, true, false)),
+        '\u{259b}' => Some(quadrant_three(w, h, by, true, true, true, false)),
         // ▜ Upper left + upper right + lower right
-        '\u{259c}' => Some(quadrant_three(w, h, true, true, false, true)), // same as ▙ but mirrored
+        '\u{259c}' => Some(quadrant_three(w, h, by, true, true, false, true)), // same as ▙ but mirrored
         // ▝ Upper right quadrant
-        '\u{259d}' => Some(quadrant_upper_right(w, h)),
+        '\u{259d}' => Some(quadrant_upper_right(w, h, by)),
         // ▞ Upper right + lower left
-        '\u{259e}' => Some(quadrant_two_diagonal_mirror(w, h)),
+        '\u{259e}' => Some(quadrant_two_diagonal_mirror(w, h, by)),
         // ▟ Upper right + lower left + lower right
-        '\u{259f}' => Some(quadrant_three(w, h, false, true, true, true)),
+        '\u{259f}' => Some(quadrant_three(w, h, by, false, true, true, true)),
 
         // ── Box drawing (basic horizontal/vertical) ──────────────────
         // Light ─ (U+2500)
-        '\u{2500}' => Some(hline(w, h, true)),
+        '\u{2500}' => Some(hline(w, h, by, true)),
         // Light │ (U+2502)
-        '\u{2502}' => Some(vline(w, h, true)),
+        '\u{2502}' => Some(vline(w, h, by, true)),
         // Heavy ━ (U+2501)
-        '\u{2501}' => Some(hline(w, h, false)),
+        '\u{2501}' => Some(hline(w, h, by, false)),
         // Heavy ┃ (U+2503)
-        '\u{2503}' => Some(vline(w, h, false)),
+        '\u{2503}' => Some(vline(w, h, by, false)),
 
         // ── Box drawing corners ──────────────────────────────────────
         // Light ┌ (U+250C)
-        '\u{250c}' => Some(corner(w, h, Corner::DownRight, true)),
+        '\u{250c}' => Some(corner(w, h, by, Corner::DownRight, true)),
         // Light ┐ (U+2510)
-        '\u{2510}' => Some(corner(w, h, Corner::DownLeft, true)),
+        '\u{2510}' => Some(corner(w, h, by, Corner::DownLeft, true)),
         // Light └ (U+2514)
-        '\u{2514}' => Some(corner(w, h, Corner::UpRight, true)),
+        '\u{2514}' => Some(corner(w, h, by, Corner::UpRight, true)),
         // Light ┘ (U+2518)
-        '\u{2518}' => Some(corner(w, h, Corner::UpLeft, true)),
+        '\u{2518}' => Some(corner(w, h, by, Corner::UpLeft, true)),
 
         // Heavy ┏ (U+250F)
-        '\u{250f}' => Some(corner(w, h, Corner::DownRight, false)),
+        '\u{250f}' => Some(corner(w, h, by, Corner::DownRight, false)),
         // Heavy ┓ (U+2513)
-        '\u{2513}' => Some(corner(w, h, Corner::DownLeft, false)),
+        '\u{2513}' => Some(corner(w, h, by, Corner::DownLeft, false)),
         // Heavy ┗ (U+2517)
-        '\u{2517}' => Some(corner(w, h, Corner::UpRight, false)),
+        '\u{2517}' => Some(corner(w, h, by, Corner::UpRight, false)),
         // Heavy ┛ (U+251B)
-        '\u{251b}' => Some(corner(w, h, Corner::UpLeft, false)),
+        '\u{251b}' => Some(corner(w, h, by, Corner::UpLeft, false)),
 
         // ── T-junctions (light) ──────────────────────────────────────
         // ├ (U+251C)
-        '\u{251c}' => Some(t_junction(w, h, true, TType::Left)),
+        '\u{251c}' => Some(t_junction(w, h, by, true, TType::Left)),
         // ┤ (U+2524)
-        '\u{2524}' => Some(t_junction(w, h, true, TType::Right)),
+        '\u{2524}' => Some(t_junction(w, h, by, true, TType::Right)),
         // ┬ (U+252C)
-        '\u{252c}' => Some(t_junction(w, h, true, TType::Down)),
+        '\u{252c}' => Some(t_junction(w, h, by, true, TType::Down)),
         // ┴ (U+2534)
-        '\u{2534}' => Some(t_junction(w, h, true, TType::Up)),
+        '\u{2534}' => Some(t_junction(w, h, by, true, TType::Up)),
         // ┼ (U+253C)
-        '\u{253c}' => Some(cross(w, h, true)),
+        '\u{253c}' => Some(cross(w, h, by, true)),
 
         // ── Cross (heavy) ────────────────────────────────────────────
         // ╋ (U+254B)
-        '\u{254b}' => Some(cross(w, h, false)),
+        '\u{254b}' => Some(cross(w, h, by, false)),
 
         _ => None,
     }
@@ -205,15 +210,15 @@ fn draw_vline(buf: &mut [u8], w: u32, h: u32, x: u32, thickness: u32, val: u8) {
 // ── Glyph generators ────────────────────────────────────────────────────
 
 /// Create a fully opaque block (█).
-fn full_block(w: u32, h: u32) -> BuiltinGlyph {
+fn full_block(w: u32, h: u32, by: f32) -> BuiltinGlyph {
     let data = vec![255u8; (w * h) as usize];
-    builtin_result(w, h, data)
+    builtin_result(w, h, by, data)
 }
 
 /// Create a solid fill with given intensity.
-fn solid_fill(w: u32, h: u32, intensity: u8) -> BuiltinGlyph {
+fn solid_fill(w: u32, h: u32, by: f32, intensity: u8) -> BuiltinGlyph {
     let data = vec![intensity; (w * h) as usize];
-    builtin_result(w, h, data)
+    builtin_result(w, h, by, data)
 }
 
 enum Half {
@@ -224,7 +229,7 @@ enum Half {
 }
 
 /// Create a half-block glyph (▀ ▄ ▌ ▐).
-fn half_block(w: u32, h: u32, which: Half) -> BuiltinGlyph {
+fn half_block(w: u32, h: u32, by: f32, which: Half) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
     match which {
         Half::Upper => {
@@ -240,7 +245,7 @@ fn half_block(w: u32, h: u32, which: Half) -> BuiltinGlyph {
             fill_region(&mut data, w, h, w / 2, 0, w - w / 2, h, 255);
         }
     }
-    builtin_result(w, h, data)
+    builtin_result(w, h, by, data)
 }
 
 // ── Quadrant helpers ────────────────────────────────────────────────────
@@ -249,53 +254,53 @@ fn quad_rect(w: u32, h: u32) -> (u32, u32) {
     ((w + 1) / 2, (h + 1) / 2)
 }
 
-fn quadrant_lower_left(w: u32, h: u32) -> BuiltinGlyph {
+fn quadrant_lower_left(w: u32, h: u32, by: f32) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
     fill_region(&mut data, w, h, 0, hh, hw, h - hh, 255);
-    builtin_result(w, h, data)
+    builtin_result(w, h, by, data)
 }
 
-fn quadrant_lower_right(w: u32, h: u32) -> BuiltinGlyph {
+fn quadrant_lower_right(w: u32, h: u32, by: f32) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
     fill_region(&mut data, w, h, hw, hh, w - hw, h - hh, 255);
-    builtin_result(w, h, data)
+    builtin_result(w, h, by, data)
 }
 
-fn quadrant_upper_left(w: u32, h: u32) -> BuiltinGlyph {
+fn quadrant_upper_left(w: u32, h: u32, by: f32) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
     fill_region(&mut data, w, h, 0, 0, hw, hh, 255);
-    builtin_result(w, h, data)
+    builtin_result(w, h, by, data)
 }
 
-fn quadrant_upper_right(w: u32, h: u32) -> BuiltinGlyph {
+fn quadrant_upper_right(w: u32, h: u32, by: f32) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
     fill_region(&mut data, w, h, hw, 0, w - hw, hh, 255);
-    builtin_result(w, h, data)
+    builtin_result(w, h, by, data)
 }
 
-fn quadrant_two_diagonal(w: u32, h: u32) -> BuiltinGlyph {
+fn quadrant_two_diagonal(w: u32, h: u32, by: f32) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
     fill_region(&mut data, w, h, 0, 0, hw, hh, 255);       // UL
     fill_region(&mut data, w, h, hw, hh, w - hw, h - hh, 255); // LR
-    builtin_result(w, h, data)
+    builtin_result(w, h, by, data)
 }
 
-fn quadrant_two_diagonal_mirror(w: u32, h: u32) -> BuiltinGlyph {
+fn quadrant_two_diagonal_mirror(w: u32, h: u32, by: f32) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
     fill_region(&mut data, w, h, hw, 0, w - hw, hh, 255);  // UR
     fill_region(&mut data, w, h, 0, hh, hw, h - hh, 255);  // LL
-    builtin_result(w, h, data)
+    builtin_result(w, h, by, data)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn quadrant_three(
-    w: u32, h: u32,
+    w: u32, h: u32, by: f32,
     ul: bool, ur: bool, ll: bool, lr: bool,
 ) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
@@ -304,33 +309,33 @@ fn quadrant_three(
     if ur { fill_region(&mut data, w, h, hw, 0, w - hw, hh, 255); }
     if ll { fill_region(&mut data, w, h, 0, hh, hw, h - hh, 255); }
     if lr { fill_region(&mut data, w, h, hw, hh, w - hw, h - hh, 255); }
-    builtin_result(w, h, data)
+    builtin_result(w, h, by, data)
 }
 
 // ── Box drawing helpers ─────────────────────────────────────────────────
 
 /// Horizontal line (─).
-fn hline(w: u32, h: u32, _light: bool) -> BuiltinGlyph {
+fn hline(w: u32, h: u32, by: f32, _light: bool) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
     let lw = line_width(w, h);
     let y = h / 2;
     draw_hline(&mut data, w, h, y.saturating_sub(lw / 2), lw, 255);
-    builtin_result(w, h, data)
+    builtin_result(w, h, by, data)
 }
 
 /// Vertical line (│).
-fn vline(w: u32, h: u32, _light: bool) -> BuiltinGlyph {
+fn vline(w: u32, h: u32, by: f32, _light: bool) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
     let lw = line_width(w, h);
     let x = w / 2;
     draw_vline(&mut data, w, h, x.saturating_sub(lw / 2), lw, 255);
-    builtin_result(w, h, data)
+    builtin_result(w, h, by, data)
 }
 
 enum Corner { DownRight, DownLeft, UpRight, UpLeft }
 
 /// Box drawing corner (┌ ┐ └ ┘).
-fn corner(w: u32, h: u32, which: Corner, _light: bool) -> BuiltinGlyph {
+fn corner(w: u32, h: u32, by: f32, which: Corner, _light: bool) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
     let lw = line_width(w, h);
     let cx = w / 2;
@@ -367,13 +372,13 @@ fn corner(w: u32, h: u32, which: Corner, _light: bool) -> BuiltinGlyph {
                         lw, lw, 255);
         }
     }
-    builtin_result(w, h, data)
+    builtin_result(w, h, by, data)
 }
 
 enum TType { Left, Right, Up, Down }
 
 /// Box drawing T-junction (├ ┤ ┬ ┴).
-fn t_junction(w: u32, h: u32, _light: bool, ttype: TType) -> BuiltinGlyph {
+fn t_junction(w: u32, h: u32, by: f32, _light: bool, ttype: TType) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
     let lw = line_width(w, h);
     let cx = w / 2;
@@ -400,30 +405,30 @@ fn t_junction(w: u32, h: u32, _light: bool, ttype: TType) -> BuiltinGlyph {
             draw_vline(&mut data, w, h, cx.saturating_sub(lw / 2), lw, 255);
         }
     }
-    builtin_result(w, h, data)
+    builtin_result(w, h, by, data)
 }
 
 /// Box drawing cross (┼ ╋).
-fn cross(w: u32, h: u32, _light: bool) -> BuiltinGlyph {
+fn cross(w: u32, h: u32, by: f32, _light: bool) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
     let lw = line_width(w, h);
     let cx = w / 2;
     let cy = h / 2;
     draw_hline(&mut data, w, h, cy.saturating_sub(lw / 2), lw, 255);
     draw_vline(&mut data, w, h, cx.saturating_sub(lw / 2), lw, 255);
-    builtin_result(w, h, data)
+    builtin_result(w, h, by, data)
 }
 
 // ── Result builder ───────────────────────────────────────────────────────
 
-fn builtin_result(w: u32, h: u32, data: Vec<u8>) -> BuiltinGlyph {
+fn builtin_result(w: u32, h: u32, bearing_y: f32, data: Vec<u8>) -> BuiltinGlyph {
     BuiltinGlyph {
         width: w,
         height: h,
         data,
         content_type: GlyphContentType::Mask,
         bearing_x: 0.0,
-        bearing_y: h as f32,
+        bearing_y,
         advance: w as f32,
     }
 }

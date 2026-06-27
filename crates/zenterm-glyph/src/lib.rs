@@ -805,7 +805,11 @@ impl GlyphAtlas {
         let cw = self.cell_width.ceil() as u32;
         let ch = self.cell_height.ceil() as u32;
 
-        let params = builtin::BuiltinParams { cell_width: cw, cell_height: ch };
+        let params = builtin::BuiltinParams {
+            cell_width: cw,
+            cell_height: ch,
+            cell_ascent: self.cell_ascent,
+        };
         let glyph = builtin::render(c, &params).ok_or_else(|| {
             Error::Glyph(format!("builtin render failed for U+{:04X}", c as u32))
         })?;
