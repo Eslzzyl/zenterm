@@ -1111,6 +1111,7 @@ impl TerminalSession {
 
         let cw = self.cell_width;
         let ch = self.cell_height;
+        let ppp = ui.ctx().pixels_per_point();
         let rows = self.terminal.size().rows as usize;
         let cols = self.terminal.size().cols as usize;
         let _ = size_px;
@@ -1211,9 +1212,11 @@ impl TerminalSession {
         }
 
         // ── Pointer → cell coordinate helpers ──────────────────────────
+        // NOTE: cw/ch are in physical pixels, but pos is in logical points.
+        // Multiply by ppp to convert before dividing.
         let pixel_to_cell = |pos: egui::Pos2| -> Option<(usize, usize)> {
-            let col = ((pos.x - cell_area.left()) / cw) as usize;
-            let row = ((pos.y - cell_area.top()) / ch) as usize;
+            let col = ((pos.x - cell_area.left()) * ppp / cw) as usize;
+            let row = ((pos.y - cell_area.top()) * ppp / ch) as usize;
             if col < cols && row < rows {
                 Some((row, col))
             } else {
@@ -1223,8 +1226,8 @@ impl TerminalSession {
 
         // Clamped version: returns the nearest cell even when outside the area.
         let pixel_to_cell_clamped = |pos: egui::Pos2| -> (usize, usize) {
-            let col = ((pos.x - cell_area.left()) / cw).round() as usize;
-            let row = ((pos.y - cell_area.top()) / ch).round() as usize;
+            let col = ((pos.x - cell_area.left()) * ppp / cw).round() as usize;
+            let row = ((pos.y - cell_area.top()) * ppp / ch).round() as usize;
             (row.min(rows.saturating_sub(1)), col.min(cols.saturating_sub(1)))
         };
 
@@ -1265,13 +1268,13 @@ impl TerminalSession {
                         if rel_y < 0.0 {
                             // Above top → scroll up.
                             let dist = -rel_y;
-                            let lines = (dist / ch).ceil().max(1.0) as i32;
+                            let lines = (dist * ppp / ch).ceil().max(1.0) as i32;
                             self.terminal.scroll_display(lines);
                             self.terminal.update_selection(0, clamped.1);
                         } else {
                             // Below bottom → scroll down.
                             let dist = pos.y - cell_area.bottom();
-                            let lines = (dist / ch).ceil().max(1.0) as i32;
+                            let lines = (dist * ppp / ch).ceil().max(1.0) as i32;
                             self.terminal.scroll_display(-lines);
                             self.terminal
                                 .update_selection(rows.saturating_sub(1), clamped.1);
