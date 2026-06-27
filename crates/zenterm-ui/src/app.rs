@@ -1233,13 +1233,7 @@ impl ZentermApp {
                     .count()
                     > 1;
 
-                let mut viewer = TabViewerContext {
-                    sessions: &mut self.sessions,
-                    active_session_id: &mut self.active_session_id,
-                    pending_close: &mut self.pending_close,
-                    pending_adds: &mut self.pending_adds,
-                    show_active_indicator,
-                };
+                // ── Style setup (reusable outside the borrow block) ──
                 let mut style = Style::from_egui(ui.style().as_ref());
                 // Remove rounded corners, inner margin, and border stroke
                 // on the tab body so the terminal fills edge-to-edge without
@@ -1253,15 +1247,27 @@ impl ZentermApp {
                 // Place the "+" add-tab button right after the last tab
                 // instead of right-aligning it to the tab bar edge.
                 style.buttons.add_tab_align = TabAddAlign::Left;
-                let ws = self.workspaces.active_workspace_mut();
-                let mut area = DockArea::new(&mut ws.dock)
-                    .style(style)
-                    .show_close_buttons(self.config.ui.show_close_tab_button)
-                    .show_add_buttons(self.config.ui.show_add_tab_button)
-                    .show_leaf_collapse_buttons(false)
-                    .show_leaf_close_all_buttons(false);
-                area = area.id(Id::new("zenterm_dock"));
-                area.show_inside(ui, &mut viewer);
+
+                // ── Render tabs (nested scope to drop viewer early) ──
+                {
+                    let ws = self.workspaces.active_workspace_mut();
+                    let mut area = DockArea::new(&mut ws.dock)
+                        .style(style)
+                        .show_close_buttons(self.config.ui.show_close_tab_button)
+                        .show_add_buttons(self.config.ui.show_add_tab_button)
+                        .show_leaf_collapse_buttons(false)
+                        .show_leaf_close_all_buttons(false);
+                    area = area.id(Id::new("zenterm_dock"));
+
+                    let mut viewer = TabViewerContext {
+                        sessions: &mut self.sessions,
+                        active_session_id: &mut self.active_session_id,
+                        pending_close: &mut self.pending_close,
+                        pending_adds: &mut self.pending_adds,
+                        show_active_indicator,
+                    };
+                    area.show_inside(ui, &mut viewer);
+                } // viewer dropped → self.sessions borrow released
 
                 // Single wgpu callback covering the entire dock area.
                 // All sessions append cell instances to the shared
@@ -1272,6 +1278,28 @@ impl ZentermApp {
                     self.callback.clone(),
                 );
                 ui.painter().add(cb);
+
+                // ── Transient resize overlay ─────────────────────────
+                // For every session whose terminal was recently resized,
+                // draw a centred "cols × rows" label that fades out over
+                // 2 seconds.  Painted after the wgpu callback so it
+                // appears on top of the terminal content.
+                let ppp = ui.ctx().pixels_per_point();
+                for (_, session) in self.sessions.iter() {
+                    if session.last_resize_at.is_some() {
+                        let rect = egui::Rect::from_min_size(
+                            egui::pos2(
+                                session.last_vp_origin_px[0] / ppp,
+                                session.last_vp_origin_px[1] / ppp,
+                            ),
+                            egui::vec2(
+                                session.last_vp_size_px[0] / ppp,
+                                session.last_vp_size_px[1] / ppp,
+                            ),
+                        );
+                        session.render_resize_overlay(ui, rect);
+                    }
+                }
             });
 
         // ── Apply pending actions collected by the viewer ─────────

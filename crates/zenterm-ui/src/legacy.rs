@@ -38,7 +38,7 @@ pub fn render_legacy_single(
     // For the legacy single-session mode, the dock viewport is the
     // same as the session viewport (no multi-tab coordination needed).
     session.set_dock_viewport([0.0, 0.0], size_px);
-    session.resize_to_viewport(size_px, ppp);
+    session.resize_to_viewport(size_px, ppp, ui.input(|i| i.time));
     session.update_cell_instances([0.0, 0.0], size_px);
 
     let sense = egui::Sense::click_and_drag();
@@ -52,4 +52,7 @@ pub fn render_legacy_single(
     ui.painter().add(callback);
 
     session.render_context_menu(ui, &response);
+
+    // Transient resize overlay (on top of terminal content).
+    session.render_resize_overlay(ui, cell_rect);
 }

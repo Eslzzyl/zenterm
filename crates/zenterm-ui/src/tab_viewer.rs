@@ -75,7 +75,7 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         session.set_viewport(origin_px, size_px);
 
         // Resize the terminal to match the new pixel area.
-        session.resize_to_viewport(size_px, ppp);
+        session.resize_to_viewport(size_px, ppp, ui.input(|i| i.time));
 
         // Build GPU instance data and append to the shared instance
         // buffer.  Instances are positioned in the dock-area clip
