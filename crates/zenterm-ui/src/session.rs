@@ -80,15 +80,241 @@ pub enum NotificationState {
     Pending,
 }
 
-// ── Ligature run detection ────────────────────────────────────────────
+// ── Ligature helpers ───────────────────────────────────────────────────
 
-/// Find the end column of a consecutive same-style run starting at `(row, col)`.
+/// Compute the actual number of terminal-grid cells covered by a shaped
+/// glyph's character range.  This is grid-aware: CJK/emoji characters
+/// (whose right neighbour is a spacer) count as 2 cells, ASCII as 1.
+fn glyph_grid_num_cells(
+    grid: &GridView,
+    row: usize,
+    run_start: usize,
+    char_range: &std::ops::Range<usize>,
+    cols: usize,
+) -> usize {
+    let mut total = 0usize;
+    for ci in char_range.clone() {
+        let col = run_start + ci;
+        // If this char's right neighbour is a spacer, it's a wide
+        // character (CJK / emoji) and contributes 2 cells.
+        if col + 1 < cols {
+            if let Some(next) = grid.cell(row, col + 1) {
+                if next.is_spacer {
+                    total += 2;
+                    continue;
+                }
+            }
+        }
+        total += 1;
+    }
+    total
+}
+
+/// Emit underline, strikethrough, and cursor-style (Beam/Underline)
+/// decoration quads for a single cell.
 ///
-/// A run is a group of cells whose characters should be shaped together
-/// as a single string.  When ligature shaping is enabled, the run text
-/// is passed to [`GlyphAtlas::shape_and_rasterize_run`] so that
-/// OpenType ligature rules (`liga`/`clig`) can substitute multi-cell
-/// glyphs (e.g. `->` → one arrow glyph).
+/// This mirrors the "Pass 3" and "Pass 4" logic from the per-char
+/// render path in [`TerminalSession::update_cell_instances`].
+#[allow(clippy::too_many_arguments)]
+fn emit_deco_for_cell(
+    deco_instances: &mut Vec<CellInstance>,
+    grid: &GridView,
+    row: usize,
+    col: usize,
+    _cols: usize,
+    cursor_visible: bool,
+    cursor_row: usize,
+    cursor_col: usize,
+    cursor_shape: CursorShape,
+    _display_offset: usize,
+    sel_range: Option<&SelectionRange>,
+    _sel_bg: Rgba,
+    sel_fg: Option<Rgba>,
+    _default_bg: Rgba,
+    baseline: f32,
+    ch: f32,
+    cw: f32,
+    x_off: f32,
+    y_off: f32,
+    px_to_clip_x: &impl Fn(f32) -> f32,
+    px_to_clip_y: &impl Fn(f32) -> f32,
+    x_scale: f32,
+    y_scale: f32,
+) {
+    let cell = match grid.cell(row, col) {
+        Some(c) => c,
+        None => return,
+    };
+
+    if cell.hidden {
+        return;
+    }
+
+    let is_cursor = cursor_visible && row == cursor_row && col == cursor_col;
+    let is_block_cursor = is_cursor && matches!(cursor_shape, CursorShape::Block);
+    let is_sel = sel_range.is_some_and(|range| {
+        let grid_line = (row as i32) - (_display_offset as i32);
+        let pt = Point::new(Line(grid_line), Column(col));
+        range.contains(pt)
+    });
+
+    let (draw_fg, _draw_bg) = if is_block_cursor {
+        (cell.bg, cell.fg)
+    } else {
+        (cell.fg, cell.bg)
+    };
+    let draw_fg = if cell.dim {
+        Rgba::new(
+            draw_fg.r() * 0.5,
+            draw_fg.g() * 0.5,
+            draw_fg.b() * 0.5,
+            draw_fg.a(),
+        )
+    } else {
+        draw_fg
+    };
+
+    // ── Pass 3: underline / strikethrough ──────────────
+    let deco_color = if is_cursor {
+        [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0]
+    } else if is_sel {
+        let deco_fg = sel_fg.unwrap_or(cell.fg);
+        [deco_fg.r(), deco_fg.g(), deco_fg.b(), 1.0]
+    } else {
+        [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0]
+    };
+
+    // Helper to push a solid decoration quad.
+    let mut push_deco = |y_offset: f32, dqw: f32, dqh: f32| {
+        let dqy = px_to_clip_y(y_off + (row as f32 * ch + y_offset).round());
+        let dqx = px_to_clip_x(x_off + (col as f32 * cw).round());
+        deco_instances.push(CellInstance {
+            clip_pos: [dqx, dqy],
+            uv_min: [0.0; 2],
+            uv_max: [0.0; 2],
+            clip_cell_size: [dqw, dqh],
+            glyph_size: [0.0; 2],
+            glyph_offset: [0.0; 2],
+            fg_color: deco_color,
+            bg_color: deco_color,
+            flags: glyph_type::SOLID,
+        });
+    };
+
+    let thickness = 1.0_f32.max((ch * 0.05).round());
+    let cell_w = cw * x_scale;
+    let cell_h = thickness * y_scale;
+    match cell.underline_style {
+        UnderlineStyle::None => {}
+        UnderlineStyle::Normal => {
+            push_deco(baseline + 1.0, cell_w, cell_h);
+        }
+        UnderlineStyle::Double => {
+            push_deco(baseline + 1.0, cell_w, cell_h);
+            push_deco(baseline + 3.0, cell_w, cell_h);
+        }
+        UnderlineStyle::Curly | UnderlineStyle::Dotted | UnderlineStyle::Dashed => {
+            push_deco(baseline + 1.0, cell_w, cell_h);
+        }
+    }
+
+    if cell.strikethrough {
+        let thickness = 1.0_f32.max((ch * 0.05).round());
+        let deco_y = (baseline * 0.55).round();
+        let dqy = px_to_clip_y(y_off + (row as f32 * ch + deco_y).round());
+        let dqx = px_to_clip_x(x_off + (col as f32 * cw).round());
+        let dqw = cw * x_scale;
+        let dqh = thickness * y_scale;
+        deco_instances.push(CellInstance {
+            clip_pos: [dqx, dqy],
+            uv_min: [0.0; 2],
+            uv_max: [0.0; 2],
+            clip_cell_size: [dqw, dqh],
+            glyph_size: [0.0; 2],
+            glyph_offset: [0.0; 2],
+            fg_color: deco_color,
+            bg_color: deco_color,
+            flags: glyph_type::SOLID,
+        });
+    }
+
+    // ── Pass 4: cursor style decorations (Beam / Underline) ──
+    if is_cursor && !is_block_cursor {
+        let cursor_color = [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0];
+        let thickness = 2.0_f32.max((ch * 0.08).round());
+        let cx_px = x_off + (col as f32 * cw).round();
+        let cy_px = y_off + (row as f32 * ch).round();
+
+        match cursor_shape {
+            CursorShape::Underline => {
+                let bar_h = thickness;
+                let bar_y = cy_px + ch - bar_h;
+                deco_instances.push(CellInstance {
+                    clip_pos: [px_to_clip_x(cx_px), px_to_clip_y(bar_y)],
+                    uv_min: [0.0; 2],
+                    uv_max: [0.0; 2],
+                    clip_cell_size: [cw * x_scale, bar_h * y_scale],
+                    glyph_size: [0.0; 2],
+                    glyph_offset: [0.0; 2],
+                    fg_color: cursor_color,
+                    bg_color: cursor_color,
+                    flags: glyph_type::SOLID,
+                });
+            }
+            CursorShape::Beam => {
+                let bar_w = thickness.max(2.0);
+                deco_instances.push(CellInstance {
+                    clip_pos: [px_to_clip_x(cx_px), px_to_clip_y(cy_px)],
+                    uv_min: [0.0; 2],
+                    uv_max: [0.0; 2],
+                    clip_cell_size: [bar_w * x_scale, ch * y_scale],
+                    glyph_size: [0.0; 2],
+                    glyph_offset: [0.0; 2],
+                    fg_color: cursor_color,
+                    bg_color: cursor_color,
+                    flags: glyph_type::SOLID,
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Quick check: only multi-char runs containing ASCII punctuation or
+/// operators are worth shaping with [`Shaping::Advanced`](cosmic_text::Shaping::Advanced).
+/// Everything else can take the per-char fast path.
+///
+/// This avoids pointless `cosmic-text` `Buffer` allocation + shaping for
+/// plain alphanumeric sequences that never form ligatures.
+fn might_ligate(text: &str) -> bool {
+    text.len() > 1 && text.bytes().any(|b| b.is_ascii_punctuation())
+}
+
+/// Extract the concatenated character text for a run of cells.
+///
+/// The returned string is passed to
+/// [`GlyphAtlas::shape_and_rasterize_run`] for ligature-aware shaping.
+fn extract_run_text(grid: &GridView, row: usize, start: usize, end: usize) -> String {
+    let mut s = String::with_capacity(end - start);
+    for col in start..end {
+        if let Some(cell) = grid.cell(row, col) {
+            s.push(cell.c);
+        }
+    }
+    s
+}
+
+/// Detect the end of a consecutive-cell "run" for ligature shaping.
+///
+/// Starting at `start_col`, walk forward while cells share the same style
+/// (same `bold`, `italic` flags) and are not spaces, spacers, or hidden.
+/// Returns the first column *past* the run (i.e. `end_col` such that
+/// `start_col .. end_col` is the run range).
+///
+/// When ligature shaping is enabled, the run text is passed to
+/// [`GlyphAtlas::shape_and_rasterize_run`] so that OpenType ligature
+/// rules (`liga`/`clig`) can substitute multi-cell glyphs (e.g. `->` →
+/// one arrow glyph).
 ///
 /// Run boundaries occur at:
 ///
@@ -98,48 +324,58 @@ pub enum NotificationState {
 /// * **Hidden cell** — invisible content should not be shaped.
 /// * **Style change** — different `bold` or `italic` flags require
 ///   separate shaping with different [`cosmic_text::Attrs`].
-///
-/// # Current behaviour
-///
-/// Every single character forms its own run (`run_end = col + 1`).
-/// When ligature shaping is implemented, multi-character runs will
-/// be detected and returned here.
 fn detect_run_end(
     grid: &GridView,
     row: usize,
     start_col: usize,
-    _cols: usize, // FUTURE: used in multi-run detection loop
+    cols: usize,
 ) -> usize {
     let first = match grid.cell(row, start_col) {
         Some(c) => c,
         None => return start_col + 1,
     };
 
-    // ── Fast path (non-ligature) ──────────────────────────────────
-    // Without actual ligature shaping, every character is an
-    // independent run.  The loop below is the placeholder for
-    // multi-char run detection.
-    //
-    // FUTURE: uncomment the loop and remove the early return.
-    let _ = first;
-    start_col + 1
+    // Wide characters (CJK, emoji) occupy 2 cells: the character cell
+    // followed by a spacer.  Always return them as single-cell runs so
+    // that the per-char path handles them with the correct 2-cell width
+    // (num_cells from is_spacer check).  If a wide char were part of a
+    // ligature run, its strip would get 1-cell width instead.
+    if start_col + 1 < cols {
+        if let Some(next) = grid.cell(row, start_col + 1) {
+            if next.is_spacer {
+                return start_col + 1;
+            }
+        }
+    }
 
-    // FUTURE (ligature shaping):
-    // let mut col = start_col + 1;
-    // while col < _cols {
-    //     let cell = match grid.cell(row, col) {
-    //         Some(c) => c,
-    //         None => break,
-    //     };
-    //     if cell.c == ' ' || cell.is_spacer || cell.hidden {
-    //         break;
-    //     }
-    //     if cell.bold != first.bold || cell.italic != first.italic {
-    //         break;
-    //     }
-    //     col += 1;
-    // }
-    // col
+    let mut col = start_col + 1;
+    while col < cols {
+        let cell = match grid.cell(row, col) {
+            Some(c) => c,
+            None => break,
+        };
+        // Spaces never participate in ligatures.
+        if cell.c == ' ' || cell.is_spacer || cell.hidden {
+            break;
+        }
+        // Style boundary: different weight/style needs separate shaping.
+        if cell.bold != first.bold || cell.italic != first.italic {
+            break;
+        }
+        // Wide character (CJK / emoji) check: if this cell's right
+        // neighbour is a spacer, the cell occupies 2 cells and must
+        // form its own single-cell run so that the per-char path
+        // handles it with the correct 2-cell width.
+        if col + 1 < cols {
+            if let Some(next) = grid.cell(row, col + 1) {
+                if next.is_spacer {
+                    break;
+                }
+            }
+        }
+        col += 1;
+    }
+    col
 }
 
 // ── TerminalSession ────────────────────────────────────────────────────
@@ -717,6 +953,11 @@ impl TerminalSession {
             // per-character behaviour is identical to the old nested
             // for loop.
             let mut col = 0;
+            // Track the last run_end that was checked for ligatures.
+            // Once we find that a run has no actual multi-cell ligature
+            // glyphs, we skip re-checking subsequent cells of the same
+            // run to avoid redundant shaping + atlas allocations.
+            let mut last_checked_run_end: usize = 0;
             while col < cols {
                 let cell = match grid.cell(row, col) {
                     Some(c) => c,
@@ -762,26 +1003,351 @@ impl TerminalSession {
                 }
 
                 // ── Run boundary detection ────────────────────────────
-                //
-                // FUTURE (ligature shaping): when this cell is part of a
-                // multi-character ligature run, `run_end` points past the
-                // last cell in the run, and `run_text` is the concatenated
-                // character sequence.  Instead of shaping each char
-                // individually, call:
-                //
-                //   let shaped = atlas.shape_and_rasterize_run(&run_text)?;
-                //
-                // Then distribute each ShapedGlyph across its covering
-                // cells (run_start .. run_start + glyph.num_cells) by
-                // adjusting UV coordinates and glyph positions per-cell.
-                //
-                // For now, each run is 1 cell (run_end = col + 1).
-                let _run_start = col;
-                let _run_end = detect_run_end(&grid, row, col, cols);
+                let run_start = col;
+                let run_end = detect_run_end(&grid, row, col, cols);
 
                 // ── Geometry helpers (dock-relative coords) ──────────
                 let px_to_clip_x = |px: f32| px * x_scale - 1.0;
                 let px_to_clip_y = |px: f32| 1.0 - px * y_scale;
+
+                // ── Ligature branch ─────────────────────────────────
+                //
+                // When ligature shaping is active and the run contains
+                // ASCII punctuation, shape the entire run as a single
+                // string, then distribute the resulting glyphs across
+                // their covering cells via per-cell strip splitting.
+                //
+                // Background quads and decorations are emitted per cell
+                // inside this branch so that cursor / selection colours
+                // are applied independently to each cell.
+                let ligatures_enabled = atlas.ligatures_enabled;
+                // Skip the ligature branch if we already checked this
+                // exact run (col..run_end) on a previous iteration and
+                // found no actual multi-cell ligature glyphs.
+                let ligature_eligible = ligatures_enabled
+                    && run_end > run_start + 1
+                    && !is_blank
+                    && run_end != last_checked_run_end;
+                if ligature_eligible {
+                    let run_text = extract_run_text(&grid, row, run_start, run_end);
+                    if might_ligate(&run_text) {
+                        log::debug!(
+                            "ligature ENTER: row={row} run={run_start}..{run_end} \
+                             text={run_text:?}",
+                        );
+                        match atlas.shape_and_rasterize_run(&run_text) {
+                            Ok(shaped) => {
+                                // Only use the ligature branch when there are
+                                // actual multi-cell ligature glyphs.  Runs
+                                // without real ligatures (all num_cells == 1)
+                                // fall through to the per-char path, which
+                                // renders identically to the original code.
+                                let has_ligature =
+                                    shaped.iter().any(|sg| sg.num_cells > 1);
+                                if !has_ligature {
+                                    log::debug!(
+                                        "ligature no-op: row={row} run={run_start}..{run_end} \
+                                         no multi-cell glyphs",
+                                    );
+                                    // Remember that this run has no actual
+                                    // ligatures so subsequent cells don't
+                                    // re-enter the branch.
+                                    last_checked_run_end = run_end;
+                                } else {                                    log::debug!(
+                                        "ligature OK: row={row} run={run_start}..{run_end} \
+                                         glyphs={} -> SKIP per-char path",
+                                        shaped.len(),
+                                    );
+                                    let mut strip_col = run_start;
+
+                                    for sg in &shaped {
+                                        let cell_base = run_start + sg.char_range.start;
+
+                                        // Advance past any gap between shaped glyphs
+                                        // (should not happen for continuous runs, but
+                                        //  be safe).
+                                        if cell_base > strip_col {
+                                            for ccol in strip_col..cell_base {
+                                                emit_deco_for_cell(
+                                                    &mut deco_instances,
+                                                    &grid, row, ccol, cols,
+                                                    cursor_visible, cursor_row, cursor_col,
+                                                    cursor_shape, display_offset,
+                                                    sel_range.as_ref(), sel_bg, sel_fg,
+                                                    default_bg, baseline, ch, cw,
+                                                    x_off, y_off,
+                                                    &px_to_clip_x, &px_to_clip_y,
+                                                    x_scale, y_scale,
+                                                );
+                                            }
+                                            strip_col = cell_base;
+                                        }
+
+                                        // Background quads + glyph strips for each cell
+                                        // this glyph covers.  Use the grid-aware
+                                        // num_cells so that CJK/emoji characters
+                                        // (2 cells wide) are handled correctly.
+                                        let actual_num_cells = glyph_grid_num_cells(
+                                            &grid, row, run_start,
+                                            &sg.char_range, cols,
+                                        );
+                                        for cell_offset in 0..actual_num_cells {
+                                            let cell_col = cell_base + cell_offset;
+                                            let c = grid.cell(row, cell_col)
+                                                .unwrap_or(cell); // fallback to current cell
+
+                                            // ── Per-cell cursor / selection state ──
+                                            let c_is_cursor = cursor_visible
+                                                && row == cursor_row
+                                                && cell_col == cursor_col;
+                                            let c_is_block = c_is_cursor
+                                                && matches!(cursor_shape, CursorShape::Block);
+                                            let c_is_sel = sel_range.as_ref().is_some_and(|range| {
+                                                let grid_line =
+                                                    (row as i32) - (display_offset as i32);
+                                                let pt = Point::new(
+                                                    Line(grid_line),
+                                                    Column(cell_col),
+                                                );
+                                                range.contains(pt)
+                                            });
+
+                                            let (c_fg, c_bg) = if c_is_block {
+                                                (c.bg, c.fg)
+                                            } else {
+                                                (c.fg, c.bg)
+                                            };
+                                            let c_draw_fg = if c.dim {
+                                                Rgba::new(
+                                                    c_fg.r() * 0.5,
+                                                    c_fg.g() * 0.5,
+                                                    c_fg.b() * 0.5,
+                                                    c_fg.a(),
+                                                )
+                                            } else {
+                                                c_fg
+                                            };
+                                            let c_bg_color = if c_is_sel {
+                                                sel_bg
+                                            } else {
+                                                c_bg
+                                            };
+
+                                            // ── Pass 1: background quad ──
+                                            if c_is_block || c_bg_color != default_bg {
+                                                let bg_x = x_off + (cell_col as f32 * cw).round();
+                                                let bg_y = y_off + (row as f32 * ch).round();
+                                                bg_instances.push(CellInstance {
+                                                    clip_pos: [
+                                                        px_to_clip_x(bg_x),
+                                                        px_to_clip_y(bg_y),
+                                                    ],
+                                                    uv_min: [0.0; 2],
+                                                    uv_max: [0.0; 2],
+                                                    clip_cell_size: [cw * x_scale, ch * y_scale],
+                                                    glyph_size: [0.0; 2],
+                                                    glyph_offset: [0.0; 2],
+                                                    fg_color: [
+                                                        c_bg_color.r(),
+                                                        c_bg_color.g(),
+                                                        c_bg_color.b(),
+                                                        c_bg_color.a(),
+                                                    ],
+                                                    bg_color: [
+                                                        c_bg_color.r(),
+                                                        c_bg_color.g(),
+                                                        c_bg_color.b(),
+                                                        c_bg_color.a(),
+                                                    ],
+                                                    flags: glyph_type::SOLID,
+                                                });
+                                            }
+
+                                            // ── Pass 2: glyph strip ──
+                                            let atlas_rect = &sg.entry.atlas_rect;
+                                            let a_left = atlas_rect.min.x as f32;
+                                            let a_top = atlas_rect.min.y as f32;
+                                            let a_bot = atlas_rect.max.y as f32;
+
+                                            // Strip boundaries in pixels, relative to the
+                                            // glyph origin.
+                                            let strip_left = cell_offset as f32 * cw;
+                                            let strip_right = (cell_offset + 1) as f32 * cw;
+                                            // Clamp strip to glyph advance so we never
+                                            // sample beyond the glyph's right edge.
+                                            let strip_right =
+                                                strip_right.min(sg.entry.advance);
+
+                                            let strip_w = strip_right - strip_left;
+
+                                            // UV coordinates for this strip: a horizontal
+                                            // slice of the glyph's atlas rectangle.
+                                            let mut u_min =
+                                                (a_left + 0.5 + strip_left) / tex_size;
+                                            let mut u_max =
+                                                (a_left + 0.5 + strip_right) / tex_size;
+                                            let mut v_min =
+                                                (a_top + 0.5) / tex_size;
+                                            let mut v_max =
+                                                (a_bot - 0.5) / tex_size;
+
+                                            let glyph_h = (a_bot - a_top) as f32;
+                                            let sbx = sg.entry.bearing_x;
+                                            let sby = sg.entry.bearing_y;
+
+                                            // glyph_offset.x: the bearing is always
+                                            // relative to this cell's origin, so we use
+                                            // the raw bearing (not adjusted by strip_left).
+                                            // The UV coordinates below select the correct
+                                            // horizontal slice of the glyph texture.
+                                            let gox = sbx;
+                                            let goy = baseline - sby;
+
+                                            let mut glyph_x_px =
+                                                x_off + (cell_col as f32 * cw + gox).round();
+                                            let mut glyph_y_px =
+                                                y_off + (row as f32 * ch + goy).round();
+
+                                            let mut scaled_w = strip_w;
+                                            let mut scaled_h = glyph_h;
+
+                                            // ── Vertical clip (GLYPH_CLIP.md) ──
+                                            let cell_left = x_off + cell_col as f32 * cw;
+                                            let cell_top = y_off + row as f32 * ch;
+                                            let cell_right = cell_left + cw;
+                                            let cell_bottom = cell_top + ch;
+
+                                            let glyph_bot = glyph_y_px + scaled_h;
+                                            let clipped_top = glyph_y_px.max(cell_top);
+                                            let clipped_bot = glyph_bot.min(cell_bottom);
+                                            let clipped_h =
+                                                (clipped_bot - clipped_top).max(0.0);
+                                            if clipped_h < scaled_h && scaled_h > 0.0 {
+                                                let r_top = (clipped_top - glyph_y_px)
+                                                    / scaled_h;
+                                                let r_bot = (clipped_bot - glyph_y_px)
+                                                    / scaled_h;
+                                                let v_range = v_max - v_min;
+                                                v_min = v_min + v_range * r_top;
+                                                v_max = v_min + v_range * (r_bot - r_top);
+                                                glyph_y_px = clipped_top;
+                                                scaled_h = clipped_h;
+                                            }
+
+                                            // ── Horizontal clip (GLYPH_CLIP.md) ──
+                                            let glyph_right = glyph_x_px + scaled_w;
+                                            let clipped_left = glyph_x_px.max(cell_left);
+                                            let clipped_right = glyph_right.min(cell_right);
+                                            let clipped_w =
+                                                (clipped_right - clipped_left).max(0.0);
+                                            if clipped_w < scaled_w && scaled_w > 0.0 {
+                                                let r_left = (clipped_left - glyph_x_px)
+                                                    / scaled_w;
+                                                let r_right = (clipped_right - glyph_x_px)
+                                                    / scaled_w;
+                                                let u_range = u_max - u_min;
+                                                u_min = u_min + u_range * r_left;
+                                                u_max = u_min + u_range * (r_right - r_left);
+                                                glyph_x_px = clipped_left;
+                                                scaled_w = clipped_w;
+                                            }
+
+                                            let gqx = px_to_clip_x(glyph_x_px);
+                                            let gqy = px_to_clip_y(glyph_y_px);
+                                            let gqw = scaled_w * x_scale;
+                                            let gqh = scaled_h * y_scale;
+
+                                            let gtype = match sg.entry.content_type {
+                                                GlyphContentType::Subpixel
+                                                    => glyph_type::SUBPIXEL,
+                                                GlyphContentType::Mask
+                                                    => glyph_type::MASK,
+                                                GlyphContentType::Color
+                                                    => glyph_type::COLOR,
+                                            };
+
+                                            let (glyph_fg, glyph_bg) = if c_is_cursor
+                                                && !c_is_block
+                                            {
+                                                (c.bg, c.fg)
+                                            } else if c_is_sel {
+                                                (
+                                                    sel_fg.unwrap_or(c.fg),
+                                                    sel_bg,
+                                                )
+                                            } else {
+                                                (c_draw_fg, c_bg_color)
+                                            };
+
+                                            glyph_instances.push(CellInstance {
+                                                clip_pos: [gqx, gqy],
+                                                uv_min: [u_min, v_min],
+                                                uv_max: [u_max, v_max],
+                                                clip_cell_size: [gqw, gqh],
+                                                glyph_size: [scaled_w, scaled_h],
+                                                glyph_offset: [gox, goy],
+                                                fg_color: [
+                                                    glyph_fg.r(),
+                                                    glyph_fg.g(),
+                                                    glyph_fg.b(),
+                                                    1.0,
+                                                ],
+                                                bg_color: [
+                                                    glyph_bg.r(),
+                                                    glyph_bg.g(),
+                                                    glyph_bg.b(),
+                                                    1.0,
+                                                ],
+                                                flags: gtype,
+                                            });
+
+                                            // ── Pass 3+4: decorations ──
+                                            emit_deco_for_cell(
+                                                &mut deco_instances,
+                                                &grid, row, cell_col, cols,
+                                                cursor_visible, cursor_row, cursor_col,
+                                                cursor_shape, display_offset,
+                                                sel_range.as_ref(), sel_bg, sel_fg,
+                                                default_bg, baseline, ch, cw,
+                                                x_off, y_off,
+                                                &px_to_clip_x, &px_to_clip_y,
+                                                x_scale, y_scale,
+                                            );
+
+                                            strip_col = cell_col + 1;
+                                        }
+                                    }
+
+                                    // Any remaining cells in the run beyond the
+                                    // last shaped glyph.
+                                    for ccol in strip_col..run_end {
+                                        emit_deco_for_cell(
+                                            &mut deco_instances,
+                                            &grid, row, ccol, cols,
+                                            cursor_visible, cursor_row, cursor_col,
+                                            cursor_shape, display_offset,
+                                            sel_range.as_ref(), sel_bg, sel_fg,
+                                            default_bg, baseline, ch, cw,
+                                            x_off, y_off,
+                                            &px_to_clip_x, &px_to_clip_y,
+                                            x_scale, y_scale,
+                                        );
+                                    }
+
+                                    col = run_end;
+                                    continue;
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "shape_and_rasterize_run failed for \
+                                     run={:?}: {e:?}; falling back to per-char",
+                                    run_text,
+                                );
+                            }
+                        }
+                    }
+                }
 
                 let num_cells: f32 = if col + 1 < cols {
                     grid.cell(row, col + 1)
@@ -823,6 +1389,10 @@ impl TerminalSession {
 
                 // ── Pass 2: glyph quad ──────────────────────────────
                 if !is_blank {
+                    log::debug!(
+                        "per-char glyph: row={row} col={col} ch={ch_char:?} \
+                         run_start={run_start} run_end={run_end}",
+                    );
                     if let Ok((entry, is_new)) = atlas.ensure_glyph(ch_char) {
                         if is_new {
                             has_new_glyphs = true;
@@ -1053,8 +1623,8 @@ impl TerminalSession {
                 }
 
                 // ── Advance to next cell ──────────────────────────
-                // FUTURE (ligature shaping): set `col = _run_end`
-                // to skip past the entire ligature run.
+                // Note: the ligature branch above uses `col = run_end; continue`,
+                // so this per-char `col += 1` is only reached for single-cell runs.
                 col += 1;
             }
         }

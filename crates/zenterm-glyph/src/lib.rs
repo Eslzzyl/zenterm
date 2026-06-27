@@ -9,7 +9,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use cosmic_text::{
-    Attrs, Buffer, CacheKeyFlags, Family, FontSystem, Metrics, Shaping,
+    Attrs, Buffer, CacheKeyFlags, Family, FeatureTag, FontFeatures, FontSystem, Metrics, Shaping,
 };
 use etagere::AtlasAllocator;
 use swash::scale::image::Content as SwashContent;
@@ -209,10 +209,8 @@ pub struct GlyphAtlas {
     ///
     /// This field is read by [`shape_and_rasterize_run`](Self::shape_and_rasterize_run)
     /// to decide whether to use `Shaping::Advanced` (ligatures on) or
-    /// `Shaping::Basic` (ligatures off).  Currently unused — the method
-    /// always delegates to the per-char fast path.
-    #[allow(dead_code)]
-    ligatures_enabled: bool,
+    /// `Shaping::Basic` (ligatures off).
+    pub ligatures_enabled: bool,
 }
 
 impl GlyphAtlas {
@@ -306,31 +304,30 @@ impl GlyphAtlas {
     /// tables and may substitute multi-character sequences with a
     /// single glyph (e.g. `->` → one arrow glyph).
     ///
-    /// # Current (preparatory) behaviour
+    /// # Behaviour
     ///
-    /// This method does **not** yet perform multi-character shaping.
-    /// It iterates over each character individually, calling the
-    /// existing single-char `ensure_glyph` path, and wraps each result
-    /// in a [`ShapedGlyph`] with `char_range = i..i+1` and
-    /// `num_cells = 1`.
+    /// If [`Self::ligatures_enabled`] is `true`, the full `text` string
+    /// is shaped with `Shaping::Advanced` so the font's OpenType ligature
+    /// rules apply.  When a ligature substitution occurs (a single
+    /// `LayoutGlyph` covering `end - start > 1` source characters), one
+    /// [`ShapedGlyph`] with `num_cells > 1` is produced.  The renderer
+    /// splits the bitmap into per-cell strips (see Phase D of
+    /// `LIGATURE.md`).
     ///
-    /// This establishes the API contract: callers always use
-    /// `shape_and_rasterize_run` for runs, and when ligature shaping
-    /// is later enabled, the internal implementation switches from
-    /// per-char iteration to a single `Shaping::Advanced` call on the
-    /// whole `text` string.  The return type, and therefore all
-    /// callers, remain unchanged.
+    /// When `ligatures_enabled` is `false`, shaping still goes through
+    /// `cosmic-text`'s `Buffer` but with `Shaping::Basic`.  Each source
+    /// character produces exactly one `ShapedGlyph` with `num_cells = 1`,
+    /// identical to the old per-char path.
     ///
     /// # Returns
     ///
-    /// A vector of [`ShapedGlyph`] entries, one per character when no
-    /// ligature substitution occurs.  Each entry references the
-    /// corresponding atlas [`GlyphEntry`] by index.
+    /// A vector of [`ShapedGlyph`] entries, one per glyph in the shaped
+    /// output.  When no ligatures occur this equals the source character
+    /// count.
     ///
     /// # Errors
     ///
-    /// Delegates to [`ensure_glyph`](Self::ensure_glyph) for each
-    /// character.  Atlas growth failures propagate up.
+    /// Atlas allocation failures propagate up.
     pub fn shape_and_rasterize_run(&mut self, text: &str) -> Result<Vec<ShapedGlyph>> {
         // ── Cache lookup ──────────────────────────────────────────────
         let key = RunCacheKey {
@@ -343,38 +340,222 @@ impl GlyphAtlas {
             return Ok(cached.clone());
         }
 
-        // ── Shape the run ────────────────────────────────────────────
-        //
-        // FUTURE (ligature shaping):
-        // When ligatures_enabled is true, create a cosmic-text Buffer
-        // with Shaping::Advanced and the full text, then iterate over
-        // the resulting LayoutGlyph slice.  For each LayoutGlyph where
-        //   end - start > 1,
-        // a ligature substitution occurred — rasterise it once and
-        // produce a single ShapedGlyph covering multiple cells.
-        //
-        // The per-char loop below is the placeholder until that logic
-        // is implemented.
+        // ── Shape the whole run via cosmic-text Buffer ───────────────
+        let shaping = if self.ligatures_enabled {
+            Shaping::Advanced
+        } else {
+            Shaping::Basic
+        };
 
-        let mut shaped: Vec<ShapedGlyph> = Vec::with_capacity(text.len());
+        let mut buf = Buffer::new(&mut self.font_system, self.metrics);
+        buf.set_size(Some(self.font_size), None);
+        let mut font_features = FontFeatures::new();
+        if self.ligatures_enabled {
+            font_features.enable(FeatureTag::STANDARD_LIGATURES);
+            font_features.enable(FeatureTag::CONTEXTUAL_LIGATURES);
+            font_features.enable(FeatureTag::CONTEXTUAL_ALTERNATES);
+            font_features.enable(FeatureTag::DISCRETIONARY_LIGATURES);
+            font_features.enable(FeatureTag::KERNING);
+        }
+        let attrs = Attrs::new()
+            .family(Family::Name(&self.font_family))
+            .font_features(font_features);
+        buf.set_text(text, &attrs, shaping, None);
+        buf.shape_until_scroll(&mut self.font_system, true);
+
+        let lines = buf.lines.len();
+        let all_glyphs: Vec<&cosmic_text::LayoutGlyph> = if lines > 0 {
+            buf.lines[0]
+                .layout_opt()
+                .map(|runs| {
+                    // Flatten glyphs from ALL layout runs, not just the
+                    // first one.  Multi-character text may be split across
+                    // multiple runs when font fallback occurs (e.g. CJK
+                    // characters in an otherwise ASCII line).
+                    runs.iter().flat_map(|run| &run.glyphs).collect()
+                })
+                .unwrap_or_default()
+        } else {
+            log::warn!(
+                "shape_and_rasterize_run: buf.lines is EMPTY after shaping {text:?} \
+                 (size={:?} shaping={shaping:?})",
+                self.font_size,
+            );
+            Vec::new()
+        };
+
+        log::debug!(
+            "shape_and_rasterize_run: text={text:?} lines={lines} total_glyphs={} \
+             shaping={shaping:?} ligatures={} font={:?}",
+            all_glyphs.len(),
+            self.ligatures_enabled,
+            self.font_family,
+        );
+
+        // ── Rasterise each layout glyph into the atlas ──────────────
+        let mut shaped: Vec<ShapedGlyph> = Vec::with_capacity(all_glyphs.len());
         let mut run_x_offset: f32 = 0.0;
 
-        for (i, c) in text.chars().enumerate() {
-            let (entry, _is_new) = self.ensure_glyph(c)?;
+        for g in all_glyphs {
+            let num_cells = (g.end - g.start) as usize;
+            let advance = g.w;
+
+            log::debug!(
+                "  glyph: start={} end={} num_cells={} advance={:.1}",
+                g.start, g.end, num_cells, advance,
+            );
+
+            // Physical glyph for swash rasterization.
+            let mut phys = g.physical((0.0, 0.0), 1.0);
+
+            // Disable hinting at high DPI (wezterm strategy).
+            if self.pixels_per_point > 1.04 {
+                phys.cache_key.flags.insert(CacheKeyFlags::DISABLE_HINTING);
+            }
+
+            // Rasterize via swash and pack into atlas.
+            let entry = self.rasterize_swash_entry(&phys.cache_key, advance)?;
 
             shaped.push(ShapedGlyph {
-                char_range: i..i + 1,
-                num_cells: 1,
+                char_range: g.start as usize .. g.end as usize,
+                num_cells,
                 run_x_offset,
-                entry: entry.clone(),
+                entry,
             });
 
-            run_x_offset += entry.advance;
+            run_x_offset += advance;
         }
 
         // Cache and return.
         self.run_cache.insert(key, shaped.clone());
         Ok(shaped)
+    }
+
+    /// Rasterize a physical glyph (identified by [`cosmic_text::CacheKey`])
+    /// into the atlas and return a [`GlyphEntry`] describing its position
+    /// and metrics.
+    ///
+    /// This is the same rasterization + atlas-packing logic that
+    /// [`rasterize_glyph`](Self::rasterize_glyph) uses for single
+    /// characters, factored out so that the run-based shaping path
+    /// (`shape_and_rasterize_run`) can rasterize each `LayoutGlyph`
+    /// without re-shaping.
+    fn rasterize_swash_entry(
+        &mut self,
+        cache_key: &cosmic_text::CacheKey,
+        advance: f32,
+    ) -> Result<GlyphEntry> {
+        let img = match self.rasterize_swash(cache_key) {
+            Some(img) => img,
+            None => {
+                log::debug!(
+                    "rasterize_swash_entry: no image for glyph_id={} font_id={:?}",
+                    cache_key.glyph_id,
+                    cache_key.font_id,
+                );
+                return Ok(GlyphEntry {
+                    atlas_rect: etagere::Rectangle {
+                        min: etagere::Point::new(0, 0),
+                        max: etagere::Point::new(0, 0),
+                    },
+                    bearing_x: 0.0,
+                    bearing_y: 0.0,
+                    advance,
+                    content_type: GlyphContentType::Subpixel,
+                    scale: 1.0,
+                });
+            }
+        };
+
+        let width = img.placement.width as i32;
+        let height = img.placement.height as i32;
+
+        if width <= 0 || height <= 0 {
+            return Ok(GlyphEntry {
+                atlas_rect: etagere::Rectangle {
+                    min: etagere::Point::new(0, 0),
+                    max: etagere::Point::new(0, 0),
+                },
+                bearing_x: img.placement.left as f32,
+                bearing_y: img.placement.top as f32,
+                advance,
+                content_type: GlyphContentType::Subpixel,
+                scale: 1.0,
+            });
+        }
+
+        // Allocate in atlas.
+        let allocation = loop {
+            match self.atlas.allocate(etagere::size2(width, height)) {
+                Some(id) => break id,
+                None => self.grow_atlas()?,
+            }
+        };
+        let rectangle = self.atlas.get(allocation.id);
+
+        // Copy pixels into the RGBA atlas.
+        let atlas_w = self.texture_size as usize;
+
+        match img.content {
+            SwashContent::SubpixelMask => {
+                // Subpixel data is 4 bytes/pixel: R,G,B = coverage, A=0.
+                for (i, chunk) in img.data.chunks_exact(4).enumerate() {
+                    let px = (rectangle.min.x as usize) + (i % width as usize);
+                    let py = (rectangle.min.y as usize) + (i / width as usize);
+                    let idx = (py * atlas_w + px) * 4;
+                    if idx + 3 < self.texture_data.len() {
+                        let r = chunk[0];
+                        let g = chunk[1];
+                        let b = chunk[2];
+                        let a = r.max(g).max(b);
+                        self.texture_data[idx] = r;
+                        self.texture_data[idx + 1] = g;
+                        self.texture_data[idx + 2] = b;
+                        self.texture_data[idx + 3] = a;
+                    }
+                }
+            }
+            SwashContent::Mask => {
+                // Grayscale alpha mask (1 byte/pixel).
+                for (i, &coverage) in img.data.iter().enumerate() {
+                    let px = (rectangle.min.x as usize) + (i % width as usize);
+                    let py = (rectangle.min.y as usize) + (i / width as usize);
+                    let idx = (py * atlas_w + px) * 4;
+                    if idx + 3 < self.texture_data.len() {
+                        self.texture_data[idx] = coverage;
+                        self.texture_data[idx + 1] = coverage;
+                        self.texture_data[idx + 2] = coverage;
+                        self.texture_data[idx + 3] = 255;
+                    }
+                }
+            }
+            SwashContent::Color => {
+                // Color glyphs (emojis): premultiplied RGBA, 4 bytes/pixel.
+                for (i, chunk) in img.data.chunks_exact(4).enumerate() {
+                    let px = (rectangle.min.x as usize) + (i % width as usize);
+                    let py = (rectangle.min.y as usize) + (i / width as usize);
+                    let idx = (py * atlas_w + px) * 4;
+                    if idx + 3 < self.texture_data.len() {
+                        self.texture_data[idx..idx + 4].copy_from_slice(chunk);
+                    }
+                }
+            }
+        }
+
+        let content_type = match img.content {
+            SwashContent::SubpixelMask => GlyphContentType::Subpixel,
+            SwashContent::Mask => GlyphContentType::Mask,
+            SwashContent::Color => GlyphContentType::Color,
+        };
+
+        Ok(GlyphEntry {
+            atlas_rect: rectangle,
+            bearing_x: img.placement.left as f32,
+            bearing_y: img.placement.top as f32,
+            advance,
+            content_type,
+            scale: 1.0,
+        })
     }
 
     /// Font metrics for layout calculations.
@@ -599,6 +780,7 @@ impl GlyphAtlas {
             .resize((new_size * new_size * 4) as usize, 0);
         self.texture_size = new_size;
         self.glyph_cache.clear();
+        self.run_cache.clear();
         Ok(())
     }
 
