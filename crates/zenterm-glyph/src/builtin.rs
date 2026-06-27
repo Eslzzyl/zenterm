@@ -162,11 +162,12 @@ pub fn render(c: char, params: &BuiltinParams) -> Option<BuiltinGlyph> {
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-/// Minimum line thickness in pixels for box drawing.
-fn line_width(_w: u32, _h: u32) -> u32 {
-    // Use 1 pixel minimum; at high DPI we might scale this.
-    // Phase 1: always 1px.
-    1
+/// Stroke thickness for box drawing, proportional to cell width.
+///
+/// Uses one eighth of the cell width (matching Alacritty's approach in
+/// `builtin_font.rs:calculate_stroke_size`), with a minimum of 1px.
+fn line_width(w: u32, _h: u32) -> u32 {
+    (w as f32 / 8.0).round().max(1.0) as u32
 }
 
 /// Set a single pixel in the buffer.
