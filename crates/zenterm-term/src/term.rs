@@ -122,6 +122,28 @@ impl ColorScheme {
         colors[NamedColor::DimForeground as usize] = Some(rgba_to_rgb(&theme.dim_foreground));
         colors[NamedColor::BrightForeground as usize] = Some(rgba_to_rgb(&theme.bright_foreground));
 
+        // 256-colour palette: 6×6×6 colour cube (indices 16-231).
+        let mut idx = 16;
+        for r in 0..6 {
+            for g in 0..6 {
+                for b in 0..6 {
+                    let rgb = Rgb {
+                        r: if r == 0 { 0 } else { r * 40 + 55 },
+                        g: if g == 0 { 0 } else { g * 40 + 55 },
+                        b: if b == 0 { 0 } else { b * 40 + 55 },
+                    };
+                    colors[idx] = Some(rgb);
+                    idx += 1;
+                }
+            }
+        }
+
+        // Grayscale ramp (indices 232-255).
+        for i in 0..24 {
+            let v = (i * 10 + 8) as u8;
+            colors[232 + i] = Some(Rgb { r: v, g: v, b: v });
+        }
+
         Self {
             colors,
             selection_bg: theme.selection_bg,
