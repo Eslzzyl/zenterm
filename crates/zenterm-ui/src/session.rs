@@ -672,6 +672,8 @@ impl TerminalSession {
 
                 let ch_char = cell.c;
                 let is_blank = ch_char == ' ' && cell.bg == Rgba::BLACK && !is_cursor;
+                let is_hidden = cell.hidden;
+                let is_spacer = cell.is_spacer;
 
                 let (draw_fg, draw_bg) = if is_block_cursor {
                     (cell.bg, cell.fg)
@@ -691,11 +693,7 @@ impl TerminalSession {
                     draw_fg
                 };
 
-                if cell.is_spacer {
-                    col += 1;
-                    continue;
-                }
-                if cell.hidden {
+                if is_spacer {
                     col += 1;
                     continue;
                 }
@@ -752,6 +750,12 @@ impl TerminalSession {
                             flags: glyph_type::SOLID,
                         });
                     }
+                }
+
+                // SGR 8 (conceal / hidden): render background but skip glyph + decorations.
+                if is_hidden {
+                    col += 1;
+                    continue;
                 }
 
                 // ── Pass 2: glyph quad ──────────────────────────────
