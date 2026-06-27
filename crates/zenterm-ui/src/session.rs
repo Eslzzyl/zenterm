@@ -41,6 +41,7 @@ use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::CursorShape;
 use serde::{Deserialize, Serialize};
 
+use zenterm_core::cell::UnderlineStyle;
 use zenterm_core::color::Rgba;
 use zenterm_core::size::TermSize;
 use zenterm_glyph::GlyphContentType;
@@ -868,13 +869,10 @@ impl TerminalSession {
                     [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0]
                 };
 
-                if cell.underline {
-                    let thickness = 1.0_f32.max((ch * 0.05).round());
-                    let deco_y = baseline + 1.0;
-                    let dqy = px_to_clip_y(y_off + (row as f32 * ch + deco_y).round());
+                // Helper to push a solid decoration quad.
+                let mut push_deco = |y_offset: f32, dqw: f32, dqh: f32| {
+                    let dqy = px_to_clip_y(y_off + (row as f32 * ch + y_offset).round());
                     let dqx = px_to_clip_x(x_off + (col as f32 * cw).round());
-                    let dqw = cw * x_scale;
-                    let dqh = thickness * y_scale;
                     deco_instances.push(CellInstance {
                         clip_pos: [dqx, dqy],
                         uv_min: [0.0; 2],
@@ -886,6 +884,28 @@ impl TerminalSession {
                         bg_color: deco_color,
                         flags: glyph_type::SOLID,
                     });
+                };
+
+                let thickness = 1.0_f32.max((ch * 0.05).round());
+                let cell_w = cw * x_scale;
+                let cell_h = thickness * y_scale;
+                match cell.underline_style {
+                    UnderlineStyle::None => {}
+                    UnderlineStyle::Normal => {
+                        push_deco(baseline + 1.0, cell_w, cell_h);
+                    }
+                    UnderlineStyle::Double => {
+                        // Two lines: one at baseline+1, one at baseline+3.
+                        push_deco(baseline + 1.0, cell_w, cell_h);
+                        push_deco(baseline + 3.0, cell_w, cell_h);
+                    }
+                    // Curly, dotted, dashed: fall back to a normal underline
+                    // so the decoration is at least visible.
+                    UnderlineStyle::Curly
+                    | UnderlineStyle::Dotted
+                    | UnderlineStyle::Dashed => {
+                        push_deco(baseline + 1.0, cell_w, cell_h);
+                    }
                 }
 
                 if cell.strikethrough {

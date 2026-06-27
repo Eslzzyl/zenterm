@@ -28,7 +28,7 @@ use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{ClipboardType, Config as TermConfig, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorStyle, NamedColor, Processor, Rgb};
 
-use zenterm_core::cell::Cell;
+use zenterm_core::cell::{Cell, UnderlineStyle};
 use zenterm_core::color::Rgba;
 use zenterm_core::damage::DamageSet;
 use zenterm_core::position::TermPos;
@@ -624,13 +624,27 @@ impl Terminal {
         let bg = self.resolve_color(alacell.bg);
         let flags = alacell.flags;
 
+        let underline_style = if flags.contains(Flags::DOUBLE_UNDERLINE) {
+            UnderlineStyle::Double
+        } else if flags.contains(Flags::UNDERCURL) {
+            UnderlineStyle::Curly
+        } else if flags.contains(Flags::DOTTED_UNDERLINE) {
+            UnderlineStyle::Dotted
+        } else if flags.contains(Flags::DASHED_UNDERLINE) {
+            UnderlineStyle::Dashed
+        } else if flags.contains(Flags::UNDERLINE) {
+            UnderlineStyle::Normal
+        } else {
+            UnderlineStyle::None
+        };
+
         Cell {
             c,
             fg: if flags.contains(Flags::INVERSE) { bg } else { fg },
             bg: if flags.contains(Flags::INVERSE) { fg } else { bg },
             bold: flags.contains(Flags::BOLD),
             italic: flags.contains(Flags::ITALIC),
-            underline: flags.contains(Flags::UNDERLINE),
+            underline_style,
             strikethrough: flags.contains(Flags::STRIKEOUT),
             inverse: flags.contains(Flags::INVERSE),
             dim: flags.contains(Flags::DIM),

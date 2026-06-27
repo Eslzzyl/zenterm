@@ -12,7 +12,7 @@ pub mod position;
 pub mod size;
 pub mod theme;
 
-pub use cell::Cell;
+pub use cell::{Cell, UnderlineStyle};
 pub use color::Rgba;
 pub use damage::DamageSet;
 pub use error::Error;
