@@ -35,35 +35,27 @@ impl ZentermApp {
                 }
             };
 
-            // Snapshot all workspaces and their tabs so the closure
-            // doesn't need to borrow `self`.
+            // Snapshot all workspaces so the closure doesn't need
+            // to borrow `self`.
             let ws_snapshot: Vec<(
                 crate::workspace::WorkspaceId,
                 String,
                 bool,
-                Vec<(egui_dock::NodeIndex, egui_dock::TabIndex, SessionId, String, Option<std::path::PathBuf>)>,
+                usize, // tab count
             )> = self
                 .workspaces
                 .workspaces
                 .iter()
                 .map(|ws| {
-                    let tabs = ws
-                        .dock
-                        .iter_all_tabs()
-                        .filter_map(|(path, tab)| {
-                            let s = self.sessions.get(tab)?;
-                            Some((path.node, path.tab, *tab, s.title.clone(), s.cwd.clone()))
-                        })
-                        .collect();
+                    let tab_count = ws.all_tab_ids().len();
                     (
                         ws.id,
                         ws.name.clone(),
                         ws.id == self.workspaces.active_workspace_id,
-                        tabs,
+                        tab_count,
                     )
                 })
                 .collect();
-            let active_session = self.active_session_id;
 
             panel
                 .resizable(true)
@@ -74,7 +66,6 @@ impl ZentermApp {
                     let mut queued_new_tab = false;
                     let mut queued_new_ws = false;
                     let mut queued_switch_ws: Option<crate::workspace::WorkspaceId> = None;
-                    let mut queued_focus: Option<(egui_dock::NodeIndex, egui_dock::TabIndex)> = None;
                     let mut queued_rename_ws: Option<(crate::workspace::WorkspaceId, String)> =
                         None;
                     let mut queued_close_ws: Option<crate::workspace::WorkspaceId> = None;
@@ -82,29 +73,15 @@ impl ZentermApp {
                     let sidebar_data = crate::sidebar::SidebarData {
                         workspaces: ws_snapshot
                             .into_iter()
-                            .map(|(id, name, is_active, tabs)| {
+                            .map(|(id, name, is_active, tab_count)| {
                                 crate::sidebar::WorkspaceSidebarEntry {
                                     id,
                                     name,
                                     is_active,
-                                    tabs: tabs
-                                        .into_iter()
-                                        .map(
-                                            |(node, tab, id, title, cwd)| {
-                                                crate::sidebar::TabSidebarEntry {
-                                                    node,
-                                                    tab,
-                                                    id,
-                                                    title,
-                                                    cwd,
-                                                }
-                                            },
-                                        )
-                                        .collect(),
+                                    tab_count,
                                 }
                             })
                             .collect(),
-                        active_session_id: active_session,
                     };
 
                     let events = crate::sidebar::render_sidebar(ui, &sidebar_data);
@@ -125,9 +102,6 @@ impl ZentermApp {
                             crate::sidebar::SidebarEvent::RenameWorkspace(id, name) => {
                                 queued_rename_ws = Some((id, name))
                             }
-                            crate::sidebar::SidebarEvent::FocusTab(node, tab) => {
-                                queued_focus = Some((node, tab))
-                            }
                             crate::sidebar::SidebarEvent::OpenSettings => {
                                 self.settings_state.open = true;
                                 self.settings_state.reset_to(&self.config);
@@ -137,8 +111,14 @@ impl ZentermApp {
 
                     // ── Apply queued actions ──────────────────────
                     if queued_new_ws {
+                        let active_title = self
+                            .active_session_id
+                            .and_then(|id| self.sessions.get(&id))
+                            .map(|s| s.title.clone())
+                            .unwrap_or_else(|| "workspace".into());
                         let ws_name = Self::generate_workspace_name(
                             &self.workspaces,
+                            &active_title,
                         );
                         self.workspaces.create_workspace(ws_name);
                         // Also spawn a first tab in the new workspace.
@@ -169,9 +149,6 @@ impl ZentermApp {
                     }
                     if queued_new_tab {
                         self.spawn_session();
-                    }
-                    if let Some((node, tab)) = queued_focus {
-                        self.focus_tab(node, tab);
                     }
                     if let Some((ws_id, new_name)) = queued_rename_ws {
                         self.workspaces.rename_workspace(ws_id, new_name);

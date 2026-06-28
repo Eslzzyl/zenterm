@@ -59,6 +59,7 @@ impl ZentermApp {
 
     /// Switch the active tab to the given `(node, tab)` pair in the
     /// active workspace.
+    #[allow(dead_code)]
     pub(crate) fn focus_tab(&mut self, node: egui_dock::NodeIndex, tab: egui_dock::TabIndex) {
         let path = egui_dock::TabPath {
             surface: egui_dock::SurfaceIndex::main(),

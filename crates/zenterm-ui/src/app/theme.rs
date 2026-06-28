@@ -37,15 +37,21 @@ impl ZentermApp {
         }
     }
 
-    /// Generate a unique workspace name based on the current working
-    /// directory.  Falls back to a numbered name if the cwd is
-    /// unavailable or the name already exists.
-    pub(crate) fn generate_workspace_name(workspaces: &WorkspaceManager) -> String {
-        let cwd_name = std::env::current_dir()
-            .ok()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
-
-        let base = cwd_name.unwrap_or_else(|| "workspace".into());
+    /// Generate a unique workspace name based on the active tab's
+    /// title.  Falls back to a numbered name if the title is empty
+    /// or the name already exists.
+    pub(crate) fn generate_workspace_name(
+        workspaces: &WorkspaceManager,
+        active_title: &str,
+    ) -> String {
+        let base = if active_title.is_empty() {
+            "workspace".into()
+        } else {
+            // Truncate very long titles to keep the sidebar tidy.
+            let mut t = active_title.to_string();
+            t.truncate(40);
+            t
+        };
 
         // Ensure uniqueness by appending a suffix if needed.
         let existing: std::collections::HashSet<String> = workspaces
