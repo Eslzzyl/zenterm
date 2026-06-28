@@ -40,3 +40,86 @@ pub(crate) fn emit_background_quad(
         flags: glyph_type::SOLID,
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zenterm_core::color::Rgba;
+
+    #[test]
+    fn emits_when_color_different_from_default() {
+        let mut v = vec![];
+        emit_background_quad(&mut v, 0, 0, 10.0, 20.0, 1.0,
+            Rgba::new(1.0, 0.0, 0.0, 1.0),  // red
+            Rgba::new(0.0, 0.0, 0.0, 1.0),  // default = black
+            false, 0.0, 0.0, 2.0, 2.0);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].flags, glyph_type::SOLID);
+    }
+
+    #[test]
+    fn skips_when_color_matches_default_and_not_force() {
+        let mut v = vec![];
+        emit_background_quad(&mut v, 0, 0, 10.0, 20.0, 1.0,
+            Rgba::new(0.0, 0.0, 0.0, 1.0),
+            Rgba::new(0.0, 0.0, 0.0, 1.0),  // same
+            false, 0.0, 0.0, 2.0, 2.0);
+        assert_eq!(v.len(), 0);
+    }
+
+    #[test]
+    fn force_overrides_default_bg_skip() {
+        let mut v = vec![];
+        emit_background_quad(&mut v, 0, 0, 10.0, 20.0, 1.0,
+            Rgba::new(0.0, 0.0, 0.0, 1.0),
+            Rgba::new(0.0, 0.0, 0.0, 1.0),  // same
+            true,  // force
+            0.0, 0.0, 2.0, 2.0);
+        assert_eq!(v.len(), 1);
+    }
+
+    #[test]
+    fn clip_position_computed_correctly() {
+        let mut v = vec![];
+        // col=1, row=2, cw=10, ch=20, x_off=5, y_off=5, x_scale=2, y_scale=2
+        // bg_x = 5 + (1*10).round() = 15
+        // bg_y = 5 + (2*20).round() = 45
+        // clip_pos = [15*2-1=29, 1-45*2=-89]
+        emit_background_quad(&mut v, 1, 2, 10.0, 20.0, 1.0,
+            Rgba::new(1.0, 0.0, 0.0, 1.0),
+            Rgba::new(0.0, 0.0, 0.0, 1.0),
+            false, 5.0, 5.0, 2.0, 2.0);
+        assert_eq!(v.len(), 1);
+        let eps = 0.001;
+        assert!((v[0].clip_pos[0] - 29.0).abs() < eps);
+        assert!((v[0].clip_pos[1] - (-89.0)).abs() < eps);
+    }
+
+    #[test]
+    fn wide_char_num_cells_doubles_width() {
+        let mut v = vec![];
+        // num_cells=2 should make clip_cell_size.x = 10*2*2 = 40
+        emit_background_quad(&mut v, 0, 0, 10.0, 20.0, 2.0,
+            Rgba::new(1.0, 0.0, 0.0, 1.0),
+            Rgba::new(0.0, 0.0, 0.0, 1.0),
+            false, 0.0, 0.0, 2.0, 2.0);
+        assert_eq!(v.len(), 1);
+        assert!((v[0].clip_cell_size[0] - 40.0).abs() < 0.001);
+        assert!((v[0].clip_cell_size[1] - 40.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn fg_and_bg_color_match_input() {
+        let mut v = vec![];
+        let red = Rgba::new(1.0, 0.0, 0.0, 1.0);
+        emit_background_quad(&mut v, 0, 0, 10.0, 20.0, 1.0,
+            red, Rgba::new(0.0, 0.0, 0.0, 1.0),
+            true, 0.0, 0.0, 2.0, 2.0);
+        assert_eq!(v.len(), 1);
+        assert!((v[0].fg_color[0] - 1.0).abs() < 0.001);
+        assert!((v[0].fg_color[1]).abs() < 0.001);
+        assert!((v[0].fg_color[2]).abs() < 0.001);
+        assert_eq!(v[0].bg_color, v[0].fg_color);
+    }
+}
+

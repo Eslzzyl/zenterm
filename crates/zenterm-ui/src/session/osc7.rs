@@ -53,3 +53,65 @@ fn hex_val(b: u8) -> Option<u8> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_url_with_host() {
+        let p = osc7_url_to_path("file://localhost/home/user");
+        assert_eq!(p, Some(PathBuf::from("/home/user")));
+    }
+
+    #[test]
+    fn file_url_without_host() {
+        let p = osc7_url_to_path("file:///home/user");
+        assert_eq!(p, Some(PathBuf::from("/home/user")));
+    }
+
+    #[test]
+    fn absolute_path_without_scheme() {
+        let p = osc7_url_to_path("/home/user");
+        assert_eq!(p, Some(PathBuf::from("/home/user")));
+    }
+
+    #[test]
+    fn invalid_url_returns_none() {
+        let p = osc7_url_to_path("not-a-path");
+        assert_eq!(p, None);
+    }
+
+    #[test]
+    fn file_url_no_path_returns_none() {
+        let p = osc7_url_to_path("file://");
+        assert_eq!(p, None);
+    }
+
+    #[test]
+    fn percent_decoded() {
+        let p = osc7_url_to_path("file://localhost/home/user%2Fdoc");
+        assert_eq!(p, Some(PathBuf::from("/home/user/doc")));
+    }
+
+    #[test]
+    fn percent_decode_space() {
+        let s = percent_decode("hello%20world");
+        assert_eq!(s, "hello world");
+    }
+
+    #[test]
+    fn percent_decode_no_escape() {
+        let s = percent_decode("hello");
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn percent_decode_incomplete_escape() {
+        // Incomplete escape: %X without second hex digit.
+        // The % is emitted literally, the following char is consumed but lost.
+        let s = percent_decode("%2");
+        assert_eq!(s, "%");
+    }
+}
+

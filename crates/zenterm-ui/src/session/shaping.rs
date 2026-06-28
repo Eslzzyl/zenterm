@@ -178,3 +178,41 @@ pub(crate) fn detect_run_end(
     }
     col
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── might_ligate ────────────────────────────────────────────
+
+    #[test]
+    fn ligate_detects_arrow() {
+        assert!(might_ligate("->"));
+    }
+
+    #[test]
+    fn ligate_detects_not_equals() {
+        assert!(might_ligate("!="));
+    }
+
+    #[test]
+    fn ligate_rejects_plain_text() {
+        assert!(!might_ligate("hello"));
+    }
+
+    #[test]
+    fn ligate_rejects_single_char() {
+        assert!(!might_ligate("a"));
+    }
+
+    #[test]
+    fn ligate_rejects_empty() {
+        assert!(!might_ligate(""));
+    }
+
+    #[test]
+    fn ligate_ignores_non_ligature_punctuation() {
+        // Backslash is not a ligature seeding char.
+        assert!(!might_ligate(r"\n"));
+    }
+}

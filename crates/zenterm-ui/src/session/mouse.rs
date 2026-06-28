@@ -360,3 +360,47 @@ impl TerminalSession {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::TerminalSession;
+    use egui::Rect;
+
+    #[test]
+    fn scrollbar_thumb_full_screen_no_history() {
+        let track = Rect::from_min_max(egui::pos2(100.0, 0.0), egui::pos2(110.0, 400.0));
+        let (thumb, _h) = TerminalSession::scrollbar_thumb_rect(track, 25, 0, 0);
+        // With no history, thumb should fill the entire track
+        assert!((thumb.top() - 0.0).abs() < 0.001);
+        assert!((thumb.bottom() - 400.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn scrollbar_thumb_scrolled_to_top() {
+        let track = Rect::from_min_max(egui::pos2(100.0, 0.0), egui::pos2(110.0, 400.0));
+        // 50 lines of history + 25 screen lines = 75 total
+        // thumb_ratio = 25/75 = 0.333, thumb_h = 400*0.333 = 133.33
+        // pos_ratio = (50-0)/50 = 1.0 → thumb at bottom
+        let (thumb, _h) = TerminalSession::scrollbar_thumb_rect(track, 25, 50, 0);
+        assert!((thumb.bottom() - 400.0).abs() < 1.0, "thumb.bottom={}", thumb.bottom());
+        assert!((thumb.top() - (400.0 - 133.33)).abs() < 1.0, "thumb.top={}", thumb.top());
+    }
+
+    #[test]
+    fn scrollbar_thumb_scrolled_to_bottom() {
+        let track = Rect::from_min_max(egui::pos2(100.0, 0.0), egui::pos2(110.0, 400.0));
+        // display_offset = 50 (at bottom of history)
+        // pos_ratio = (50-50)/50 = 0.0 → thumb at top
+        let (thumb, _h) = TerminalSession::scrollbar_thumb_rect(track, 25, 50, 50);
+        assert!((thumb.top() - 0.0).abs() < 1.0, "thumb.top={}", thumb.top());
+    }
+
+    #[test]
+    fn scrollbar_thumb_min_height() {
+        // Very tall track + tiny history → thumb should not go below MIN_THUMB_HEIGHT
+        let track = Rect::from_min_max(egui::pos2(100.0, 0.0), egui::pos2(110.0, 10000.0));
+        let (thumb, h) = TerminalSession::scrollbar_thumb_rect(track, 25, 10000, 0);
+        assert!(h >= 24.0, "thumb_h={}", h);
+        assert!((thumb.bottom() - 10000.0).abs() < 1.0);
+    }
+}
