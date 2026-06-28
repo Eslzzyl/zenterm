@@ -3,6 +3,8 @@
 > **Status:** Working for fonts that use OpenType `calt`/`liga`/`clig` features.
 > Both true ligatures (multiple chars → one glyph) and contextual alternates
 > (same glyph count, different glyphs, e.g. JetBrainsMono's `->`) are supported.
+> Cursor-on-ligature: ligatures are automatically broken under the cursor so
+> individual characters display correctly.
 
 ---
 
@@ -74,17 +76,17 @@ re-shaping the same run on every frame.
 - Wide characters
 
 The run text is extracted and checked by `might_ligate()`, which returns
-`true` if any adjacent pair of characters are both ASCII punctuation.
-This avoids shaping runs that cannot contain ligatures (e.g. alphabetic
-words).
+`true` if the text contains a known programming ligature pattern (e.g.
+`->`, `>=`, `!=`, `::`, `//`).  This avoids shaping runs that cannot
+contain ligatures (e.g. alphabetic words, file paths).
 
 ### Rendering branch
 
 When a run is ligature-eligible, `shape_and_rasterize_run` shapes it.  The
-shaped result is **always used** when shaping succeeds — the per-char
-fallback is only for shaping failures.  This is critical for fonts that use
-**contextual alternates** (same glyph count, different glyph IDs) rather
-than true ligature substitutions.
+shaped result is used when it produces an actual ligature/substitution
+effect (`had_effect=true`) and the cursor is not on the run.  Otherwise
+(when the cursor is on any cell of the run, or shaping had no effect),
+the per-char path is used as a fast path.
 
 Within the rendering branch, two sub-paths exist:
 
@@ -121,7 +123,7 @@ The renderer:
 
 The per-char fallback (`ensure_glyph` → `rasterize_glyph`) is used when:
 - Ligatures are disabled in config.
-- `might_ligate()` returns false (no ASCII punctuation in the run).
+- `might_ligate()` returns false (no known ligature pattern in the run).
 - `shape_and_rasterize_run` fails.
 
 Both paths use swash rasterisation with the same format (`Format::Subpixel`),
@@ -134,19 +136,13 @@ path always uses `Shaping::Advanced`.
 
 ## Performance
 
-| Issue | Cause | Impact |
-|-------|-------|--------|
-| **`might_ligate` triggers on any ASCII punctuation** | Returns `true` if any adjacent pair are punctuation.  File paths like `C:\Users\name\project` match on `:\`, `\U`, `\n`, etc. | Every such run gets a full harfbuzz shape call per frame.  `run_cache` helps but cache hit rate is low during scrolling. |
-| **No short-circuit for unchanged glyphs** | When shaping produces the same glyphs as the default per-char path (no ligature substitution occurred), the result is still used.  There is no fast-path back to per-char for runs that don't actually ligate. | Unnecessary Buffer creation + shaping for runs like `123`, `abc\ndef`. |
-| **Double atlas rasterisation** | `shape_and_rasterize_run` stores glyphs in `run_cache`.  If the same glyph is later requested via `ensure_glyph` (per-char path), it is rasterised again into `glyph_cache`. | Atlas space used twice for the same bitmap until `grow_atlas()` clears both caches. |
+The following issues have been addressed:
 
-### Possible improvements
-
-- Narrow `might_ligate` to a fixed set of common programming ligatures
-  (`->`, `>=`, `!=`, `::`, `//`, `||`, `&&`, etc.) instead of all punctuation.
-- After shaping, compare glyphs against the per-char baseline; if identical,
-  skip the shaped result and fall through to per-char.
-- Share rasterisation between `run_cache` and `glyph_cache`.
+| Issue | Resolution |
+|-------|------------|
+| **`might_ligate` triggers on any ASCII punctuation** | Replaced with a curated set of ~50 known programming ligature patterns (`->`, `=>`, `!=`, `::`, ...).  File paths like `C:\Users\name\project` no longer trigger shaping. |
+| **No short-circuit for unchanged glyphs** | After shaping, `shape_and_rasterize_run` compares glyph IDs against a lightweight per-char baseline (`Shaping::Basic`, no layout/rasterization).  If identical, the run is added to `no_effect_cache` and subsequent calls skip shaping entirely, falling through to per-char. |
+| **Double atlas rasterisation** | When shaping produces no effect (`had_effect=false`), callers discard the shaped result and use the per-char path instead.  Single-cell glyphs are already populated into `glyph_cache` during shaping (see `shape_and_rasterize_run` lines 467–474), so `ensure_glyph` finds them cached and avoids re-rasterization. |
 
 ---
 
@@ -155,8 +151,6 @@ path always uses `Shaping::Advanced`.
 | Issue | Cause |
 |-------|-------|
 | **Run detection is ASCII-only** | `might_ligate` only checks ASCII punctuation pairs. Non-ASCII ligature sequences (e.g. Arabic) will fall through to per-char. |
-| **`\` triggers shaping** | Backslash is ASCII punctuation, so file paths like `C:\Users\` trigger `shape_and_rasterize_run` unnecessarily. |
-| **Cursor on ligature** | When the cursor is on a cell covered by a ligature, the ligature glyph is still used — the cursor colour is applied per-cell via the loop, but the glyph shape does not change. |
 | **Bold/italic ligatures** | Styling variants are not yet wired through the shaping path. |
 
 ---
