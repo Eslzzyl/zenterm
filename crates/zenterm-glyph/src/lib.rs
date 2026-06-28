@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use cosmic_text::{
     Attrs, Buffer, CacheKeyFlags, Family, FeatureTag, FontFeatures, FontSystem, Metrics, Shaping,
+    Wrap,
 };
 use etagere::AtlasAllocator;
 use swash::scale::image::Content as SwashContent;
@@ -354,6 +355,7 @@ impl GlyphAtlas {
 
         let mut buf = Buffer::new(&mut self.font_system, self.metrics);
         buf.set_size(Some(self.font_size), None);
+        buf.set_wrap(Wrap::None);
         let mut font_features = FontFeatures::new();
         if self.ligatures_enabled {
             font_features.enable(FeatureTag::STANDARD_LIGATURES);
@@ -365,21 +367,55 @@ impl GlyphAtlas {
         let attrs = Attrs::new()
             .family(Family::Name(&self.font_family))
             .font_features(font_features);
+        log::info!(
+            "[lig-diag] attrs features={} tags={:?}",
+            attrs.font_features.features.len(),
+            attrs.font_features.features.iter().map(|f| std::str::from_utf8(f.tag.as_bytes()).unwrap_or("?")).collect::<Vec<_>>(),
+        );
         buf.set_text(text, &attrs, shaping, None);
         buf.shape_until_scroll(&mut self.font_system, true);
 
+        // ── Diagnostic: inspect ShapeLine words/glyphs ────────────
+        // This reveals whether harfbuzz produced ligature substitutions
+        // at the shaping level (before layout).
+        if let Some(shape_line) = buf.lines[0].shape_opt() {
+            for (si, span) in shape_line.spans.iter().enumerate() {
+                log::info!(
+                    "[lig-diag]   span[{si}] words={} level={:?}",
+                    span.words.len(), span.level,
+                );
+                for (wi, word) in span.words.iter().enumerate() {
+                    let word_start = word.glyphs.first().map(|g| g.start).unwrap_or(0);
+                    let word_end = word.glyphs.last().map(|g| g.end).unwrap_or(0);
+                    let word_text = &text[word_start..word_end];
+                    let glyph_info: Vec<String> = word.glyphs.iter().map(|g| {
+                        format!("g_id={} {}..{}", g.glyph_id, g.start, g.end)
+                    }).collect();
+                    log::info!(
+                        "[lig-diag]     word[{wi}] blank={} text={word_text:?} glyphs={} {:?}",
+                        word.blank, word.glyphs.len(), glyph_info,
+                    );
+                }
+            }
+        } else {
+            log::warn!("[lig-diag]   shape_opt() is NONE after shaping");
+        }
+
         let lines = buf.lines.len();
         let all_glyphs: Vec<&cosmic_text::LayoutGlyph> = if lines > 0 {
-            buf.lines[0]
-                .layout_opt()
-                .map(|runs| {
-                    // Flatten glyphs from ALL layout runs, not just the
-                    // first one.  Multi-character text may be split across
-                    // multiple runs when font fallback occurs (e.g. CJK
-                    // characters in an otherwise ASCII line).
+            match buf.lines[0].layout_opt() {
+                Some(runs) => {
                     runs.iter().flat_map(|run| &run.glyphs).collect()
-                })
-                .unwrap_or_default()
+                }
+                None => {
+                    log::warn!(
+                        "[lig-diag] shape_and_rasterize_run: layout_opt() is NONE \
+                         for text={text:?} (lines={lines} shaping={shaping:?}). \
+                         shape_until_scroll may not have produced layout.",
+                    );
+                    Vec::new()
+                }
+            }
         } else {
             log::warn!(
                 "shape_and_rasterize_run: buf.lines is EMPTY after shaping {text:?} \
@@ -389,9 +425,9 @@ impl GlyphAtlas {
             Vec::new()
         };
 
-        log::debug!(
-            "shape_and_rasterize_run: text={text:?} lines={lines} total_glyphs={} \
-             shaping={shaping:?} ligatures={} font={:?}",
+        log::info!(
+            "[lig-diag] shape_and_rasterize_run: text={text:?} lines={lines} \
+             total_glyphs={} shaping={shaping:?} ligatures={} font={:?}",
             all_glyphs.len(),
             self.ligatures_enabled,
             self.font_family,
@@ -1140,5 +1176,74 @@ impl GlyphAtlas {
         .offset(offset)
         .transform(transform)
         .render(&mut scaler, cache_key.glyph_id)
+    }
+}
+
+#[cfg(test)]
+mod ligature_test {
+    use cosmic_text::{Buffer, FontSystem, Metrics, Shaping, Attrs, Family, FontFeatures, FeatureTag};
+
+    /// Minimal test: shape ">=" with JetBrainsMono and ligature features.
+    /// This bypasses all of zenterm's code to isolate cosmic-text/harfbuzz behavior.
+    fn test_ligature_shaping(text: &str, use_features: bool, font_path: &str, font_name: &str) {
+        let mut db = fontdb::Database::new();
+        let font_data = std::fs::read(font_path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", font_path, e));
+        db.load_font_data(font_data);
+
+        let mut font_system = FontSystem::new_with_locale_and_db(
+            "en-US".into(),
+            db,
+        );
+
+        let metrics = Metrics::new(18.0, 22.0);
+        let mut buf = Buffer::new(&mut font_system, metrics);
+        buf.set_size(Some(500.0), None);
+
+        let attrs = if use_features {
+            let mut font_features = FontFeatures::new();
+            font_features.enable(FeatureTag::STANDARD_LIGATURES);
+            font_features.enable(FeatureTag::CONTEXTUAL_LIGATURES);
+            font_features.enable(FeatureTag::CONTEXTUAL_ALTERNATES);
+            font_features.enable(FeatureTag::DISCRETIONARY_LIGATURES);
+            font_features.enable(FeatureTag::KERNING);
+            Attrs::new()
+                .family(Family::Name(font_name))
+                .font_features(font_features)
+        } else {
+            Attrs::new()
+                .family(Family::Name(font_name))
+        };
+
+        buf.set_text(text, &attrs, Shaping::Advanced, None);
+        buf.shape_until_scroll(&mut font_system, true);
+
+        let shape = buf.lines[0].shape_opt().expect("ShapeLine not found");
+        let span = &shape.spans[0];
+
+        let total_glyphs: usize = span.words.iter().map(|w| w.glyphs.len()).sum();
+        let expected = text.chars().count();
+        let label = if use_features { "feat" } else { "def " };
+        if total_glyphs < expected {
+            eprintln!("  [{label}] {:?}: LIGATURE OK ({})", text, total_glyphs);
+        } else {
+            eprintln!("  [{label}] {:?}: no ligature ({})", text, total_glyphs);
+        }
+    }
+
+    #[test]
+    fn test_ligatures() {
+        let jetbrains = (
+            concat!(env!("HOME"), "/Library/Fonts/JetBrainsMonoNerdFont-Regular.ttf"),
+            "JetBrainsMono Nerd Font",
+        );
+
+        let test_cases = ["->", ">=", "!=", "<=", "=>", "::", "//", "||", "&&"];
+
+        eprintln!("\n=== JetBrainsMono Nerd Font ===");
+        for text in &test_cases {
+            test_ligature_shaping(text, false, jetbrains.0, jetbrains.1);
+            test_ligature_shaping(text, true, jetbrains.0, jetbrains.1);
+        }
     }
 }

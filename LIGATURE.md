@@ -1,130 +1,170 @@
-# Ligature Support — Current Status
+# Ligature Support
 
-> **Last updated:** 2026-06-27
-
-## Summary
-
-Ligature support has been implemented across Phases A–E (~850 lines) but has two
-significant problems that prevent it from being practically usable:
-
-| Problem | Severity | Root Cause |
-|---------|----------|------------|
-| **Ligatures don't actually work** | 🔴 | cosmic-text 0.19 word-splitting at Unicode line-break boundaries prevents harfbuzz from seeing ligature context ([#378](https://github.com/pop-os/cosmic-text/issues/378)) |
-| **Per-cell strip splitting causes visual artifacts** | 🔴 | `Shaping::Advanced` vs `Shaping::Basic` produce different glyph bitmaps → visible "shadow" at cell boundaries |
+> **Status:** Working for fonts that use OpenType `calt`/`liga`/`clig` features.
+> Both true ligatures (multiple chars → one glyph) and contextual alternates
+> (same glyph count, different glyphs, e.g. JetBrainsMono's `->`) are supported.
 
 ---
 
-## What Was Implemented
+## Architecture Overview
 
-### Phase A — Run Shaping (`crates/zenterm-glyph/src/lib.rs`)
+Ligature handling involves two stages:
 
-`shape_and_rasterize_run` uses `cosmic-text::Buffer` + `Shaping::Advanced` to
-shape a run of characters as a single string.  When a ligature substitution
-occurs (a single `LayoutGlyph` covering `end - start > 1` source characters),
-one `ShapedGlyph` with `num_cells > 1` is produced.
+1. **GlyphAtlas** (`crates/zenterm-glyph/src/lib.rs`) — shapes a whole run of
+   text as one unit so OpenType features can match across character boundaries.
+2. **Session rendering** (`crates/zenterm-ui/src/session.rs`) — detects eligible
+   runs, calls the atlas, and distributes the resulting glyphs across their
+   covering terminal cells.
 
-- `rasterize_swash_entry` helper: rasterizes a `LayoutGlyph` via swash and packs
-  it into the atlas (factored out of `rasterize_glyph`)
-- `FontFeatures` with `liga`/`clig`/`calt`/`dlig`/`kern` are passed to harfbuzz
-- `run_cache.clear()` in `grow_atlas()` prevents stale atlas entries after growth
-- Glyphs are flattened from ALL layout runs (not just `.first()`) so font-fallback
-  splits don't lose glyphs
+---
 
-### Phase B — Run Detection (`crates/zenterm-ui/src/session.rs`)
+## Stage 1: Run Shaping (`GlyphAtlas::shape_and_rasterize_run`)
 
-`detect_run_end` walks consecutive same-style cells and breaks at:
-- Spaces, spacer cells (CJK/emoji), hidden cells
+### Buffer setup
+
+A `cosmic-text::Buffer` is created with `Wrap::None` so that ligature words are
+not split into separate visual lines during layout.  When ligatures are enabled,
+`FontFeatures` for `liga`, `clig`, `calt`, `dlig`, and `kern` are passed to
+harfbuzz:
+
+```rust
+let mut buf = Buffer::new(&mut self.font_system, self.metrics);
+buf.set_size(Some(self.font_size), None);
+buf.set_wrap(Wrap::None);
+```
+
+The full run text is shaped as a single harfbuzz call, so OpenType context
+rules (e.g. `calt` for `->`, `>=`) have access to all characters in the run.
+
+### Output: `Vec<ShapedGlyph>`
+
+Each glyph in the shaped output becomes a `ShapedGlyph`:
+
+| Field | Meaning |
+|-------|---------|
+| `char_range` | Byte range in the source text this glyph covers |
+| `num_cells` | Number of terminal cells this glyph occupies (`end - start`) |
+| `run_x_offset` | Horizontal position within the run (advance-accumulated) |
+| `entry` | Rasterised atlas entry (bitmap, bearing, advance) |
+
+Glyph IDs from the font are preserved.  When a font's `calt` feature replaces
+`hyphen→SPC` and `greater→hyphen_greater.liga` (JetBrainsMono's approach),
+both IDs appear in the output — the glyph count doesn't change.  When a font
+has a real ligature substitution (`fi` → ﬁ), one glyph covers 2+ characters
+and `num_cells > 1`.
+
+### Atlas rasterisation
+
+Each `LayoutGlyph` from cosmic-text is rasterised via **swash** (the same
+`rasterize_swash` function used by the per-char path), so the bitmap quality
+is identical regardless of which path produced the glyph.
+
+Results are cached in `run_cache` (keyed by text + font_size) to avoid
+re-shaping the same run on every frame.
+
+---
+
+## Stage 2: Run Detection + Rendering (`session.rs`)
+
+### Run detection
+
+`detect_run_end()` walks forward through consecutive cells, stopping at:
+- Spaces, spacer cells (CJK/emoji continuations), hidden cells
 - Style boundaries (bold/italic change)
-- Wide characters (cell whose right neighbour is a spacer)
+- Wide characters
 
-Helpers added: `might_ligate()`, `extract_run_text()`, `emit_deco_for_cell()`,
-`glyph_grid_num_cells()` (grid-aware cell-width computation).
+The run text is extracted and checked by `might_ligate()`, which returns
+`true` if any adjacent pair of characters are both ASCII punctuation.
+This avoids shaping runs that cannot contain ligatures (e.g. alphabetic
+words).
 
-### Phase C+D — Strip Splitting + Wiring
+### Rendering branch
 
-The ligature branch in `update_cell_instances`:
-1. Shapes the entire run via `shape_and_rasterize_run`
-2. Distributes every glyph across its covering cells via per-cell strip splitting
-3. Each strip gets per-cell cursor/selection colours
-4. `col = run_end; continue` skips past the entire run
+When a run is ligature-eligible, `shape_and_rasterize_run` shapes it.  The
+shaped result is **always used** when shaping succeeds — the per-char
+fallback is only for shaping failures.  This is critical for fonts that use
+**contextual alternates** (same glyph count, different glyph IDs) rather
+than true ligature substitutions.
 
-### Phase E — Edge Cases
+Within the rendering branch, two sub-paths exist:
 
-- Cursor at ligature boundary: per-cell colour works automatically
-- Selection spanning part of a ligature: per-cell colour works automatically
-- ZWNJ/ZWJ: `cosmic-text` handles these; `might_ligate` requires ASCII punctuation
-- Wide chars (CJK/emoji): `detect_run_end` breaks at spacer cells
-- Copy/paste: uses grid characters, not shaped glyphs → no changes needed
-- Bold/italic styling: deferred (not wired through shaping yet)
+**Multi-cell glyphs** (`num_cells > 1` — true ligatures):  
+Strip-based UV. The glyph's atlas texture is sliced horizontally, with each
+covering cell showing one `cell_width`-wide strip.  UV coordinates for each
+strip are adjusted for the glyph's bearing_x offset.
 
----
+**Single-cell glyphs** (`num_cells == 1` — contextual alternates or regular
+glyphs):  
+Full-atlas-rect UV. The entire glyph bitmap is used as the texture source,
+and the quad is positioned at `cell_col × cell_width + bearing_x`.  Cell
+boundary clipping (via ratio-based UV adjustment) trims any overflow.
 
-## Why Ligatures Don't Work
+### Negative bearing handling
 
-### Problem 1: cosmic-text word-splitting (cosmic-text#378)
+Some ligature mechanisms (notably JetBrainsMono's `calt`) produce glyphs with
+a **negative left-side bearing** (lsb < 0).  For example, `hyphen_greater.liga`
+has lsb = −515 EM units, meaning its ink starts 515 units **left** of the
+glyph origin.  The preceding cell (glyph SPC) is designed to be empty, and
+the negative-bearing glyph visually merges with the empty cell to create the
+`→` appearance.
 
-cosmic-text splits text into "words" at **Unicode line-break opportunities**
-before passing each word to harfbuzz.  For a prompt like `C:\Users\Eslzzyl>=`,
-the `>=` may be split across word boundaries, so harfbuzz only sees `>` and `=`
-as separate words and never applies the ligature substitution.
-
-A **ligature probe** (PR [#452](https://github.com/pop-os/cosmic-text/pull/452))
-was added in cosmic-text 0.17 to detect potential ligatures and prevent those
-specific line breaks, but it is incomplete — many ligatures still go undetected.
-
-**Status:** Upstream issue, no fix available in cosmic-text 0.19.x.
-The proper fix would be to shape the *entire span* as a unit then reshape
-at line-break boundaries (see issue comments for the proposed architecture).
-
-### Problem 2: Visual divergence between `Shaping::Advanced` and `Shaping::Basic`
-
-The per-char path (`ensure_glyph` → `rasterize_glyph`) uses `Shaping::Basic`
-for ASCII characters (fast path), while the run-based path
-(`shape_and_rasterize_run`) uses `Shaping::Advanced` (required for ligatures).
-These produce **different swash `CacheKey` values** → different rasterisation →
-different bitmap dimensions/bearing → visible "shadow" or misalignment when
-both paths render adjacent cells.
-
-Attempted fix: pass `FontFeatures` and use `Shaping::Advanced` in both paths.
-This made the glyphs consistent but still doesn't activate ligatures (Problem 1).
+The renderer:
+1. **Positions** the glyph at `cell_col × cw + bearing_x` — quad extends left
+   into the previous cell.
+2. **Does not clip** the left side when `bearing_x < 0`.
+3. Uses the **full atlas rect** as UV source (for single-cell glyphs), so no
+   ink is lost to strip boundaries.
 
 ---
 
-## Known Performance Issues
+## Interaction with per-char path
+
+The per-char fallback (`ensure_glyph` → `rasterize_glyph`) is used when:
+- Ligatures are disabled in config.
+- `might_ligate()` returns false (no ASCII punctuation in the run).
+- `shape_and_rasterize_run` fails.
+
+Both paths use swash rasterisation with the same format (`Format::Subpixel`),
+so glyph bitmaps are consistent regardless of which path produces them.
+The per-char path uses `Shaping::Basic` for ASCII (fast path) and
+`Shaping::Advanced` for non-ASCII (complex-script fallback).  The run-based
+path always uses `Shaping::Advanced`.
+
+---
+
+## Performance
 
 | Issue | Cause | Impact |
 |-------|-------|--------|
-| **Double atlas allocation on first frame** | `shape_and_rasterize_run` rasterizes into `run_cache`, per-char path re-rasterizes same chars into `glyph_cache` | ~2× atlas fill rate until `grow_atlas()` clears both caches |
-| **`has_new_glyphs` not propagated** | Ligature branch rasterizes new glyphs but doesn't set `has_new_glyphs = true` | Atlas data may not reach GPU after ligature-only allocations |
-| **`might_ligate` is ASCII-punctuation based** | Triggers the shaping codepath for any run containing `:`, `.`, `\`, etc. | Unnecessary Buffer creation + harfbuzz call for every file path |
+| **`might_ligate` triggers on any ASCII punctuation** | Returns `true` if any adjacent pair are punctuation.  File paths like `C:\Users\name\project` match on `:\`, `\U`, `\n`, etc. | Every such run gets a full harfbuzz shape call per frame.  `run_cache` helps but cache hit rate is low during scrolling. |
+| **No short-circuit for unchanged glyphs** | When shaping produces the same glyphs as the default per-char path (no ligature substitution occurred), the result is still used.  There is no fast-path back to per-char for runs that don't actually ligate. | Unnecessary Buffer creation + shaping for runs like `123`, `abc\ndef`. |
+| **Double atlas rasterisation** | `shape_and_rasterize_run` stores glyphs in `run_cache`.  If the same glyph is later requested via `ensure_glyph` (per-char path), it is rasterised again into `glyph_cache`. | Atlas space used twice for the same bitmap until `grow_atlas()` clears both caches. |
+
+### Possible improvements
+
+- Narrow `might_ligate` to a fixed set of common programming ligatures
+  (`->`, `>=`, `!=`, `::`, `//`, `||`, `&&`, etc.) instead of all punctuation.
+- After shaping, compare glyphs against the per-char baseline; if identical,
+  skip the shaped result and fall through to per-char.
+- Share rasterisation between `run_cache` and `glyph_cache`.
 
 ---
 
-## How to Fix (Future Work)
+## Known limitations
 
-### Fix ligature detection (upstream or workaround)
-
-The only reliable fix for Problem 1 is to shape the **entire span** as one
-harfbuzz call, then re-shape grapheme clusters that cross line-break boundaries.
-This is tracked in [cosmic-text#378](https://github.com/pop-os/cosmic-text/issues/378).
-
-Until then, ligatures will not render regardless of what this project's code does.
-
-### Revert to per-char path for visual correctness
-
-If the strip-splitting codepath continues to cause visual artifacts, the ligature
-branch should be disabled at compile time or gated behind a config flag that
-defaults to `false`.  The `detect_run_end` improvements (wide-char break, spacer
-handling) should remain enabled as they fix CJK rendering independent of ligatures.
+| Issue | Cause |
+|-------|-------|
+| **Run detection is ASCII-only** | `might_ligate` only checks ASCII punctuation pairs. Non-ASCII ligature sequences (e.g. Arabic) will fall through to per-char. |
+| **`\` triggers shaping** | Backslash is ASCII punctuation, so file paths like `C:\Users\` trigger `shape_and_rasterize_run` unnecessarily. |
+| **Cursor on ligature** | When the cursor is on a cell covered by a ligature, the ligature glyph is still used — the cursor colour is applied per-cell via the loop, but the glyph shape does not change. |
+| **Bold/italic ligatures** | Styling variants are not yet wired through the shaping path. |
 
 ---
 
-## Risk Register
+## Test module
 
-| Risk | Mitigation |
-|------|-----------|
-| UV mapping off-by-one → visible seams between strips | Use `0.5`-pixel inset (existing pattern in `GLYPH_CLIP.md`) |
-| Ligature glyph wider than `num_cells * cell_width` → overflow into next cell | Existing clipping handles this per-strip |
-| Font with no ligature rules behaves differently under `Shaping::Advanced` | `Shaping::Advanced` falls back to basic when no OpenType features match |
-| First frame with many unique ligatures causes atlas growth + GPU upload spike | Run cache (`run_cache`) prevents re-shaping |
-| `cosmic-text` font fallback returns glyphs from different fonts in same run | `rasterize_swash` handles per-glyph `font_id` |
+A `#[cfg(test)]` module in `crates/zenterm-glyph/src/lib.rs` verifies ligature
+shaping with JetBrainsMono Nerd Font.  It shapes each test case (`->`, `>=`,
+`!=`, …) with and without font features, and reports whether the glyph count
+differs from the character count (true ligature) or stays the same (contextual
+alternate).

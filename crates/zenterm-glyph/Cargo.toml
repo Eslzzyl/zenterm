@@ -10,3 +10,6 @@ etagere = "0.3"
 swash = "0.2"
 zeno = "0.3"
 log = "0.4"
+
+[dev-dependencies]
+fontdb = "0.23"

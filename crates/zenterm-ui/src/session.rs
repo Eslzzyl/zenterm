@@ -966,7 +966,7 @@ impl TerminalSession {
             // Once we find that a run has no actual multi-cell ligature
             // glyphs, we skip re-checking subsequent cells of the same
             // run to avoid redundant shaping + atlas allocations.
-            let mut last_checked_run_end: usize = 0;
+            let last_checked_run_end: usize = 0;
             while col < cols {
                 let cell = match grid.cell(row, col) {
                     Some(c) => c,
@@ -1052,30 +1052,16 @@ impl TerminalSession {
                                 if atlas_modified {
                                     has_new_glyphs = true;
                                 }
-                                // Only use the ligature branch when there are
-                                // actual multi-cell ligature glyphs.  Runs
-                                // without real ligatures (all num_cells == 1)
-                                // fall through to the per-char path, which
-                                // renders identically to the original code.
-                                let has_ligature =
-                                    shaped.iter().any(|sg| sg.num_cells > 1);
-                                if !has_ligature {
-                                    log::debug!(
-                                        "ligature no-op: row={row} run={run_start}..{run_end} \
-                                         no multi-cell glyphs",
-                                    );
-                                    // Remember that this run has no actual
-                                    // ligatures so subsequent cells don't
-                                    // re-enter the branch.
-                                    last_checked_run_end = run_end;
-                                } else {                                    log::debug!(
-                                        "ligature OK: row={row} run={run_start}..{run_end} \
-                                         glyphs={} -> SKIP per-char path",
-                                        shaped.len(),
-                                    );
-                                    let mut strip_col = run_start;
 
-                                    for sg in &shaped {
+                                // Use the shaped run result whenever shaping
+                                // succeeds.  This covers both true ligatures
+                                // (num_cells > 1) and contextual alternates
+                                // (same glyph count, different glyphs, e.g.
+                                // JetBrainsMono calt).  The per-char path is
+                                // only a fallback for when shaping fails.
+                                let mut strip_col = run_start;
+
+                                for sg in &shaped {
                                         let cell_base = run_start + sg.char_range.start;
 
                                         // Advance past any gap between shaped glyphs
@@ -1181,26 +1167,44 @@ impl TerminalSession {
                                             // ── Pass 2: glyph strip ──
                                             let atlas_rect = &sg.entry.atlas_rect;
                                             let a_left = atlas_rect.min.x as f32;
+                                            let a_right = atlas_rect.max.x as f32;
                                             let a_top = atlas_rect.min.y as f32;
                                             let a_bot = atlas_rect.max.y as f32;
 
-                                            // Strip boundaries in pixels, relative to the
-                                            // glyph origin.
-                                            let strip_left = cell_offset as f32 * cw;
-                                            let strip_right = (cell_offset + 1) as f32 * cw;
-                                            // Clamp strip to glyph advance so we never
-                                            // sample beyond the glyph's right edge.
-                                            let strip_right =
-                                                strip_right.min(sg.entry.advance);
+                                            // For multi-cell glyphs (true ligatures),
+                                            // use strip-based UV: each cell shows a
+                                            // horizontal slice of the glyph texture.
+                                            // For single-cell glyphs (contextual
+                                            // alternates or regular glyphs), use the
+                                            // full atlas rect with clip-by-ratio,
+                                            // like the per-char path.
+                                            let (mut u_min, mut u_max, strip_w);
+                                            if actual_num_cells > 1 {
+                                                // Strip boundaries in pixels, relative
+                                                // to the glyph origin.
+                                                let strip_left = cell_offset as f32 * cw;
+                                                let mut strip_right =
+                                                    (cell_offset + 1) as f32 * cw;
+                                                strip_right =
+                                                    strip_right.min(sg.entry.advance);
+                                                let sw = strip_right - strip_left;
+                                                // UV: a horizontal slice of the atlas.
+                                                let origin_to_bitmap =
+                                                    (-sg.entry.bearing_x).max(0.0);
+                                                u_min = (a_left + 0.5
+                                                    + strip_left + origin_to_bitmap)
+                                                    / tex_size;
+                                                u_max = (a_left + 0.5
+                                                    + strip_right + origin_to_bitmap)
+                                                    / tex_size;
+                                                strip_w = sw;
+                                            } else {
+                                                // Single-cell glyph: full atlas rect.
+                                                strip_w = (a_right - a_left) as f32;
+                                                u_min = (a_left + 0.5) / tex_size;
+                                                u_max = (a_right - 0.5) / tex_size;
+                                            };
 
-                                            let strip_w = strip_right - strip_left;
-
-                                            // UV coordinates for this strip: a horizontal
-                                            // slice of the glyph's atlas rectangle.
-                                            let mut u_min =
-                                                (a_left + 0.5 + strip_left) / tex_size;
-                                            let mut u_max =
-                                                (a_left + 0.5 + strip_right) / tex_size;
                                             let mut v_min =
                                                 (a_top + 0.5) / tex_size;
                                             let mut v_max =
@@ -1250,8 +1254,19 @@ impl TerminalSession {
                                             }
 
                                             // ── Horizontal clip (GLYPH_CLIP.md) ──
+                                            // Allow glyphs with negative bearing_x
+                                            // to extend into the previous cell.  This
+                                            // is critical for contextual-alternate
+                                            // ligatures (e.g. JetBrainsMono calt) where
+                                            // the right glyph has a negative left side
+                                            // bearing that visually merges with the
+                                            // preceding (blank) glyph.
                                             let glyph_right = glyph_x_px + scaled_w;
-                                            let clipped_left = glyph_x_px.max(cell_left);
+                                            let clipped_left = if gox >= 0.0 {
+                                                glyph_x_px.max(cell_left)
+                                            } else {
+                                                glyph_x_px
+                                            };
                                             let clipped_right = glyph_right.min(cell_right);
                                             let clipped_w =
                                                 (clipped_right - clipped_left).max(0.0);
@@ -1351,7 +1366,6 @@ impl TerminalSession {
 
                                     col = run_end;
                                     continue;
-                                }
                             }
                             Err(e) => {
                                 log::warn!(
