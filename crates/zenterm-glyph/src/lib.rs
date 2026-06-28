@@ -6,7 +6,7 @@
 //! values for LCD subpixel rendering.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cosmic_text::{
     Attrs, Buffer, CacheKeyFlags, Family, FeatureTag, FontFeatures, FontSystem, Metrics, Shaping,
@@ -163,6 +163,10 @@ pub struct GlyphAtlas {
     /// Currently unused — populated only when ligature shaping is enabled.
     /// See [`Self::shape_and_rasterize_run`].
     run_cache: HashMap<RunCacheKey, Vec<ShapedGlyph>>,
+    /// Negative cache: runs that were shaped with ligature features but
+    /// produced no actual substitution (identical to per-char baseline).
+    /// Subsequent calls skip shaping entirely and fall through to per-char.
+    no_effect_cache: HashSet<RunCacheKey>,
     /// Swash scale context (replaces cosmic-text's `SwashCache`).
     swash_ctx: ScaleContext,
     /// Cached cell width/height in pixels, set by [`cell_size()`](Self::cell_size).
@@ -256,6 +260,7 @@ impl GlyphAtlas {
             metrics,
             glyph_cache: HashMap::new(),
             run_cache: HashMap::new(),
+            no_effect_cache: HashSet::new(),
             swash_ctx: ScaleContext::new(),
             cell_width: 0.0,
             cell_height: 0.0,
@@ -296,6 +301,31 @@ impl GlyphAtlas {
         Ok((self.glyph_cache.get(&key).unwrap(), is_new))
     }
 
+    /// Shape text with basic features (no ligatures) and return glyph IDs.
+    ///
+    /// This is a lightweight shaping — no layout, no rasterization, no atlas
+    /// allocation.  Used as a baseline to detect whether ligature features
+    /// actually changed any glyphs.
+    fn baseline_glyph_ids(&mut self, text: &str) -> Vec<u16> {
+        let mut buf = Buffer::new(&mut self.font_system, self.metrics);
+        buf.set_size(Some(self.font_size), None);
+        buf.set_wrap(Wrap::None);
+        let attrs = Attrs::new().family(Family::Name(&self.font_family));
+        buf.set_text(text, &attrs, Shaping::Basic, None);
+        buf.shape_until_scroll(&mut self.font_system, true);
+        buf.lines[0]
+            .shape_opt()
+            .map(|sl| {
+                sl.spans
+                    .iter()
+                    .flat_map(|s| s.words.iter())
+                    .flat_map(|w| w.glyphs.iter())
+                    .map(|g| g.glyph_id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Shape and rasterise a run of consecutive characters.
     ///
     /// A "run" is a group of characters with the same visual style
@@ -330,11 +360,19 @@ impl GlyphAtlas {
     ///   (`true` = cache miss, new glyphs rasterised; `false` = cache hit,
     ///   no atlas change).  Callers should use this to decide whether to
     ///   upload the atlas texture to the GPU.
+    /// - A `bool` indicating whether the shaping produced a meaningful
+    ///   change from the per-char baseline (`true` = ligature or contextual
+    ///   alternate occurred; `false` = output is identical to per-char).
+    ///   When `false`, callers may discard the result and use the per-char
+    ///   path instead, avoiding double atlas allocation.
     ///
     /// # Errors
     ///
     /// Atlas allocation failures propagate up.
-    pub fn shape_and_rasterize_run(&mut self, text: &str) -> Result<(Vec<ShapedGlyph>, bool)> {
+    pub fn shape_and_rasterize_run(
+        &mut self,
+        text: &str,
+    ) -> Result<(Vec<ShapedGlyph>, bool, bool)> {
         // ── Cache lookup ──────────────────────────────────────────────
         let key = RunCacheKey {
             text: text.to_string(),
@@ -343,7 +381,13 @@ impl GlyphAtlas {
 
         // Check the run cache first.
         if let Some(cached) = self.run_cache.get(&key) {
-            return Ok((cached.clone(), false));
+            return Ok((cached.clone(), false, true));
+        }
+
+        // Check the negative cache: if this run was previously shaped and
+        // found to have no substitution, skip shaping entirely.
+        if self.no_effect_cache.contains(&key) {
+            return Ok((Vec::new(), false, false));
         }
 
         // ── Shape the whole run via cosmic-text Buffer ───────────────
@@ -433,6 +477,26 @@ impl GlyphAtlas {
             self.font_family,
         );
 
+        // ── Detect whether substitution actually occurred ──────────
+        // If all glyphs are single-cell and the count matches, the
+        // result may still differ from per-char (contextual alternates).
+        // Use a lightweight baseline shaping to compare glyph IDs.
+        let all_single_cell = all_glyphs.iter().all(|g| (g.end - g.start) == 1);
+        let count_matches = all_glyphs.len() == text.chars().count();
+        let had_effect = if all_single_cell && count_matches && self.ligatures_enabled {
+            // Ambiguous: could be contextual alternates or no substitution.
+            // Compare glyph IDs against the per-char baseline.
+            let baseline_ids = self.baseline_glyph_ids(text);
+            let shaped_ids: Vec<u16> = all_glyphs.iter().map(|g| g.glyph_id).collect();
+            shaped_ids != baseline_ids
+        } else {
+            // Either there's a multi-cell glyph (true ligature) or glyph
+            // count differs from char count (ligature merged or expanded).
+            // Either way, something changed, so it's an effective ligature.
+            // Also, if ligatures are disabled globally, there's no effect.
+            self.ligatures_enabled
+        };
+
         // ── Rasterise each layout glyph into the atlas ──────────────
         let mut shaped: Vec<ShapedGlyph> = Vec::with_capacity(all_glyphs.len());
         let mut run_x_offset: f32 = 0.0;
@@ -483,9 +547,15 @@ impl GlyphAtlas {
             run_x_offset += advance;
         }
 
-        // Cache and return.
-        self.run_cache.insert(key, shaped.clone());
-        Ok((shaped, true))
+        if had_effect {
+            // Only cache runs that actually produced a ligature/substitution.
+            self.run_cache.insert(key, shaped.clone());
+        } else {
+            // Cache the "no effect" result so future calls skip shaping.
+            self.no_effect_cache.insert(key);
+        }
+
+        Ok((shaped, true, had_effect))
     }
 
     /// Rasterize a physical glyph (identified by [`cosmic_text::CacheKey`])
@@ -838,6 +908,7 @@ impl GlyphAtlas {
         self.texture_size = new_size;
         self.glyph_cache.clear();
         self.run_cache.clear();
+        self.no_effect_cache.clear();
         Ok(())
     }
 

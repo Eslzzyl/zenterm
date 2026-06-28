@@ -280,23 +280,57 @@ fn emit_deco_for_cell(
     }
 }
 
+/// Known programming ligature patterns.
+///
+/// Covers Fira Code, JetBrainsMono, Cascadia Code, Iosevka, etc.
+/// Ordered roughly by likelihood to improve short-circuiting.
+const LIGATURE_PATTERNS: &[&str] = &[
+    // Arrows (most common)
+    "->", "=>", "<-", "<=", "->>", "-->>", "-->",
+    "<--", "<<--", "->-", ">-", "<->", "<==>", "<==",
+    // Comparison (very common)
+    "==", "!=", "===", "!==", ">=", "<=", ">>=", "<<=",
+    // Logical
+    "||", "&&", "^^",
+    // Assignment / lambda
+    ":=", "::=", "=>",
+    // Member access / range
+    "::", "..", "...", "..=", ".=",
+    // Pipe / compose
+    "|>", "<|", "<|>",
+    // Comments / preprocessor
+    "//", "///", "//!", "/*", "*/",
+    // Math / increment
+    "+=", "-=", "*=", "/=", "**", "++", "--",
+    // Bitwise / compound
+    "&=", "|=", "^=", "%=",
+    // Other
+    "#(", "#{", "#[", "#![", "#!",
+    "~=", "!~",
+    ".<", ".>",
+];
+
 /// Quick heuristic: does this run potentially contain a ligature?
 ///
-/// Ligatures in programming fonts are always sequences of 2+ consecutive
-/// punctuation characters (e.g. `->`, `=>`, `!=`, `==`).  A single
-/// punctuation character surrounded by non-punctuation cannot form a
-/// ligature, so we skip the expensive shaping path for those runs.
+/// Checks against a fixed set of known programming ligature patterns,
+/// which is far more precise than the old "any consecutive ASCII
+/// punctuation pair" check that would false-positive on things like
+/// `C:\Users` (matching `:\`) or `\n`.
 fn might_ligate(text: &str) -> bool {
     if text.len() < 2 {
         return false;
     }
+
+    // Fast rejection: must contain at least one ligature-seeding character.
     let bytes = text.as_bytes();
-    for window in bytes.windows(2) {
-        if window[0].is_ascii_punctuation() && window[1].is_ascii_punctuation() {
-            return true;
-        }
+    if !bytes.iter().any(|b| {
+        matches!(b, b'-' | b'=' | b'!' | b'>' | b'<' | b':' | b'|'
+                    | b'&' | b'+' | b'#' | b'/' | b'*' | b'~' | b'^' | b'%')
+    }) {
+        return false;
     }
-    false
+
+    LIGATURE_PATTERNS.iter().any(|pat| text.contains(pat))
 }
 
 /// Extract the concatenated character text for a run of cells.
@@ -1045,7 +1079,7 @@ impl TerminalSession {
                              text={run_text:?}",
                         );
                         match atlas.shape_and_rasterize_run(&run_text) {
-                            Ok((shaped, atlas_modified)) => {
+                            Ok((shaped, atlas_modified, had_effect)) => {
                                 // Atlas was modified (new glyphs may have
                                 // been rasterised).  Mark dirty so
                                 // sync_to_gpu() uploads the updated data.
@@ -1053,20 +1087,21 @@ impl TerminalSession {
                                     has_new_glyphs = true;
                                 }
 
-                                // ── Cursor-on-ligature: break ligatures ──
-                                // When the cursor is on a cell within a run
-                                // that was shaped with ligature features, fall
-                                // back to per-char rendering so the individual
-                                // character under the cursor is displayed
-                                // instead of a combined/replaced glyph.
+                                // ── Fast-path: skip if no effect ──
+                                // When shaping produced no ligature/substitution
+                                // (identical to per-char baseline), fall through
+                                // to per-char to avoid double atlas allocation.
+                                // Also break ligatures when cursor is on any
+                                // cell of this run.
                                 let cursor_in_run = cursor_visible
                                     && row == cursor_row
                                     && cursor_col >= run_start
                                     && cursor_col < run_end;
 
-                                if cursor_in_run {
-                                    // Mark this run so subsequent per-char iterations
-                                    // skip re-entering the ligature branch.
+                                if cursor_in_run || !had_effect {
+                                    // Mark this run so subsequent per-char
+                                    // iterations skip re-entering the ligature
+                                    // branch (avoids redundant shaping).
                                     last_checked_run_end = run_end;
                                 } else {
                                     // ── Use the shaped run result ──
