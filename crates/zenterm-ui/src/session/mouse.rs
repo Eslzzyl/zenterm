@@ -1,0 +1,362 @@
+//! Per-tab mouse handling + context menu for [`TerminalSession`].
+
+use alacritty_terminal::term::TermMode;
+
+use super::types::{TerminalSession, SCROLLBAR_WIDTH, SCROLLBAR_MIN_THUMB_HEIGHT};
+
+impl TerminalSession {
+    /// Handle mouse events for this session's cell rectangle.
+    ///
+    /// Behaviour:
+    ///
+    /// * If the terminal has `SGR_MOUSE` enabled, every pointer event is
+    ///   encoded as an SGR escape sequence and written to the PTY.
+    /// * Otherwise, click-drag performs text selection; single click
+    ///   clears the selection.
+    pub fn handle_mouse(
+        &mut self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        size_px: [f32; 2],
+        response: &egui::Response,
+    ) {
+        let mode = self.terminal.mode();
+        let mouse_reporting = mode.contains(TermMode::SGR_MOUSE)
+            && mode.intersects(
+                TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION,
+            );
+
+        let cw = self.cell_width;
+        let ch = self.cell_height;
+        let ppp = ui.ctx().pixels_per_point();
+        let rows = self.terminal.size().rows as usize;
+        let cols = self.terminal.size().cols as usize;
+        let _ = size_px;
+
+        // ── Scrollbar geometry ───────────────────────────────────────────
+        let sb_rect = egui::Rect::from_min_max(
+            egui::pos2(rect.right() - SCROLLBAR_WIDTH, rect.top()),
+            egui::pos2(rect.right(), rect.bottom()),
+        );
+        let cell_area = egui::Rect::from_min_max(
+            rect.min,
+            egui::pos2(rect.right() - SCROLLBAR_WIDTH, rect.bottom()),
+        );
+
+        // ── Scrollbar: click / drag / track-click ──────────────────────
+        if let Some(pos) = response.interact_pointer_pos() {
+            if sb_rect.contains(pos) {
+                // ── Drag start on the scrollbar ──
+                if response.drag_started() {
+                    self.scrollbar_dragging = true;
+                    self.scrollbar_drag_start_y = pos.y;
+                    self.scrollbar_drag_start_offset = self.terminal.display_offset();
+                }
+                // ── Track-click (above/below thumb) → page up/down ──
+                if response.clicked() {
+                    let hist = self.terminal.history_size();
+                    if hist > 0 {
+                        let (thumb, _) =
+                            Self::scrollbar_thumb_rect(sb_rect, self.terminal.size().rows as usize, hist, self.terminal.display_offset());
+                        if pos.y < thumb.top() {
+                            self.terminal.scroll_display(rows as i32);
+                        } else if pos.y > thumb.bottom() {
+                            self.terminal.scroll_display(-(rows as i32));
+                        }
+                        self.terminal_dirty = true;
+                    }
+                }
+                return; // scrollbar area: don't process cell events
+            }
+        }
+
+        // ── Scrollbar: drag thumb update (tracked even if pointer left the bar) ──
+        if self.scrollbar_dragging {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let hist = self.terminal.history_size() as f32;
+                if hist > 0.0 {
+                    let dy = pos.y - self.scrollbar_drag_start_y;
+                    let ratio_delta = dy / sb_rect.height();
+                    let offset_delta = (ratio_delta * hist) as i32;
+                    let target = (self.scrollbar_drag_start_offset as i32 - offset_delta)
+                        .clamp(0, hist as i32);
+                    let cur = self.terminal.display_offset() as i32;
+                    if target != cur {
+                        self.terminal.scroll_display(target - cur);
+                        self.terminal_dirty = true;
+                    }
+                }
+            }
+            if response.drag_stopped() {
+                self.scrollbar_dragging = false;
+            }
+        }
+
+        // ── Pointer → cell coordinate helpers ──────────────────────────
+        // NOTE: cw/ch are in physical pixels, but pos is in logical points.
+        // Multiply by ppp to convert before dividing.
+        let pixel_to_cell = |pos: egui::Pos2| -> Option<(usize, usize)> {
+            let col = ((pos.x - cell_area.left()) * ppp / cw) as usize;
+            let row = ((pos.y - cell_area.top()) * ppp / ch) as usize;
+            if col < cols && row < rows {
+                Some((row, col))
+            } else {
+                None
+            }
+        };
+
+        // Clamped version: returns the nearest cell even when outside the area.
+        let pixel_to_cell_clamped = |pos: egui::Pos2| -> (usize, usize) {
+            let col = ((pos.x - cell_area.left()) * ppp / cw).round() as usize;
+            let row = ((pos.y - cell_area.top()) * ppp / ch).round() as usize;
+            (row.min(rows.saturating_sub(1)), col.min(cols.saturating_sub(1)))
+        };
+
+        // ── Drag start / selection ─────────────────────────────────────
+        if response.drag_started() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                if let Some((row, col)) = pixel_to_cell(pos) {
+                    if mouse_reporting {
+                        self.send_sgr_mouse(row, col, 0, false);
+                    } else {
+                        self.terminal.clear_selection();
+                        self.terminal.start_selection(row, col);
+                        self.selecting = true;
+                        self.terminal_dirty = true;
+                    }
+                }
+            }
+        }
+
+        // ── Drag update (selection or edge-scroll) ─────────────────────
+        //
+        // Use the global pointer state to detect drags that continue outside
+        // the terminal widget (edge-scroll).  `response.dragged()` may return
+        // false once the pointer leaves the widget rect.
+        let is_dragging = response.dragged()
+            || ui.ctx().input(|i| i.pointer.is_decidedly_dragging());
+        if is_dragging {
+            let pointer_pos = response.interact_pointer_pos()
+                .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos()));
+            if mouse_reporting {
+                if let Some(pos) = pointer_pos {
+                    if let Some((row, col)) = pixel_to_cell(pos) {
+                        self.send_sgr_mouse(row, col, 32, false);
+                    }
+                }
+            } else if self.selecting {
+                if let Some(pos) = pointer_pos {
+                    // Normal: pointer inside the cell grid → update selection.
+                    if let Some((row, col)) = pixel_to_cell(pos) {
+                        self.terminal.update_selection(row, col);
+                        self.terminal_dirty = true;
+                    } else {
+                        // Edge-scroll: pointer is outside the cell grid.
+                        let rel_y = pos.y - cell_area.top();
+                        let clamped = pixel_to_cell_clamped(pos);
+                        if rel_y < 0.0 {
+                            // Above top → scroll up.
+                            let dist = -rel_y;
+                            let lines = (dist * ppp / ch).ceil().max(1.0) as i32;
+                            self.terminal.scroll_display(lines);
+                            self.terminal.update_selection(0, clamped.1);
+                        } else {
+                            // Below bottom → scroll down.
+                            let dist = pos.y - cell_area.bottom();
+                            let lines = (dist * ppp / ch).ceil().max(1.0) as i32;
+                            self.terminal.scroll_display(-lines);
+                            self.terminal
+                                .update_selection(rows.saturating_sub(1), clamped.1);
+                        }
+                        self.terminal_dirty = true;
+                    }
+                }
+            }
+        }
+
+        // ── Right-click → context menu, or SGR right-click ────────────
+        if response.secondary_clicked() {
+            if mouse_reporting {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    if let Some((row, col)) = pixel_to_cell(pos) {
+                        self.send_sgr_mouse(row, col, 2, false);
+                    }
+                }
+            }
+        }
+
+        // ── Middle-click → paste from selection (X11 convention) ──────
+        if response.middle_clicked() {
+            if mouse_reporting {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    if let Some((row, col)) = pixel_to_cell(pos) {
+                        self.send_sgr_mouse(row, col, 1, false);
+                    }
+                }
+            } else {
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    if let Ok(text) = clipboard.get_text() {
+                        if !text.is_empty() {
+                            if let Err(e) = self.pty.write(text.as_bytes()) {
+                                log::error!("PTY paste error: {e}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Mouse wheel: consume events to prevent egui scrolling ──────
+        if response.hovered() || self.scrollbar_dragging {
+            let total_scroll: f32 = ui.ctx().input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::MouseWheel { delta, unit, .. } => {
+                            let y = delta.y;
+                            match unit {
+                                egui::MouseWheelUnit::Line => Some(y),
+                                egui::MouseWheelUnit::Point => Some(y * 4.0 / ch),
+                                egui::MouseWheelUnit::Page => Some(y * rows as f32),
+                            }
+                        }
+                        _ => None,
+                    })
+                    .sum()
+            });
+            if total_scroll.abs() > 0.0 {
+                ui.ctx()
+                    .input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::MouseWheel { .. })));
+                if mouse_reporting {
+                    let btn = if total_scroll > 0.0 { 64 } else { 65 };
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        if let Some((row, col)) = pixel_to_cell(pos) {
+                            self.send_sgr_mouse(row, col, btn, true);
+                        }
+                    }
+                } else {
+                    // Do not scroll while an alternate-screen app is running
+                    // (e.g. vim, less — the app handles its own scrolling).
+                    if !mode.contains(TermMode::ALT_SCREEN) {
+                        let lines = total_scroll.round() as i32;
+                        if lines != 0 {
+                            self.terminal.scroll_display(lines);
+                            self.terminal_dirty = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Drag stop ──────────────────────────────────────────────────
+        let drag_ended = response.drag_stopped()
+            || (self.selecting && !ui.ctx().input(|i| i.pointer.is_decidedly_dragging()));
+        if drag_ended {
+            if mouse_reporting {
+                if let Some(pos) = response.interact_pointer_pos()
+                    .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos()))
+                {
+                    if let Some((row, col)) = pixel_to_cell(pos) {
+                        self.send_sgr_mouse(row, col, 0, true);
+                    }
+                }
+            } else {
+                self.selecting = false;
+                self.terminal_dirty = true;
+            }
+        }
+
+        // ── Single click clears selection ──────────────────────────────
+        if response.clicked() && !self.selecting && !mouse_reporting {
+            self.terminal.clear_selection();
+            self.terminal_dirty = true;
+        }
+    }
+
+    /// Compute the scrollbar thumb rectangle.
+    fn scrollbar_thumb_rect(
+        track: egui::Rect,
+        screen_lines: usize,
+        history_size: usize,
+        display_offset: usize,
+    ) -> (egui::Rect, f32) {
+        let total = (history_size + screen_lines).max(1);
+        let thumb_ratio = screen_lines as f32 / total as f32;
+        let thumb_h = (track.height() * thumb_ratio).max(SCROLLBAR_MIN_THUMB_HEIGHT);
+        let avail = track.height() - thumb_h;
+        let pos_ratio = if history_size > 0 {
+            (history_size - display_offset) as f32 / history_size as f32
+        } else {
+            1.0
+        };
+        let thumb_y = track.top() + avail * pos_ratio;
+        let thumb = egui::Rect::from_min_max(
+            egui::pos2(track.left(), thumb_y),
+            egui::pos2(track.right(), (thumb_y + thumb_h).min(track.bottom())),
+        );
+        (thumb, thumb_h)
+    }
+
+    /// Render a custom overlay scrollbar on the right edge of the terminal area.
+    pub fn render_scrollbar(&mut self, ui: &egui::Ui, rect: egui::Rect) {
+        let history = self.terminal.history_size();
+        let screen = self.terminal.size().rows as usize;
+        let total = history + screen;
+        if total == 0 {
+            return;
+        }
+
+        let track = egui::Rect::from_min_max(
+            egui::pos2(rect.right() - SCROLLBAR_WIDTH, rect.top()),
+            egui::pos2(rect.right(), rect.bottom()),
+        );
+
+        let (thumb, _thumb_h) =
+            Self::scrollbar_thumb_rect(track, screen, history, self.terminal.display_offset());
+
+        let active = self.scrollbar_dragging || ui.rect_contains_pointer(track);
+
+        // Track background.
+        ui.painter()
+            .rect_filled(track, 0.0, egui::Color32::from_black_alpha(if active { 40 } else { 15 }));
+
+        // Thumb – only draw when there is actually something to scroll.
+        if screen < total {
+            ui.painter().rect_filled(
+                thumb,
+                4.0,
+                egui::Color32::from_gray(if active { 160 } else { 100 }),
+            );
+        }
+    }
+
+    /// Render the right-click context menu (Copy / Paste).
+    pub fn render_context_menu(
+        &mut self,
+        _ui: &egui::Ui,
+        response: &egui::Response,
+    ) {
+        response.context_menu(|ctx_ui| {
+            if self.terminal.has_selection() {
+                if ctx_ui.button("Copy").clicked() {
+                    if let Some(text) = self.terminal.selected_text() {
+                        ctx_ui.ctx().copy_text(text);
+                    }
+                    ctx_ui.close();
+                }
+            }
+            if ctx_ui.button("Paste").clicked() {
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    if let Ok(text) = clipboard.get_text() {
+                        if !text.is_empty() {
+                            if let Err(e) = self.pty.write(text.as_bytes()) {
+                                log::error!("PTY paste error: {e}");
+                            }
+                        }
+                    }
+                }
+                ctx_ui.close();
+            }
+        });
+    }
+}
