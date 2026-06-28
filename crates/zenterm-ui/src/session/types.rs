@@ -86,6 +86,14 @@ pub struct TerminalSession {
     /// this session.  Guards against repeated emissions across frames.
     pub exit_effect_sent: bool,
 
+    // ── IME preedit (composition) text ────────────────────────────
+    //
+    // When the user is composing text with an IME (e.g. Chinese pinyin),
+    // the preedit string is stored here and rendered directly through
+    // the GPU glyph pipeline at the cursor position, matching the
+    // terminal text style exactly.
+    pub(crate) preedit_text: Option<String>,
+
     // ── Theming ─────────────────────────────────────────────────────
     pub default_bg: egui::Color32,
 

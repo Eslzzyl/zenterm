@@ -99,7 +99,8 @@ impl TerminalSession {
         // self.terminal (one mut, one immut).
         let cursor = self.terminal.cursor();
         let cursor_row = cursor.pos.line;
-        let cursor_col = cursor.pos.column;
+        let cursor_orig_col = cursor.pos.column;
+        // cursor_col is set below once cols is available.
 
         let blink_on = if cursor.style.blinking
             && !matches!(cursor.style.shape, CursorShape::Block)
@@ -123,6 +124,15 @@ impl TerminalSession {
         if rows == 0 || cols == 0 {
             return false;
         }
+
+        // When IME preedit is active, advance the visual cursor to the
+        // end of the composing text so the cursor follows the input.
+        let preedit_advance = self
+            .preedit_text
+            .as_ref()
+            .map(|t| t.chars().count())
+            .unwrap_or(0);
+        let cursor_col = (cursor_orig_col + preedit_advance).min(cols.saturating_sub(1));
 
         let baseline = atlas.cell_baseline_offset();
         let mut bg_instances: Vec<CellInstance> = Vec::with_capacity(rows * cols);
@@ -156,7 +166,25 @@ impl TerminalSession {
                 };
 
                 // ── Per-cell state ────────────────────────────────────
-                let ch_char = cell.c;
+                let mut ch_char = cell.c;
+
+                // IME preedit: override the character at the cursor position
+                // with the preedit (composition) text.  This renders through
+                // the exact same glyph pipeline as normal text, so the style
+                // is identical.  An underline decoration is added below.
+                let is_preedit = self.preedit_text.as_ref().is_some_and(|preedit| {
+                    row == cursor_row
+                        && col >= cursor_orig_col
+                        && col - cursor_orig_col < preedit.chars().count()
+                });
+                if is_preedit {
+                    if let Some(ref preedit) = self.preedit_text {
+                        if let Some(c) = preedit.chars().nth(col - cursor_orig_col) {
+                            ch_char = c;
+                        }
+                    }
+                }
+
                 let is_blank = ch_char == ' ';
                 let is_cursor = cursor_visible && row == cursor_row && col == cursor_col;
                 let is_block_cursor =
@@ -188,7 +216,8 @@ impl TerminalSession {
 
                 let is_hidden = cell.hidden;
                 let has_deco = !matches!(cell.underline_style, zenterm_core::cell::UnderlineStyle::None)
-                    || cell.strikethrough;
+                    || cell.strikethrough
+                    || is_preedit;
 
                 // ── Run boundary detection ────────────────────────────
                 let run_start = col;
@@ -391,6 +420,28 @@ impl TerminalSession {
                     );
                 }
 
+                // ── IME preedit underline ────────────────────────────────
+                // Draw a single-pixel underline under each preedit cell.
+                if is_preedit {
+                    let thickness = 1.0_f32.max((ch * 0.05).round());
+                    let deco_y_px = y_off + row as f32 * ch + baseline + 1.0;
+                    let deco_x_px = x_off + col as f32 * cw;
+                    deco_instances.push(CellInstance {
+                        clip_pos: [
+                            deco_x_px * x_scale - 1.0,
+                            1.0 - deco_y_px * y_scale,
+                        ],
+                        uv_min: [0.0; 2],
+                        uv_max: [0.0; 2],
+                        clip_cell_size: [cw * x_scale, thickness * y_scale],
+                        glyph_size: [0.0; 2],
+                        glyph_offset: [0.0; 2],
+                        fg_color: [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0],
+                        bg_color: [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0],
+                        flags: glyph_type::SOLID,
+                    });
+                }
+
                 col += 1;
             }
         }
@@ -411,7 +462,6 @@ impl TerminalSession {
         buf.extend(&self.cached_glyph);
         buf.extend(&self.cached_deco);
         drop(buf);
-
         // Mark the GPU side as dirty (instance generation bumped by
         // the app after all sessions have appended).
         if has_new_glyphs {

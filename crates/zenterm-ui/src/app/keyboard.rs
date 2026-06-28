@@ -11,6 +11,30 @@ impl ZentermApp {
     pub(crate) fn forward_event_to_active(&mut self, event: &egui::Event) {
         if let Some(id) = self.active_session_id {
             if let Some(session) = self.sessions.get_mut(&id) {
+                // Before PTY mapping, check for IME state events that
+                // update the preedit text but are not sent to the PTY.
+                if let egui::Event::Ime(ime_event) = event {
+                    match ime_event {
+                        egui::ImeEvent::Preedit(text) => {
+                            if text.is_empty() {
+                                session.preedit_text = None;
+                            } else {
+                                session.preedit_text = Some(text.clone());
+                            }
+                            // Force a full re-render so the preedit text is
+                            // drawn through the GPU glyph pipeline (the fast
+                            // path in update_cell_instances skips preedit).
+                            session.terminal_dirty = true;
+                        }
+                        egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled => {
+                            session.preedit_text = None;
+                            session.terminal_dirty = true;
+                        }
+                        egui::ImeEvent::Enabled => {}
+                    }
+                }
+
+                // Map event to PTY bytes (handles Commit, Text, Key, Paste).
                 if let Some(bytes) = zenterm_input::InputMapper::map(event) {
                     if let Err(e) = session.pty.write(&bytes) {
                         log::error!("PTY write error: {e}");

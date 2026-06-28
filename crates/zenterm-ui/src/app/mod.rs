@@ -321,6 +321,49 @@ impl eframe::App for ZentermApp {
             self.ui(ui, frame);
         });
 
+        // 4.5. Enable IME when the terminal has keyboard focus (no egui
+        //      widget focused).  This tells egui-winit → winit to call
+        //      `set_ime_allowed(true)`, which on macOS enables
+        //      `interpretKeyEvents:` in keyDown so the IME (Chinese /
+        //      Japanese / Korean input methods) receives key events.
+        //      On Windows/Linux this enables the platform IME as well.
+        //
+        //      NOTE: egui-winit uses `ime.rect` (not `ime.cursor_rect`)
+        //      for `set_ime_cursor_area`.  We therefore set the rect to
+        //      a small area around the cursor position so the IME
+        //      candidate window appears at the cursor, not at the
+        //      viewport origin.
+        if ctx.memory(|m| m.focused().is_none()) && !self.settings_state.open {
+            if let Some(id) = self.active_session_id {
+                if let Some(session) = self.sessions.get(&id) {
+                    let ppp = ctx.pixels_per_point();
+                    let ox = session.last_vp_origin_px[0] / ppp;
+                    let oy = session.last_vp_origin_px[1] / ppp;
+                    let cursor = session.terminal.cursor();
+
+                    // Position the IME candidate window at the cursor.
+                    // We use a cursor-sized rect so the IME window
+                    // appears anchored to the cursor position.
+                    let cursor_x = ox + cursor.pos.column as f32 * session.cell_width / ppp;
+                    let cursor_y = oy + cursor.pos.line as f32 * session.cell_height / ppp;
+                    let cursor_w = session.cell_width / ppp;
+                    let cursor_h = session.cell_height / ppp;
+
+                    let cursor_rect = egui::Rect::from_min_size(
+                        egui::pos2(cursor_x, cursor_y),
+                        egui::vec2(cursor_w, cursor_h),
+                    );
+
+                    ctx.output_mut(|o| {
+                        o.ime = Some(egui::output::IMEOutput {
+                            rect: cursor_rect,
+                            cursor_rect,
+                        });
+                    });
+                }
+            }
+        }
+
         // 5. Render the settings panel (separate native window).
         if self.settings_state.open {
             self.render_settings_viewport(ctx);

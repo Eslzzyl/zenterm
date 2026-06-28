@@ -93,6 +93,25 @@ impl InputMapper {
                 }
             }
 
+            egui::Event::Ime(ime_event) => {
+                // IME input (e.g. Chinese/Japanese/Korean IME composition).
+                match ime_event {
+                    // When the IME commits final text (user selected a candidate),
+                    // send the UTF-8 bytes to the PTY — same as Text events.
+                    egui::ImeEvent::Commit(text) => {
+                        if text.is_empty() {
+                            None
+                        } else {
+                            Some(text.as_bytes().to_vec())
+                        }
+                    }
+                    // Preedit is intermediate composition state (still selecting
+                    // candidates); do not send to PTY.
+                    // Enabled/Disabled are IME activation state changes; ignored.
+                    _ => None,
+                }
+            }
+
             _ => None,
         }
     }
@@ -172,5 +191,41 @@ mod tests {
             physical_key: None,
         };
         assert_eq!(InputMapper::map(&event), Some(b"\x1b[A".to_vec()));
+    }
+
+    #[test]
+    fn test_ime_commit_chinese() {
+        // IME commits Chinese characters (e.g. user selected "你好")
+        let event = egui::Event::Ime(egui::ImeEvent::Commit("你好".to_string()));
+        assert_eq!(
+            InputMapper::map(&event),
+            Some("你好".as_bytes().to_vec())
+        );
+    }
+
+    #[test]
+    fn test_ime_commit_empty() {
+        // IME commits empty string — should be ignored
+        let event = egui::Event::Ime(egui::ImeEvent::Commit(String::new()));
+        assert_eq!(InputMapper::map(&event), None);
+    }
+
+    #[test]
+    fn test_ime_preedit_ignored() {
+        // IME preedit (still composing) — should NOT be sent to PTY
+        let event = egui::Event::Ime(egui::ImeEvent::Preedit("ni".to_string()));
+        assert_eq!(InputMapper::map(&event), None);
+    }
+
+    #[test]
+    fn test_ime_enabled_ignored() {
+        let event = egui::Event::Ime(egui::ImeEvent::Enabled);
+        assert_eq!(InputMapper::map(&event), None);
+    }
+
+    #[test]
+    fn test_ime_disabled_ignored() {
+        let event = egui::Event::Ime(egui::ImeEvent::Disabled);
+        assert_eq!(InputMapper::map(&event), None);
     }
 }

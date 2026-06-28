@@ -61,6 +61,7 @@ impl TerminalSession {
             cached_glyph: Vec::new(),
             cached_deco: Vec::new(),
             pending_title: None,
+            preedit_text: None,
             scrollbar_dragging: false,
             scrollbar_drag_start_y: 0.0,
             scrollbar_drag_start_offset: 0,
