@@ -966,7 +966,7 @@ impl TerminalSession {
             // Once we find that a run has no actual multi-cell ligature
             // glyphs, we skip re-checking subsequent cells of the same
             // run to avoid redundant shaping + atlas allocations.
-            let last_checked_run_end: usize = 0;
+            let mut last_checked_run_end: usize = 0;
             while col < cols {
                 let cell = match grid.cell(row, col) {
                     Some(c) => c,
@@ -1053,15 +1053,31 @@ impl TerminalSession {
                                     has_new_glyphs = true;
                                 }
 
-                                // Use the shaped run result whenever shaping
-                                // succeeds.  This covers both true ligatures
-                                // (num_cells > 1) and contextual alternates
-                                // (same glyph count, different glyphs, e.g.
-                                // JetBrainsMono calt).  The per-char path is
-                                // only a fallback for when shaping fails.
-                                let mut strip_col = run_start;
+                                // ── Cursor-on-ligature: break ligatures ──
+                                // When the cursor is on a cell within a run
+                                // that was shaped with ligature features, fall
+                                // back to per-char rendering so the individual
+                                // character under the cursor is displayed
+                                // instead of a combined/replaced glyph.
+                                let cursor_in_run = cursor_visible
+                                    && row == cursor_row
+                                    && cursor_col >= run_start
+                                    && cursor_col < run_end;
 
-                                for sg in &shaped {
+                                if cursor_in_run {
+                                    // Mark this run so subsequent per-char iterations
+                                    // skip re-entering the ligature branch.
+                                    last_checked_run_end = run_end;
+                                } else {
+                                    // ── Use the shaped run result ──
+                                    // This covers both true ligatures (num_cells > 1)
+                                    // and contextual alternates (same glyph count,
+                                    // different glyphs, e.g. JetBrainsMono calt).
+                                    // The per-char path is only a fallback for when
+                                    // shaping fails.
+                                    let mut strip_col = run_start;
+
+                                    for sg in &shaped {
                                         let cell_base = run_start + sg.char_range.start;
 
                                         // Advance past any gap between shaped glyphs
@@ -1366,6 +1382,7 @@ impl TerminalSession {
 
                                     col = run_end;
                                     continue;
+                                }
                             }
                             Err(e) => {
                                 log::warn!(
