@@ -1,207 +1,29 @@
-//! High-level terminal wrapper.
+//! Terminal state machine and public API.
 //!
-//! Owns the `alacritty_terminal::Term` + `vte::ansi::Processor` and bridges
-//! bytes from the PTY into grid state.
-//!
-//! The `vte::ansi::Processor` converts raw byte streams into semantic
-//! `Handler` calls on the `Term`, so we do **not** need to implement
-//! `vte::Perform` ourselves.
-//!
-//! # Event handling
-//!
-//! A custom [`Listener`] replaces the default [`VoidListener`] so that
-//! terminal queries (DA, DSR, DECRPM, OSC colour queries, etc.) are
-//! properly answered.  Events from the `Handler` are collected via an
-//! `mpsc` channel during [`Terminal::feed()`]; response bytes are returned
-//! to the caller, and other side effects (title changes, clipboard ops,
-//! bell, exit) are stored for the app to consume via `take_*` methods.
+//! Wraps [`alacritty_terminal::Term`] + [`vte::ansi::Processor`] and provides
+//! methods for feeding bytes, resizing, scrolling, and reading the grid.
 
-use std::fmt;
 use std::sync::{mpsc, Arc};
 
-use alacritty_terminal::event::{Event, EventListener, WindowSize};
+use alacritty_terminal::event::{Event, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Direction, Line, Point};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{ClipboardType, Config as TermConfig, Term, TermDamage, TermMode};
-use alacritty_terminal::vte::ansi::{Color, CursorStyle, NamedColor, Processor, Rgb};
+use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor};
 
 use zenterm_core::cell::{Cell, UnderlineStyle};
 use zenterm_core::color::Rgba;
 use zenterm_core::damage::DamageSet;
 use zenterm_core::position::TermPos;
 use zenterm_core::size::TermSize;
-use zenterm_core::theme::Theme;
 
-// ── Newtype wrapper to implement `Dimensions` for `TermSize` ─────────
-
-struct TermDimensions(TermSize);
-
-impl Dimensions for TermDimensions {
-    fn total_lines(&self) -> usize {
-        self.0.rows as usize
-    }
-
-    fn screen_lines(&self) -> usize {
-        self.0.rows as usize
-    }
-
-    fn columns(&self) -> usize {
-        self.0.cols as usize
-    }
-}
-
-// ── Event listener ──────────────────────────────────────────────────────
-
-/// Collects [`Event`]s from the alacritty `Handler` via an `mpsc` channel.
-///
-/// The channel receiver lives in [`Terminal`] and is drained during
-/// [`Terminal::feed()`] so that response bytes can be written back to the
-/// PTY and other side-effects (title changes, clipboard operations, bell,
-/// exit) can be handled by the application.
-struct Listener {
-    tx: mpsc::Sender<Event>,
-}
-
-impl EventListener for Listener {
-    fn send_event(&self, event: Event) {
-        if self.tx.send(event).is_err() {
-            log::warn!("Terminal event channel closed, dropping event");
-        }
-    }
-}
-
-// ── Colour scheme ───────────────────────────────────────────────────────
-
-/// A resolved colour scheme that maps index-based colours to real RGBA values.
-#[derive(Clone)]
-pub struct ColorScheme {
-    pub colors: Colors,
-    /// Selection background colour.
-    pub selection_bg: Rgba,
-    /// Selection foreground colour.  `None` means keep the cell's fg.
-    pub selection_fg: Option<Rgba>,
-}
-
-impl fmt::Debug for ColorScheme {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ColorScheme").finish_non_exhaustive()
-    }
-}
-
-impl Default for ColorScheme {
-    fn default() -> Self {
-        Self::from_theme(&zenterm_core::theme::THEME_DARK)
-    }
-}
-
-impl ColorScheme {
-    /// Build a colour scheme from a [`Theme`].
-    ///
-    /// Pre-populates the full `Colors` array so that alacritty's named-colour
-    /// resolution has values for every standard slot, avoiding fallback to
-    /// `named_color_default_rgb`.
-    pub fn from_theme(theme: &Theme) -> Self {
-        let mut colors = Colors::default();
-
-        // ANSI normal colours (NamedColor::Black .. NamedColor::White = 0..7).
-        for (i, c) in theme.ansi_normal.iter().enumerate() {
-            colors[i] = Some(rgba_to_rgb(c));
-        }
-        // ANSI bright colours (NamedColor::BrightBlack .. NamedColor::BrightWhite = 8..15).
-        for (i, c) in theme.ansi_bright.iter().enumerate() {
-            colors[8 + i] = Some(rgba_to_rgb(c));
-        }
-        // Foreground / Background / Cursor.
-        colors[NamedColor::Foreground as usize] = Some(rgba_to_rgb(&theme.foreground));
-        colors[NamedColor::Background as usize] = Some(rgba_to_rgb(&theme.background));
-        colors[NamedColor::Cursor as usize] = Some(rgba_to_rgb(&theme.cursor));
-        // Dim / Bright foreground.
-        colors[NamedColor::DimForeground as usize] = Some(rgba_to_rgb(&theme.dim_foreground));
-        colors[NamedColor::BrightForeground as usize] = Some(rgba_to_rgb(&theme.bright_foreground));
-
-        // 256-colour palette: 6×6×6 colour cube (indices 16-231).
-        let mut idx = 16;
-        for r in 0..6 {
-            for g in 0..6 {
-                for b in 0..6 {
-                    let rgb = Rgb {
-                        r: if r == 0 { 0 } else { r * 40 + 55 },
-                        g: if g == 0 { 0 } else { g * 40 + 55 },
-                        b: if b == 0 { 0 } else { b * 40 + 55 },
-                    };
-                    colors[idx] = Some(rgb);
-                    idx += 1;
-                }
-            }
-        }
-
-        // Grayscale ramp (indices 232-255).
-        for i in 0..24 {
-            let v = (i * 10 + 8) as u8;
-            colors[232 + i] = Some(Rgb { r: v, g: v, b: v });
-        }
-
-        Self {
-            colors,
-            selection_bg: theme.selection_bg,
-            selection_fg: Some(theme.selection_fg),
-        }
-    }
-
-    /// Rebuild this scheme from a new theme (replaces *all* colours).
-    pub fn set_theme(&mut self, theme: &Theme) {
-        *self = Self::from_theme(theme);
-    }
-}
-
-/// Convert our internal `Rgba` to alacritty's `Rgb`.
-fn rgba_to_rgb(c: &Rgba) -> Rgb {
-    Rgb {
-        r: (c.r() * 255.0).round() as u8,
-        g: (c.g() * 255.0).round() as u8,
-        b: (c.b() * 255.0).round() as u8,
-    }
-}
-
-// ── Cursor info ─────────────────────────────────────────────────────────
-
-/// Cursor information for rendering.
-#[derive(Debug, Clone)]
-pub struct CursorInfo {
-    pub pos: TermPos,
-    pub style: CursorStyle,
-    pub visible: bool,
-}
-
-// ── Grid view ───────────────────────────────────────────────────────────
-
-/// A view of the visible grid rows.
-pub struct GridView<'a> {
-    rows: &'a [Vec<Cell>],
-}
-
-impl<'a> GridView<'a> {
-    pub fn row_count(&self) -> usize {
-        self.rows.len()
-    }
-
-    pub fn col_count(&self) -> usize {
-        self.rows.first().map_or(0, |r| r.len())
-    }
-
-    pub fn cell(&self, line: usize, col: usize) -> Option<&'a Cell> {
-        self.rows.get(line).and_then(|r| r.get(col))
-    }
-
-    pub fn rows(&self) -> impl Iterator<Item = &'a [Cell]> {
-        self.rows.iter().map(|v| v.as_slice())
-    }
-}
-
-// ── Terminal state machine ──────────────────────────────────────────────
+use super::color_scheme::{named_color_default_rgb, ColorScheme};
+use super::grid_view::{CursorInfo, GridView};
+use super::listener::Listener;
+use super::osc7::scan_osc7;
+use super::TermDimensions;
 
 /// The terminal state machine.
 ///
@@ -721,122 +543,5 @@ impl Terminal {
                 .map(|rgb| Rgba::from_u8(rgb.r, rgb.g, rgb.b, 255))
                 .unwrap_or(Rgba::WHITE),
         }
-    }
-}
-
-fn named_color_default_rgb(named: NamedColor) -> Rgb {
-    match named {
-        NamedColor::Black => Rgb { r: 0, g: 0, b: 0 },
-        NamedColor::Red => Rgb { r: 170, g: 0, b: 0 },
-        NamedColor::Green => Rgb { r: 0, g: 170, b: 0 },
-        NamedColor::Yellow => Rgb { r: 170, g: 170, b: 0 },
-        NamedColor::Blue => Rgb { r: 0, g: 0, b: 170 },
-        NamedColor::Magenta => Rgb { r: 170, g: 0, b: 170 },
-        NamedColor::Cyan => Rgb { r: 0, g: 170, b: 170 },
-        NamedColor::White => Rgb { r: 200, g: 200, b: 200 },
-        NamedColor::BrightBlack => Rgb { r: 85, g: 85, b: 85 },
-        NamedColor::BrightRed => Rgb { r: 255, g: 85, b: 85 },
-        NamedColor::BrightGreen => Rgb { r: 85, g: 255, b: 85 },
-        NamedColor::BrightYellow => Rgb { r: 255, g: 255, b: 85 },
-        NamedColor::BrightBlue => Rgb { r: 85, g: 85, b: 255 },
-        NamedColor::BrightMagenta => Rgb { r: 255, g: 85, b: 255 },
-        NamedColor::BrightCyan => Rgb { r: 85, g: 255, b: 255 },
-        NamedColor::BrightWhite => Rgb { r: 255, g: 255, b: 255 },
-        // Terminal-default colours used when no colour scheme is configured.
-        NamedColor::Foreground => Rgb { r: 220, g: 220, b: 220 }, // light grey
-        NamedColor::Background => Rgb { r: 0, g: 0, b: 0 },      // black
-        NamedColor::Cursor => Rgb { r: 220, g: 220, b: 220 },    // same as fg
-        NamedColor::DimForeground => Rgb { r: 140, g: 140, b: 140 },
-        NamedColor::BrightForeground => Rgb { r: 255, g: 255, b: 255 },
-        _ => Rgb { r: 255, g: 255, b: 255 },
-    }
-}
-
-// ── OSC 7 scanner ──────────────────────────────────────────────────────
-
-/// Find the first OSC 7 sequence in `bytes` and return its URL
-/// payload (without the OSC introducer or terminator).
-///
-/// Recognised forms:
-///
-/// ```text
-/// ESC ] 7 ; <url> BEL         (iTerm2 / most shells)
-/// ESC ] 7 ; <url> ESC \       (ECMA-48 string terminator)
-/// ```
-///
-/// Returns `None` if no well-formed OSC 7 is found.  The scan is
-/// byte-oriented and intentionally cheap (no regex, no allocation
-/// beyond the returned `String`).
-fn scan_osc7(bytes: &[u8]) -> Option<String> {
-    // Find `ESC ] 7 ;` introducer.
-    let mut i = 0;
-    while i + 3 < bytes.len() {
-        if bytes[i] == 0x1B
-            && bytes[i + 1] == b']'
-            && bytes[i + 2] == b'7'
-            && bytes[i + 3] == b';'
-        {
-            // Found the start.  Read until BEL or ST.
-            let payload_start = i + 4;
-            let mut j = payload_start;
-            while j < bytes.len() {
-                if bytes[j] == 0x07 {
-                    // BEL terminator.
-                    let payload = &bytes[payload_start..j];
-                    if let Ok(s) = std::str::from_utf8(payload) {
-                        return Some(s.to_string());
-                    }
-                    return None;
-                }
-                if bytes[j] == 0x1B && j + 1 < bytes.len() && bytes[j + 1] == b'\\' {
-                    // ST terminator.
-                    let payload = &bytes[payload_start..j];
-                    if let Ok(s) = std::str::from_utf8(payload) {
-                        return Some(s.to_string());
-                    }
-                    return None;
-                }
-                j += 1;
-            }
-            // Unterminated — give up on this attempt.
-            return None;
-        }
-        i += 1;
-    }
-    None
-}
-
-#[cfg(test)]
-mod osc7_tests {
-    use super::scan_osc7;
-
-    #[test]
-    fn parses_bel_terminated() {
-        let bytes = b"\x1b]7;file://localhost/Users/me\x07";
-        assert_eq!(scan_osc7(bytes).as_deref(), Some("file://localhost/Users/me"));
-    }
-
-    #[test]
-    fn parses_st_terminated() {
-        let bytes = b"\x1b]7;file://h/p\x1b\\";
-        assert_eq!(scan_osc7(bytes).as_deref(), Some("file://h/p"));
-    }
-
-    #[test]
-    fn finds_osc7_among_other_bytes() {
-        let bytes = b"hello\x1b[31mred\x1b[0m\x1b]7;file://x/y\x07done";
-        assert_eq!(scan_osc7(bytes).as_deref(), Some("file://x/y"));
-    }
-
-    #[test]
-    fn no_osc7_returns_none() {
-        let bytes = b"just normal bytes";
-        assert_eq!(scan_osc7(bytes), None);
-    }
-
-    #[test]
-    fn unterminated_returns_none() {
-        let bytes = b"\x1b]7;file://x/y";
-        assert_eq!(scan_osc7(bytes), None);
     }
 }
