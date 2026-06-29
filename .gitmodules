@@ -26,3 +26,6 @@
 	path = egui_dock
 	url = https://github.com/anhosh/egui_dock.git
 	shallow = true
+[submodule "freetype"]
+	path = freetype
+	url = https://github.com/freetype/freetype.git
