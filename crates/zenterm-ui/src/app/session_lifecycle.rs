@@ -127,12 +127,46 @@ impl ZentermApp {
         }
         // Handle shell-exited sessions.
         // Close the tab for any session whose shell exited.
-        // If that was the last session, also close the application.
+        // If the workspace becomes empty, close it.
+        // If no workspace has any tabs left, close the application.
+
+        // 1. Remember which workspace each exiting session belongs to
+        //    (must be done before close_session removes the tab).
+        let mut exit_ws_ids: Vec<crate::workspace::WorkspaceId> = Vec::new();
+        for id in &exit_ids {
+            if let Some(ws) = self.workspaces.find_tab_workspace(*id) {
+                exit_ws_ids.push(ws.id);
+            }
+        }
+
+        // 2. Close the sessions.
         for id in &exit_ids {
             self.close_session(*id);
         }
-        if !exit_ids.is_empty() && self.sessions.is_empty() {
-            all_close = true;
+
+        // 3. Close workspaces that are now empty (keep at least one).
+        for ws_id in &exit_ws_ids {
+            if let Some(ws) = self.workspaces.find_workspace(*ws_id) {
+                if ws.all_tab_ids().is_empty() && self.workspaces.workspaces.len() > 1 {
+                    log::info!(
+                        "handle_side_effects: workspace '{}' is empty, closing it",
+                        ws.name,
+                    );
+                    self.workspaces.close_workspace(*ws_id);
+                }
+            }
+        }
+
+        // 4. If no workspace has any tabs left, close the application.
+        if !exit_ids.is_empty() {
+            let any_tabs = self
+                .workspaces
+                .workspaces
+                .iter()
+                .any(|ws| !ws.all_tab_ids().is_empty());
+            if !any_tabs {
+                all_close = true;
+            }
         }
         if all_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);

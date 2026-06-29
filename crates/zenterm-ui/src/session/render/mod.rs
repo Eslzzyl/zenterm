@@ -72,7 +72,7 @@ impl TerminalSession {
         // blinking already sets `terminal_dirty = true` every
         // blink tick (see `app.rs`), so the cursor animation still
         // works correctly.
-        if !self.terminal_dirty {
+        if self.pty_exited || !self.terminal_dirty {
             let has_instances = !self.cached_bg.is_empty()
                 || !self.cached_glyph.is_empty()
                 || !self.cached_deco.is_empty();
