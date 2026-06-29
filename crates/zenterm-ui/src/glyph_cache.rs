@@ -27,7 +27,7 @@
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use zenterm_core::{Result, SubpixelLayout};
+use zenterm_core::{HintingMode, RenderMode, Result, SubpixelLayout};
 use zenterm_glyph::{GlyphAtlas, ShapedGlyph};
 use zenterm_render::callback::{AtlasUpdate, SharedRenderState};use std::sync::atomic::Ordering;
 
@@ -58,6 +58,8 @@ impl SharedGlyphAtlas {
         pixels_per_point: f32,
         subpixel_layout: SubpixelLayout,
         ligatures_enabled: bool,
+        hinting_mode: HintingMode,
+        render_mode: RenderMode,
         shared: Arc<SharedRenderState>,
     ) -> Self {
         let atlas = GlyphAtlas::new(
@@ -66,6 +68,8 @@ impl SharedGlyphAtlas {
             pixels_per_point,
             subpixel_layout,
             ligatures_enabled,
+            hinting_mode,
+            render_mode,
         );
 
         // Pre-seed the GPU with whatever the atlas already has so the
@@ -156,6 +160,8 @@ impl SharedGlyphAtlas {
         pixels_per_point: f32,
         subpixel_layout: SubpixelLayout,
         ligatures_enabled: bool,
+        hinting_mode: HintingMode,
+        render_mode: RenderMode,
     ) -> (f32, f32) {
         let (cw, ch, size) = {
             let mut atlas = self.inner.lock().unwrap();
@@ -165,6 +171,8 @@ impl SharedGlyphAtlas {
                 pixels_per_point,
                 subpixel_layout,
                 ligatures_enabled,
+                hinting_mode,
+                render_mode,
             );
             let (cw, ch) = atlas.cell_size().expect("cell_size after DPI reinit");
             let size = atlas.texture_size;

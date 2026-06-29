@@ -10,6 +10,7 @@
 
 use zenterm_config::colors::{AnsiColors, ColorsConfig, CursorColors, PrimaryColors, SelectionColors, ThemePreference};
 use zenterm_config::cursor::{Blinking, CursorConfig, CursorShape};
+use zenterm_core::{HintingMode, RenderMode};
 use zenterm_config::font::{FontConfig, FontDescription};
 use zenterm_config::keyboard::KeyboardConfig;
 use zenterm_config::mouse::MouseConfig;
@@ -287,6 +288,29 @@ fn render_font_section(ui: &mut egui::Ui, f: &mut FontConfig) {
         "Use software-rendered box-drawing / block characters");
     settings_widgets::bool_setting(ui, "Ligatures", &mut f.ligatures,
         "Enable OpenType ligatures (requires font support)");
+
+    ui.add_space(4.0);
+    settings_widgets::combo_setting(
+        ui,
+        "Hinting",
+        &mut f.hinting,
+        &[
+            (HintingMode::None, "None"),
+            (HintingMode::Auto, "Auto"),
+            (HintingMode::Full, "Full"),
+        ],
+        "Font hinting: None (smoothest), Auto (low-DPI only), Full (sharpest)",
+    );
+    settings_widgets::combo_setting(
+        ui,
+        "Render Mode",
+        &mut f.render_mode,
+        &[
+            (RenderMode::Subpixel, "Subpixel"),
+            (RenderMode::Grayscale, "Grayscale"),
+        ],
+        "Subpixel LCD (sharpest on LCD) or Grayscale AA (better on OLED)",
+    );
 }
 
 fn render_font_description(ui: &mut egui::Ui, label: &str, fd: &mut FontDescription) {

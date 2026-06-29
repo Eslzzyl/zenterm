@@ -7,6 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use zenterm_core::{HintingMode, RenderMode};
+
 // ── FontConfig ─────────────────────────────────────────────────────────
 
 /// The `[font]` section of the config file.
@@ -74,6 +76,21 @@ pub struct FontConfig {
     /// via the `ligatures_enabled` field.
     #[serde(default = "default_ligatures")]
     pub ligatures: bool,
+
+    /// Hinting mode for font rasterization.
+    ///
+    /// * `"none"` — disable hinting entirely
+    /// * `"auto"` — enable at low DPI, disable at high DPI (default)
+    /// * `"full"` — always hint
+    #[serde(default)]
+    pub hinting: HintingMode,
+
+    /// Anti-aliasing render mode.
+    ///
+    /// * `"subpixel"` — LCD subpixel RGB/BGR rendering (default, sharpest on LCD)
+    /// * `"grayscale"` — standard grayscale anti-aliasing (better on OLED/high-DPI)
+    #[serde(default)]
+    pub render_mode: RenderMode,
 }
 
 impl Default for FontConfig {
@@ -88,6 +105,8 @@ impl Default for FontConfig {
             glyph_offset: GlyphOffset::default(),
             builtin_box_drawing: default_builtin_box_drawing(),
             ligatures: default_ligatures(),
+            hinting: HintingMode::default(),
+            render_mode: RenderMode::default(),
         }
     }
 }

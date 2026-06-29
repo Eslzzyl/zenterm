@@ -16,7 +16,7 @@ use etagere::AtlasAllocator;
 use swash::scale::image::Content as SwashContent;
 use swash::scale::ScaleContext;
 
-use zenterm_core::{Error, Result, SubpixelLayout};
+use zenterm_core::{Error, HintingMode, RenderMode, Result, SubpixelLayout};
 
 use crate::builtin;
 use crate::{GlyphContentType, GlyphEntry, GlyphAtlas, RunCacheKey, ShapedGlyph};
@@ -35,11 +35,13 @@ impl GlyphAtlas {
         pixels_per_point: f32,
         subpixel_layout: SubpixelLayout,
         ligatures_enabled: bool,
+        hinting_mode: HintingMode,
+        render_mode: RenderMode,
     ) -> Self {
         log::info!(
             "GlyphAtlas: font_size={font_size:.1} family={font_family:?} \
              pixels_per_point={pixels_per_point:.2} subpixel={subpixel_layout:?} \
-             ligatures={ligatures_enabled}",
+             ligatures={ligatures_enabled} hinting={hinting_mode:?} render={render_mode:?}",
         );
         let font_system = FontSystem::new();
         // Initial line_height = font_size (1.0×).  This is intentionally
@@ -71,6 +73,8 @@ impl GlyphAtlas {
             cell_descent: 0.0,
             cap_height: 0.0,
             ligatures_enabled,
+            hinting_mode,
+            render_mode,
         }
     }
 

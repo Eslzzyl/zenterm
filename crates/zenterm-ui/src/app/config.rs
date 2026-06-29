@@ -116,6 +116,8 @@ impl ZentermApp {
                 self.pixels_per_point,
                 SubpixelLayout::detect(),
                 self.config.font.ligatures,
+                self.config.font.hinting,
+                self.config.font.render_mode,
             );
             self.atlas.seed_ascii();
             self.atlas.sync_to_gpu();

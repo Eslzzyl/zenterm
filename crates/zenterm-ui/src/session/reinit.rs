@@ -45,6 +45,8 @@ impl TerminalSession {
             new_ppp,
             zenterm_core::SubpixelLayout::detect(),
             ligatures_enabled,
+            zenterm_core::HintingMode::Auto,
+            zenterm_core::RenderMode::Subpixel,
         );
         self.atlas.seed_ascii();
         // Ensure the seeded atlas reaches the GPU before the next prepare().

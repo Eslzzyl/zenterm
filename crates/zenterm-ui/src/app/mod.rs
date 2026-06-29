@@ -110,6 +110,8 @@ impl ZentermApp {
             pixels_per_point,
             SubpixelLayout::detect(),
             config.font.ligatures,
+            config.font.hinting,
+            config.font.render_mode,
             shared.clone(),
         ));
         atlas.seed_ascii();

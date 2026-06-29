@@ -47,6 +47,49 @@ impl core::fmt::Display for SubpixelLayout {
     }
 }
 
+/// Hinting mode for font rasterization.
+///
+/// Controls whether glyph outlines are snapped to the pixel grid (hinted)
+/// for sharper rendering.  Hinting is most beneficial at low DPI / small
+/// font sizes where the pixel grid is visible; at high DPI it can introduce
+/// undesirable shape distortion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HintingMode {
+    /// Never apply hinting.
+    None,
+    /// Apply hinting at low DPI, disable at high DPI (above ~1.04×).
+    Auto,
+    /// Always apply hinting.
+    Full,
+}
+
+impl Default for HintingMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+/// LCD subpixel or grayscale anti-aliasing mode.
+///
+/// Subpixel rendering gives sharper text on LCD displays but can produce
+/// colour fringing on OLED or high-DPI screens.  Grayscale mode is safer
+/// for non-LCD panels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderMode {
+    /// LCD subpixel anti-aliasing (R/G/B per-channel coverage).
+    Subpixel,
+    /// Standard grayscale anti-aliasing (single alpha channel).
+    Grayscale,
+}
+
+impl Default for RenderMode {
+    fn default() -> Self {
+        Self::Subpixel
+    }
+}
+
 impl SubpixelLayout {
     /// Auto-detect the subpixel layout of the primary display.
     ///

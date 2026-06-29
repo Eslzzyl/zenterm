@@ -12,7 +12,7 @@ use cosmic_text::{FontSystem, Metrics};
 use etagere::AtlasAllocator;
 use swash::scale::ScaleContext;
 
-use zenterm_core::SubpixelLayout;
+use zenterm_core::{HintingMode, RenderMode, SubpixelLayout};
 
 pub mod allocate;
 pub mod atlas_impl;
@@ -219,6 +219,12 @@ pub struct GlyphAtlas {
     /// to decide whether to use `Shaping::Advanced` (ligatures on) or
     /// `Shaping::Basic` (ligatures off).
     pub ligatures_enabled: bool,
+
+    /// Hinting mode for font rasterization.
+    pub hinting_mode: HintingMode,
+
+    /// Anti-aliasing render mode (subpixel LCD or grayscale).
+    pub render_mode: RenderMode,
 }
 
 #[cfg(test)]
