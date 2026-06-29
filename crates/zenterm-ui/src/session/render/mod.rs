@@ -346,15 +346,8 @@ impl TerminalSession {
 
                         // ── Horizontal clip (GLYPH_CLIP.md) ──
                         let glyph_right_px = glyph_x_px + scaled_w;
-                        let cell_right_clip = if num_cells > 1.0 {
-                            // CJK / emoji: glyph should be centered in the
-                            // first cell and not overflow into adjacent cells.
-                            cell_left + cw
-                        } else {
-                            cell_right
-                        };
                         let clipped_left = glyph_x_px.max(cell_left);
-                        let clipped_right = glyph_right_px.min(cell_right_clip);
+                        let clipped_right = glyph_right_px.min(cell_right);
                         let clipped_w = (clipped_right - clipped_left).max(0.0);
                         if clipped_w < scaled_w && scaled_w > 0.0 {
                             let r_left = (clipped_left - glyph_x_px) / scaled_w;

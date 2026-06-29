@@ -20,7 +20,7 @@ swash 光栅化 glyph 时，位图的包围盒（`placement.top` + `placement.he
 在 CPU 端构建 instance 数据时，将 GLYPH quad 裁剪到 cell 边界内，
 同时同步调整 UV 坐标以避免纹理拉伸。
 
-代码位于 `crates/zenterm-ui/src/app.rs`，glyph 渲染路径中：
+代码位于 `crates/zenterm-ui/src/session/render/mod.rs`，非连字 glyph 渲染路径中：
 
 ```rust
 // 垂直裁剪
@@ -33,12 +33,14 @@ if clipped_h < scaled_h && scaled_h > 0.0 {
     let r_bot = (clipped_bot - glyph_y_px) / scaled_h;
     let v_range = v_max - v_min;
     v_min = v_min + v_range * r_top;
-    v_max = v_min + v_range * (r_bot - r_top);
+    v_max = v_min + (r_bot - r_top) * v_range;
     glyph_y_px = clipped_top;
     scaled_h = clipped_h;
 }
 
 // 水平裁剪（同理）
+let clipped_left = glyph_x_px.max(cell_left);
+let clipped_right = glyph_right_px.min(cell_right);
 ```
 
 裁剪对所有 glyph 生效（不只是光标），确保任何字符的位图 padding
