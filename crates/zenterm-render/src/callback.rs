@@ -186,8 +186,14 @@ impl CallbackTrait for TerminalWgpuCallback {
             // Instances changed since last frame — upload to GPU buffer.
             self.last_instance_gen.store(current_gen, Ordering::Relaxed);
 
-            // Clone out of the lock so we don't hold it during the GPU write.
-            let instances = self.shared.instances.lock().unwrap().clone();
+            // Take ownership instead of cloning — the UI thread has
+            // already bumped instance_gen to signal that this frame's
+            // data is ready, and won't touch the Vec again until the
+            // next frame's clear_instances().
+            let instances = {
+                let mut guard = self.shared.instances.lock().unwrap();
+                std::mem::take(&mut *guard)
+            };
             if !instances.is_empty() {
                 if let Ok(rp_guard) = self.render_pass.lock() {
                     if let Some(ref rp) = *rp_guard {

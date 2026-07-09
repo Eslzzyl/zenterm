@@ -7,4 +7,5 @@ edition = "2024"
 zenterm-core = { path = "../zenterm-core" }
 alacritty_terminal = "0.26"
 vte = { version = "0.15", features = ["ansi"] }
+memchr = { version = "2", default-features = false }
 log = "0.4"

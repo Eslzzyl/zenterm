@@ -135,29 +135,25 @@ impl TerminalSession {
         let cursor_col = (cursor_orig_col + preedit_advance).min(cols.saturating_sub(1));
 
         let baseline = atlas.cell_baseline_offset();
-        let mut bg_instances: Vec<CellInstance> = Vec::with_capacity(rows * cols);
-        let mut glyph_instances: Vec<CellInstance> = Vec::with_capacity(rows * cols);
-        let mut deco_instances: Vec<CellInstance> = Vec::with_capacity(rows * cols);
+
+        // Reuse cached instance buffers — clear instead of re-allocating.
+        let instances_cap = rows * cols;
+        self.cached_bg.clear();
+        self.cached_glyph.clear();
+        self.cached_deco.clear();
+        if self.cached_bg.capacity() < instances_cap {
+            self.cached_bg.reserve(instances_cap - self.cached_bg.capacity());
+        }
+        if self.cached_glyph.capacity() < instances_cap {
+            self.cached_glyph.reserve(instances_cap - self.cached_glyph.capacity());
+        }
+        if self.cached_deco.capacity() < instances_cap {
+            self.cached_deco.reserve(instances_cap - self.cached_deco.capacity());
+        }
         let mut has_new_glyphs = false;
 
         for row in 0..rows {
-            // ── Per-row: consecutive-cells "run" iterator ──────────────
-            //
-            // Instead of a simple `for col in 0..cols`, we use a `while`
-            // loop and detect runs via `detect_run_end`.  This prepares
-            // the renderer for ligature shaping: when enabled, a run of
-            // multiple same-style characters will be shaped as a single
-            // string, and the resulting glyphs (which may span multiple
-            // cells) are distributed across the run's cells.
-            //
-            // For now, each run is exactly one cell wide, so the
-            // per-character behaviour is identical to the old nested
-            // for loop.
             let mut col = 0;
-            // Track the last run_end that was checked for ligatures.
-            // Once we find that a run has no actual multi-cell ligature
-            // glyphs, we skip re-checking subsequent cells of the same
-            // run to avoid redundant shaping + atlas allocations.
             let mut last_checked_run_end: usize = 0;
             while col < cols {
                 let cell = match grid.cell(row, col) {
@@ -165,13 +161,8 @@ impl TerminalSession {
                     None => { col += 1; continue; },
                 };
 
-                // ── Per-cell state ────────────────────────────────────
                 let mut ch_char = cell.c;
 
-                // IME preedit: override the character at the cursor position
-                // with the preedit (composition) text.  This renders through
-                // the exact same glyph pipeline as normal text, so the style
-                // is identical.  An underline decoration is added below.
                 let is_preedit = self.preedit_text.as_ref().is_some_and(|preedit| {
                     row == cursor_row
                         && col >= cursor_orig_col
@@ -219,24 +210,10 @@ impl TerminalSession {
                     || cell.strikethrough
                     || is_preedit;
 
-                // ── Run boundary detection ────────────────────────────
                 let run_start = col;
                 let run_end = shaping::detect_run_end(&grid, row, col, cols);
 
-                // ── Ligature branch ─────────────────────────────────
-                //
-                // When ligature shaping is active and the run contains
-                // ASCII punctuation, shape the entire run as a single
-                // string, then distribute the resulting glyphs across
-                // their covering cells via per-cell strip splitting.
-                //
-                // Background quads and decorations are emitted per cell
-                // inside this branch so that cursor / selection colours
-                // are applied independently to each cell.
                 let ligatures_enabled = atlas.ligatures_enabled;
-                // Skip the ligature branch if we already checked this
-                // exact run (col..run_end) on a previous iteration and
-                // found no actual multi-cell ligature glyphs.
                 let ligature_eligible = ligatures_enabled
                     && run_end > run_start + 1
                     && !is_blank
@@ -249,9 +226,9 @@ impl TerminalSession {
                         sel_range.as_ref(), sel_bg, sel_fg,
                         default_bg, baseline, cw, ch,
                         x_off, y_off, x_scale, y_scale, cols,
-                        &mut bg_instances,
-                        &mut glyph_instances,
-                        &mut deco_instances,
+                        &mut self.cached_bg,
+                        &mut self.cached_glyph,
+                        &mut self.cached_deco,
                     );
                     last_checked_run_end = outcome.last_checked;
                     if outcome.has_new_glyphs {
@@ -270,11 +247,10 @@ impl TerminalSession {
                     1.0
                 };
 
-                // ── Pass 1: background quad ────────────────────────
                 if !is_cursor || is_block_cursor {
                     let cell_bg = if is_sel { sel_bg } else { draw_bg };
                     emit_background_quad(
-                        &mut bg_instances,
+                        &mut self.cached_bg,
                         col, row, cw, ch, num_cells,
                         cell_bg,
                         default_bg,
@@ -283,13 +259,11 @@ impl TerminalSession {
                     );
                 }
 
-                // SGR 8 (conceal / hidden): render background but skip glyph + decorations.
                 if is_hidden {
                     col += 1;
                     continue;
                 }
 
-                // ── Pass 2: glyph quad ──────────────────────────────
                 if !is_blank {
                     log::debug!(
                         "per-char glyph: row={row} col={col} ch={ch_char:?} \
@@ -329,7 +303,6 @@ impl TerminalSession {
                         let cell_right = cell_left + cw * num_cells;
                         let cell_bottom = cell_top + ch;
 
-                        // ── Vertical clip (GLYPH_CLIP.md) ──
                         let glyph_bot_px = glyph_y_px + scaled_h;
                         let clipped_top = glyph_y_px.max(cell_top);
                         let clipped_bot = glyph_bot_px.min(cell_bottom);
@@ -344,7 +317,6 @@ impl TerminalSession {
                             scaled_h = clipped_h;
                         }
 
-                        // ── Horizontal clip (GLYPH_CLIP.md) ──
                         let glyph_right_px = glyph_x_px + scaled_w;
                         let clipped_left = glyph_x_px.max(cell_left);
                         let clipped_right = glyph_right_px.min(cell_right);
@@ -367,7 +339,7 @@ impl TerminalSession {
                             (draw_fg, draw_bg)
                         };
 
-                        glyph_instances.push(CellInstance {
+                        self.cached_glyph.push(CellInstance {
                             clip_pos: [
                                 glyph_x_px * x_scale - 1.0,
                                 1.0 - glyph_y_px * y_scale,
@@ -399,10 +371,9 @@ impl TerminalSession {
                     }
                 }
 
-                // ── Pass 3+4: decorations (underline, strikethrough, cursor style) ──
                 if has_deco || is_cursor {
                     emit_deco_for_cell(
-                        &mut deco_instances,
+                        &mut self.cached_deco,
                         &grid, row, col, cols,
                         cursor_visible, cursor_row, cursor_col,
                         cursor_shape, display_offset,
@@ -413,13 +384,11 @@ impl TerminalSession {
                     );
                 }
 
-                // ── IME preedit underline ────────────────────────────────
-                // Draw a single-pixel underline under each preedit cell.
                 if is_preedit {
                     let thickness = 1.0_f32.max((ch * 0.05).round());
                     let deco_y_px = y_off + row as f32 * ch + baseline + 1.0;
                     let deco_x_px = x_off + col as f32 * cw;
-                    deco_instances.push(CellInstance {
+                    self.cached_deco.push(CellInstance {
                         clip_pos: [
                             deco_x_px * x_scale - 1.0,
                             1.0 - deco_y_px * y_scale,
@@ -438,11 +407,6 @@ impl TerminalSession {
                 col += 1;
             }
         }
-
-        // Swap cached instance buffers so the fast path can reuse them.
-        std::mem::swap(&mut self.cached_bg, &mut bg_instances);
-        std::mem::swap(&mut self.cached_glyph, &mut glyph_instances);
-        std::mem::swap(&mut self.cached_deco, &mut deco_instances);
 
         // Append to the shared instance buffer in draw order.
         let mut buf = self

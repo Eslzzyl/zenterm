@@ -80,7 +80,7 @@ impl PtySession {
             .name("pty-reader".into())
             .spawn(move || {
                 let mut reader = BufReader::new(reader);
-                let mut buf = [0u8; 4096];
+                let mut buf = [0u8; 65536];
                 log::debug!("pty-reader thread started");
                 loop {
                     match reader.read(&mut buf) {

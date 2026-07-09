@@ -5056,6 +5056,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "log",
+ "memchr",
  "vte",
  "zenterm-core",
 ]

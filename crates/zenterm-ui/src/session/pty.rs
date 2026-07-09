@@ -13,27 +13,18 @@ impl TerminalSession {
     /// terminal-query responses back to the PTY, and detect shell exit
     /// (the latter is required for Windows ConPTY where the output
     /// pipe is not closed on child exit).
+    ///
+    /// All pending chunks are **batched** into a single `feed()` call
+    /// to minimise VT parser, lock, and damage-propagation overhead
+    /// under high-throughput output (e.g. `cat` of a large file).
     pub fn pump_pty(&mut self) {
         if self.pty_exited {
             return;
         }
-        let mut total = 0usize;
+        let mut batch = Vec::with_capacity(65536);
         while let Some(result) = self.pty.try_read() {
             match result {
-                Ok(data) => {
-                    total += data.len();
-                    let replies = self.terminal.feed(&data);
-                    if !replies.is_empty() {
-                        log::debug!(
-                            "pump_pty: writing {} reply bytes: {:02x?}",
-                            replies.len(),
-                            &replies
-                        );
-                        if let Err(e) = self.pty.write(&replies) {
-                            log::error!("failed to write pty reply: {e}");
-                        }
-                    }
-                }
+                Ok(data) => batch.extend_from_slice(&data),
                 Err(e) => {
                     log::info!("PTY session ended ({e}), exiting");
                     self.pty_exited = true;
@@ -42,8 +33,19 @@ impl TerminalSession {
                 }
             }
         }
-        if total > 0 {
-            log::debug!("pump_pty: read {} bytes from PTY", total);
+        if !batch.is_empty() {
+            log::debug!("pump_pty: batching {} bytes from PTY", batch.len());
+            let replies = self.terminal.feed(&batch);
+            if !replies.is_empty() {
+                log::debug!(
+                    "pump_pty: writing {} reply bytes: {:02x?}",
+                    replies.len(),
+                    &replies
+                );
+                if let Err(e) = self.pty.write(&replies) {
+                    log::error!("failed to write pty reply: {e}");
+                }
+            }
             self.terminal_dirty = true;
         }
 
