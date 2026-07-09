@@ -7,6 +7,7 @@
 use std::fmt;
 
 use crate::color::Rgba;
+use crate::image::ImageCell;
 
 /// Style of underline decoration for a terminal cell.
 ///
@@ -75,6 +76,14 @@ pub struct Cell {
     /// emoji).  Spacer cells share the glyph of the preceding cell and
     /// should be skipped during rendering.
     pub is_spacer: bool,
+
+    /// Optional image overlay placed in this cell.
+    ///
+    /// When set, the renderer will emit an image quad instead of (or in
+    /// addition to) the normal glyph quad, depending on the image's z-index.
+    /// Images with `z_index < 0` render behind the text; `z_index >= 0`
+    /// render on top.
+    pub image: Option<ImageCell>,
 }
 
 impl Cell {
@@ -92,6 +101,7 @@ impl Cell {
             dim: false,
             hidden: false,
             is_spacer: false,
+            image: None,
         }
     }
 

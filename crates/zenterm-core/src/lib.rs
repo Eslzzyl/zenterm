@@ -8,6 +8,7 @@ pub mod cell;
 pub mod color;
 pub mod damage;
 pub mod error;
+pub mod image;
 pub mod position;
 pub mod size;
 pub mod theme;

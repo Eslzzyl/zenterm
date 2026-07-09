@@ -3,11 +3,19 @@
 //! Wraps [`alacritty_terminal::Term`] + [`vte::ansi::Processor`] and provides
 //! methods for feeding bytes, resizing, scrolling, and reading the grid.
 
+use std::collections::HashMap;
 use std::sync::{mpsc, Arc};
 
 use alacritty_terminal::event::{Event, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Direction, Line, Point};
+
+use zenterm_core::image::ImageCell;
+
+use crate::image::kitty::{self, KittyAccumulator, KittyImage};
+use crate::image::sixel::{self, SixelBuilder};
+use crate::image::{PlacementParams, PlacementStyle, assign_image_to_cells};
+use crate::image::ImageCache;
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{ClipboardType, Config as TermConfig, Term, TermDamage, TermMode};
@@ -36,6 +44,22 @@ pub struct Terminal {
     damage: DamageSet,
     scheme: ColorScheme,
     grid_cache: Vec<Vec<Cell>>,
+
+    // ── Image protocol state ────────────────────────────────────────────
+    pub(crate) image_cache: ImageCache,
+    /// Hashes of images that were removed and whose GPU atlas slots need
+    /// to be freed.  Drained by the UI layer each frame.
+    pub pending_image_deallocations: Vec<[u8; 32]>,
+    /// Image placements keyed by grid (line, col) so they follow content
+    /// during scroll.  `line` is a grid-relative `Line.0` (may be negative
+    /// when viewport is at bottom).
+    pub(crate) image_placements: HashMap<(i32, usize), ImageCell>,
+    /// Accumulator for multi-chunk Kitty image transmissions.
+    #[allow(dead_code)]
+    kitty_accumulator: KittyAccumulator,
+    /// Cell pixel dimensions (set by the UI layer).
+    pub cell_pixel_width: u32,
+    pub cell_pixel_height: u32,
 
     // ── Pending side-effects (consumed by the app after each feed()) ────
     pending_title: Option<String>,
@@ -77,6 +101,12 @@ impl Terminal {
             damage: DamageSet::new(rows),
             scheme,
             grid_cache: vec![vec![Cell::blank(); cols]; rows],
+            image_cache: ImageCache::new(),
+            image_placements: HashMap::new(),
+            pending_image_deallocations: Vec::new(),
+            kitty_accumulator: KittyAccumulator::default(),
+            cell_pixel_width: 0,
+            cell_pixel_height: 0,
             pending_title: None,
             pending_bell: false,
             pending_exit: false,
@@ -104,6 +134,31 @@ impl Terminal {
             return Vec::new();
         }
         log::debug!("Terminal::feed: {} bytes: {:02x?}", bytes.len(), bytes);
+
+        // Response bytes collected during processing; written back to PTY.
+        let mut replies = Vec::new();
+
+        // ── APC / DCS scan (loop — handle all sequences in one batch) ────
+        let mut scan_pos = 0;
+        while scan_pos < bytes.len() {
+            if let Some((payload, end)) = scan_next_apc(bytes, scan_pos) {
+                if let Some(cmd) = KittyImage::parse_apc(&payload) {
+                    let reply = self.handle_kitty_command(cmd);
+                    if let Some(r) = reply {
+                        replies.extend_from_slice(r.as_bytes());
+                    }
+                }
+                scan_pos = end;
+                continue;
+            }
+            if let Some((params_raw, payload, end)) = scan_next_sixel_dcs(bytes, scan_pos) {
+                let params = sixel::parse_dcs_params(params_raw);
+                self.handle_sixel(payload, &params);
+                scan_pos = end;
+                continue;
+            }
+            scan_pos += 1;
+        }
 
         // ── OSC 9 / OSC 777 (desktop notification) scan ─────────────────
         if let Some(notif) = scan_osc9_or_777(bytes) {
@@ -139,7 +194,6 @@ impl Terminal {
         // The custom `Listener` (above) receives every `Event::PtyWrite`,
         // `ColorRequest`, etc. that the `Handler` emits.  We process them
         // here and return the collected response bytes.
-        let mut replies = Vec::new();
         while let Ok(event) = self.rx.try_recv() {
             match event {
                 Event::PtyWrite(text) => {
@@ -231,6 +285,7 @@ impl Terminal {
         for row in self.grid_cache.iter_mut() {
             row.resize(cols, Cell::blank());
         }
+        self.image_placements.clear();
         self.damage.mark_all();
     }
 
@@ -322,6 +377,18 @@ impl Terminal {
 
         // Clear the damage set — it has been consumed by the re-resolution above.
         self.damage.clear();
+
+        // Attach image placements (keyed by grid line) to the grid cache.
+        let display_offset = grid.display_offset() as i32;
+        for (&(grid_line, col), img_cell) in &self.image_placements {
+            let viewport_row = grid_line + display_offset;
+            if viewport_row >= 0 && (viewport_row as usize) < self.grid_cache.len() {
+                let row = viewport_row as usize;
+                if col < self.grid_cache[row].len() {
+                    self.grid_cache[row][col].image = Some(img_cell.clone());
+                }
+            }
+        }
 
         GridView {
             rows: &self.grid_cache[..screen_lines.min(self.grid_cache.len())],
@@ -555,6 +622,7 @@ impl Terminal {
             dim: flags.contains(Flags::DIM),
             hidden: flags.contains(Flags::HIDDEN),
             is_spacer: flags.contains(Flags::WIDE_CHAR_SPACER),
+            image: None,
         }
     }
 
@@ -626,4 +694,334 @@ fn read_osc_string(start: &[u8]) -> Option<String> {
         end += 1;
     }
     None
+}
+
+// ── APC / DCS scan helpers ─────────────────────────────────────────────
+
+/// Scan for the next Kitty APC sequence starting at `offset`.
+/// Returns `(payload, end_pos)` where `end_pos` is the byte after `\x1b\\`.
+fn scan_next_apc(bytes: &[u8], offset: usize) -> Option<(Vec<u8>, usize)> {
+    let mut i = offset;
+    while i + 2 < bytes.len() {
+        if bytes[i] == 0x1B && bytes[i + 1] == b'_' && bytes[i + 2] == b'G' {
+            let start = i + 3;
+            let mut j = start;
+            while j + 1 < bytes.len() {
+                if bytes[j] == 0x1B && bytes[j + 1] == b'\\' {
+                    return Some((bytes[start..j].to_vec(), j + 2));
+                }
+                j += 1;
+            }
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Scan for the next sixel DCS sequence starting at `offset`.
+/// Returns `(params_raw, payload, end_pos)`.
+fn scan_next_sixel_dcs(bytes: &[u8], offset: usize) -> Option<(&[u8], &[u8], usize)> {
+    let mut i = offset;
+    while i + 2 < bytes.len() {
+        if bytes[i] == 0x1B && bytes[i + 1] == b'P' {
+            let param_start = i + 2;
+            let mut j = param_start;
+            while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == b';') {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'q' {
+                let payload_start = j + 1;
+                let mut k = payload_start;
+                while k + 1 < bytes.len() {
+                    if bytes[k] == 0x1B && bytes[k + 1] == b'\\' {
+                        return Some((&bytes[param_start..j], &bytes[payload_start..k], k + 2));
+                    }
+                    k += 1;
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+// ── Kitty protocol handler ─────────────────────────────────────────────
+
+impl Terminal {
+    /// Handle a parsed Kitty image command.
+    /// Returns `Some(response_bytes)` for `a=q` queries that must be
+    /// written back to the PTY.
+    fn handle_kitty_command(&mut self, cmd: KittyImage) -> Option<String> {
+        // Feed through the accumulator to support multi-chunk transmissions.
+        let assembled = match self.kitty_accumulator.feed(cmd) {
+            Ok(Some(assembled)) => assembled,
+            Ok(None) => return None, // waiting for more chunks
+            Err(e) => {
+                log::error!("kitty accumulator: {e}");
+                return None;
+            }
+        };
+
+        match assembled {
+            KittyImage::TransmitData { transmit, verbosity } => {
+                if verbosity != kitty::KittyImageVerbosity::Quiet {
+                    if let Ok(id) = kitty::decode_image_data(transmit, &mut self.image_cache) {
+                        // Send OK for I= (numbered transmissions).
+                    }
+                } else {
+                    let _ = kitty::decode_image_data(transmit, &mut self.image_cache);
+                }
+            }
+            KittyImage::TransmitDataAndDisplay { transmit, placement, .. } => {
+                match kitty::decode_image_data(transmit, &mut self.image_cache) {
+                    Ok(image_id) => {
+                        self.kitty_place_image(Some(image_id), None, placement);
+                    }
+                    Err(e) => log::error!("kitty transmit+display: {e}"),
+                }
+            }
+            KittyImage::Display { image_id, image_number, placement, .. } => {
+                self.kitty_place_image(image_id, image_number, placement);
+            }
+            KittyImage::Delete { what, .. } => {
+                self.handle_kitty_delete(what);
+            }
+            KittyImage::Query { transmit } => {
+                // Respond with OK (we support the protocol).
+                return Some(kitty::kitty_response(
+                    transmit.image_id,
+                    transmit.image_number,
+                    "OK",
+                ));
+            }
+            KittyImage::TransmitFrame { transmit, frame, .. } => {
+                if let Err(e) = kitty::decode_image_frame(transmit, frame, &mut self.image_cache) {
+                    log::error!("kitty frame transmit: {e}");
+                }
+            }
+            KittyImage::ComposeFrame { frame, .. } => {
+                if let Err(e) = kitty::handle_compose_frame(frame, &mut self.image_cache) {
+                    log::error!("kitty compose frame: {e}");
+                }
+            }
+        }
+        None
+    }
+
+    fn kitty_place_image(
+        &mut self,
+        image_id: Option<u32>,
+        image_number: Option<u32>,
+        placement: kitty::KittyImagePlacement,
+    ) {
+        let id = self.image_cache.assign_id(image_id, image_number);
+        let data = match self.image_cache.get(id) {
+            Some(d) => d.clone(),
+            None => {
+                log::error!("kitty place: image id {id} not found");
+                return;
+            }
+        };
+
+        let img_w = data.data().width();
+        let img_h = data.data().height();
+
+        if self.cell_pixel_width == 0 || self.cell_pixel_height == 0 {
+            log::warn!("kitty: cell pixel size not set, skipping placement");
+            return;
+        }
+
+        let cursor = self.cursor();
+        let cols = self.term.columns();
+        let rows = self.term.screen_lines();
+
+        let params = PlacementParams {
+            columns: placement.columns.map(|c| c as usize),
+            rows: placement.rows.map(|r| r as usize),
+            source_x: placement.x,
+            source_y: placement.y,
+            source_w: placement.w,
+            source_h: placement.h,
+            cell_padding_left: placement.x_offset.unwrap_or(0) as u16,
+            cell_padding_top: placement.y_offset.unwrap_or(0) as u16,
+            z_index: placement.z_index.unwrap_or(0),
+            do_not_move_cursor: placement.do_not_move_cursor,
+            image_id: Some(id),
+            placement_id: placement.placement_id,
+            style: PlacementStyle::Kitty,
+        };
+
+        let result = assign_image_to_cells(
+            data,
+            img_w,
+            img_h,
+            &params,
+            self.cell_pixel_width,
+            self.cell_pixel_height,
+            cursor.pos.column,
+            cursor.pos.line.min(rows.saturating_sub(1)),
+            cols,
+            rows,
+        );
+
+        // Store placements keyed by grid-relative line so they follow
+        // content when the viewport scrolls.
+        let display_offset = self.term.grid().display_offset() as i32;
+        for (col, viewport_row, cell) in &result.cells {
+            // viewport_row is in [0, screen_lines).  Convert to grid line.
+            let grid_line = *viewport_row as i32 - display_offset;
+            self.image_placements.insert((grid_line, *col), cell.clone());
+        }
+
+        if result.move_cursor {
+            // Kitty moves cursor to after the bottom-right of the image.
+            let new_col = (cursor.pos.column + result.width_in_cells).min(cols.saturating_sub(1));
+            let new_row = (cursor.pos.line + result.height_in_cells)
+                .saturating_sub(1)
+                .min(rows.saturating_sub(1));
+            self.term.grid_mut().cursor.point.column = alacritty_terminal::index::Column(new_col);
+            self.term.grid_mut().cursor.point.line = alacritty_terminal::index::Line(new_row as i32);
+        }
+
+        self.damage.mark_all();
+    }
+
+    fn handle_kitty_delete(&mut self, what: kitty::KittyImageDelete) {
+        match what {
+            kitty::KittyImageDelete::All { delete } => {
+                self.image_placements.clear();
+                if delete {
+                    // Collect all hashes before clearing for atlas cleanup.
+                    let hashes: Vec<[u8; 32]> = self.image_cache.all_hashes();
+                    self.pending_image_deallocations.extend(hashes);
+                    self.image_cache.clear();
+                }
+            }
+            kitty::KittyImageDelete::ByImageId { image_id, placement_id, delete } => {
+                self.image_placements.retain(|_, v| {
+                    if v.image_id != Some(image_id) { return true; }
+                    placement_id.map_or(false, |p| v.placement_id != Some(p))
+                });
+                if delete {
+                    if let Some(hash) = self.image_cache.remove(image_id) {
+                        self.pending_image_deallocations.push(hash);
+                    }
+                }
+            }
+            kitty::KittyImageDelete::ByImageNumber { image_number, placement_id, delete } => {
+                // Look up the image_id from the number mapping.
+                // We don't store number_to_id in ImageCache publicly, so for now
+                // scan placements by image data hash (approximate).
+                // TODO: store number_to_id mapping publicly.
+                let ids: Vec<u32> = self.image_placements.iter()
+                    .filter(|(_, v)| v.placement_id == placement_id)
+                    .map(|(_, v)| v.image_id)
+                    .flatten()
+                    .collect();
+                for id in ids {
+                    self.image_placements.retain(|_, v| v.image_id != Some(id));
+                    if delete {
+                        self.image_cache.remove(id);
+                    }
+                }
+            }
+            kitty::KittyImageDelete::AtCursorPosition { delete } => {
+                let cursor = self.cursor();
+                self.image_placements.retain(|&(line, col), _| {
+                    let viewport_row = line + self.term.grid().display_offset() as i32;
+                    viewport_row != cursor.pos.line as i32 || col != cursor.pos.column
+                });
+                if delete {
+                    // Can't delete data without knowing the image_id.
+                    log::warn!("kitty delete AtCursorPosition with delete=true: image_id unknown");
+                }
+            }
+            kitty::KittyImageDelete::DeleteAt { x, y, delete } => {
+                let display_offset = self.term.grid().display_offset() as i32;
+                let del_grid_line = y as i32 - display_offset;
+                self.image_placements.retain(|&(line, col), _| {
+                    !(line == del_grid_line && col == x as usize)
+                });
+                if delete {
+                    log::warn!("kitty delete DeleteAt with delete=true: image_id unknown");
+                }
+            }
+            kitty::KittyImageDelete::DeleteColumn { x, delete: _ } => {
+                let display_offset = self.term.grid().display_offset() as i32;
+                self.image_placements.retain(|&(line, _), _| {
+                    let viewport_row = line + display_offset;
+                    viewport_row != x as i32
+                });
+            }
+            kitty::KittyImageDelete::DeleteRow { y, delete: _ } => {
+                self.image_placements.retain(|&(_, col), _| col != y as usize);
+            }
+            kitty::KittyImageDelete::DeleteZ { z, delete: _ } => {
+                self.image_placements.retain(|_, v| v.z_index != z);
+            }
+        }
+        self.damage.mark_all();
+    }
+
+    /// Handle a sixel image transmission.
+    fn handle_sixel(&mut self, payload: &[u8], params: &[i64]) {
+        if self.cell_pixel_width == 0 || self.cell_pixel_height == 0 {
+            log::warn!("sixel: cell pixel size not set, skipping");
+            return;
+        }
+
+        let mut builder = SixelBuilder::new(params);
+        for &b in payload {
+            builder.push(b);
+        }
+        builder.finish();
+
+        match sixel::render_sixel(&builder.sixel) {
+            Ok(data) => {
+                let cursor = self.cursor();
+                let cols = self.term.columns();
+                let rows = self.term.screen_lines();
+                let img_w = data.data().width();
+                let img_h = data.data().height();
+
+                let par = PlacementParams {
+                    columns: None,
+                    rows: None,
+                    source_x: None,
+                    source_y: None,
+                    source_w: None,
+                    source_h: None,
+                    cell_padding_left: 0,
+                    cell_padding_top: 0,
+                    z_index: 0, // sixel is behind text
+                    do_not_move_cursor: false,
+                    image_id: None,
+                    placement_id: None,
+                    style: PlacementStyle::Sixel,
+                };
+
+                let result = assign_image_to_cells(
+                    data,
+                    img_w,
+                    img_h,
+                    &par,
+                    self.cell_pixel_width,
+                    self.cell_pixel_height,
+                    cursor.pos.column,
+                    cursor.pos.line.min(rows.saturating_sub(1)),
+                    cols,
+                    rows,
+                );
+
+                let display_offset = self.term.grid().display_offset() as i32;
+                for (col, viewport_row, cell) in &result.cells {
+                    let grid_line = *viewport_row as i32 - display_offset;
+                    self.image_placements.insert((grid_line, *col), cell.clone());
+                }
+                self.damage.mark_all();
+            }
+            Err(e) => log::error!("sixel render: {e}"),
+        }
+    }
 }

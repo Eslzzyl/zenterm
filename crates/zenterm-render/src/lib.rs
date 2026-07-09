@@ -42,6 +42,9 @@ pub mod glyph_type {
     /// Solid color fill — no texture sampling. Outputs `bg_color`
     /// directly. Used for selection highlight and cursor backgrounds.
     pub const SOLID: u32 = 3;
+    /// Full RGBA image — texture sample outputs premultiplied linear RGBA.
+    /// Used for Kitty / iTerm / Sixel image placement.
+    pub const IMAGE: u32 = 4;
 }
 
 /// Per-instance GPU data for one cell quad.

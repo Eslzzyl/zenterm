@@ -13,6 +13,8 @@ mod pass3;
 use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::vte::ansi::CursorShape;
 
+use zenterm_core::image::ImageCell;
+use zenterm_core::image::ImageDataType;
 use zenterm_glyph::GlyphContentType;
 use zenterm_render::glyph_type;
 use zenterm_render::CellInstance;
@@ -75,7 +77,9 @@ impl TerminalSession {
         if self.pty_exited || !self.terminal_dirty {
             let has_instances = !self.cached_bg.is_empty()
                 || !self.cached_glyph.is_empty()
-                || !self.cached_deco.is_empty();
+                || !self.cached_deco.is_empty()
+                || !self.cached_image_below.is_empty()
+                || !self.cached_image_above.is_empty();
             if has_instances {
                 let mut buf = self
                     .gpu
@@ -97,6 +101,12 @@ impl TerminalSession {
 
         // Read cursor info BEFORE visible_cells() since both borrow
         // self.terminal (one mut, one immut).
+        // Drain pending image atlas deallocations (images removed by kitty
+        // delete commands).
+        for hash in self.terminal.pending_image_deallocations.drain(..) {
+            self.atlas.remove_image(&hash);
+        }
+
         let cursor = self.terminal.cursor();
         let cursor_row = cursor.pos.line;
         let cursor_orig_col = cursor.pos.column;
@@ -141,6 +151,8 @@ impl TerminalSession {
         self.cached_bg.clear();
         self.cached_glyph.clear();
         self.cached_deco.clear();
+        self.cached_image_below.clear();
+        self.cached_image_above.clear();
         if self.cached_bg.capacity() < instances_cap {
             self.cached_bg.reserve(instances_cap - self.cached_bg.capacity());
         }
@@ -357,6 +369,17 @@ impl TerminalSession {
                     );
                 }
 
+                // ── Image quads (z < 0: behind text) ────────────────────
+                if let Some(ref img) = cell.image {
+                    if img.z_index < 0 {
+                        let buf = &mut self.cached_image_below;
+                        emit_image_quad(
+                            buf, &mut atlas, img, col, row,
+                            cw, ch, x_off, y_off, x_scale, y_scale,
+                        );
+                    }
+                }
+
                 if is_hidden {
                     col += 1;
                     continue;
@@ -502,6 +525,17 @@ impl TerminalSession {
                     });
                 }
 
+                // ── Image quads (z >= 0: on top of text) ────────────────
+                if let Some(ref img) = cell.image {
+                    if img.z_index >= 0 {
+                        let buf = &mut self.cached_image_above;
+                        emit_image_quad(
+                            buf, &mut atlas, img, col, row,
+                            cw, ch, x_off, y_off, x_scale, y_scale,
+                        );
+                    }
+                }
+
                 col += 1;
             }
         }
@@ -514,8 +548,10 @@ impl TerminalSession {
             .lock()
             .expect("SharedRenderState.instances poisoned");
         buf.extend(&self.cached_bg);
+        buf.extend(&self.cached_image_below);
         buf.extend(&self.cached_glyph);
         buf.extend(&self.cached_deco);
+        buf.extend(&self.cached_image_above);
         drop(buf);
         // Mark the GPU side as dirty (instance generation bumped by
         // the app after all sessions have appended).
@@ -527,4 +563,67 @@ impl TerminalSession {
         self.terminal_dirty = false;
         true
     }
+
+}
+
+/// Emit a [`CellInstance`] for an [`ImageCell`] attached to a grid cell.
+fn emit_image_quad(
+    buf: &mut Vec<CellInstance>,
+    atlas: &mut zenterm_glyph::GlyphAtlas,
+    img: &ImageCell,
+    col: usize,
+    row: usize,
+    cw: f32,
+    ch: f32,
+    x_off: f32,
+    y_off: f32,
+    x_scale: f32,
+    y_scale: f32,
+) {
+    let (pixels, img_w, img_h, img_hash) = {
+        let guard = img.data.data();
+        match &*guard {
+            ImageDataType::Rgba8 { data, width, height, hash } => {
+                (data.clone(), *width, *height, *hash)
+            }
+            ImageDataType::AnimRgba8 { width, height, frames, hashes, .. } => {
+                // Use the first frame for rendering (frame 0).
+                // FUTURE: cycle through frames based on timing.
+                (frames[0].clone(), *width, *height, hashes[0])
+            }
+        }
+    };
+
+    let entry = match atlas.ensure_image(&pixels, img_w, img_h, img_hash) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let tex_size = atlas.texture_size as f32;
+    let ax = entry.atlas_rect.min.x as f32;
+    let ay = entry.atlas_rect.min.y as f32;
+
+    // Map ImageCell UV (image-space) → atlas UV.
+    let u_min = (ax + img.top_left.x * img_w as f32) / tex_size;
+    let v_min = (ay + img.top_left.y * img_h as f32) / tex_size;
+    let u_max = (ax + img.bottom_right.x * img_w as f32) / tex_size;
+    let v_max = (ay + img.bottom_right.y * img_h as f32) / tex_size;
+
+    // Cell position in pixels (dock-relative).
+    let clip_x = x_off + col as f32 * cw;
+    let clip_y = y_off + row as f32 * ch;
+
+    let instance = CellInstance {
+        clip_pos: [clip_x * x_scale - 1.0, 1.0 - clip_y * y_scale],
+        uv_min: [u_min, v_min],
+        uv_max: [u_max, v_max],
+        clip_cell_size: [cw * x_scale, ch * y_scale],
+        glyph_size: [cw, ch],
+        glyph_offset: [0.0, 0.0],
+        fg_color: [1.0, 1.0, 1.0, 1.0],
+        bg_color: [0.0, 0.0, 0.0, img.z_index as f32],
+        flags: glyph_type::IMAGE,
+    };
+
+    buf.push(instance);
 }

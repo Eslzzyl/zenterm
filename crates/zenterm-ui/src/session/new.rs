@@ -25,9 +25,11 @@ impl TerminalSession {
         callback: CallbackHandle,
     ) -> Self {
         let pty = zenterm_pty::PtySession::spawn(size).expect("failed to spawn PTY");
-        let terminal = Terminal::new(size, scheme);
+        let mut terminal = Terminal::new(size, scheme);
 
         let (cell_width, cell_height) = atlas.cell_size();
+        terminal.cell_pixel_width = cell_width.ceil() as u32;
+        terminal.cell_pixel_height = cell_height.ceil() as u32;
 
         // Initialise `last_vp_size_px` so the first render picks up the
         // resize correctly.  Starting at [0, 0] is fine; the first
@@ -60,6 +62,8 @@ impl TerminalSession {
             cached_bg: Vec::new(),
             cached_glyph: Vec::new(),
             cached_deco: Vec::new(),
+            cached_image_below: Vec::new(),
+            cached_image_above: Vec::new(),
             pending_title: None,
             preedit_text: None,
             url_open: true,

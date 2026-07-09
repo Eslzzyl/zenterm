@@ -90,6 +90,7 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
     // 1 = MASK     — Grayscale alpha mask: uniform coverage.
     // 2 = COLOR    — Emoji/color glyph: sample RGBA directly.
     // 3 = SOLID    — Solid color fill: no texture sample.
+    // 4 = IMAGE    — Full RGBA quad from atlas: premultiplied linear → sRGB.
 
     // Convert vertex colours from sRGB to linear for correct blending.
     let fg_r = srgb_to_linear(in.fg_color.r);
@@ -137,6 +138,16 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
         let g = linear_to_srgb(bg_g + (fg_g - bg_g) * alpha);
         let b = linear_to_srgb(bg_b + (fg_b - bg_b) * alpha);
         return vec4<f32>(r, g, b, 1.0);
+    }
+
+    if (in.flags == 4u) {
+        // IMAGE — premultiplied linear RGBA in the atlas.
+        // Convert back to sRGB for the display, preserving alpha.
+        let a = texel.a;
+        let r = linear_to_srgb(texel.r);
+        let g = linear_to_srgb(texel.g);
+        let b = linear_to_srgb(texel.b);
+        return vec4<f32>(r, g, b, a);
     }
 
     // SUBPIXEL (default, flags == 0).

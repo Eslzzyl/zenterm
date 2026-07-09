@@ -9,3 +9,7 @@ alacritty_terminal = "0.26"
 vte = { version = "0.15", features = ["ansi"] }
 memchr = { version = "2", default-features = false }
 log = "0.4"
+base64 = "0.22"
+miniz_oxide = "0.8"
+image = "0.25"
+csscolorparser = "0.6"

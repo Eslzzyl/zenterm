@@ -53,6 +53,8 @@ impl TerminalSession {
         self.atlas.sync_to_gpu();
         self.cell_width = cw;
         self.cell_height = ch;
+        self.terminal.cell_pixel_width = cw.ceil() as u32;
+        self.terminal.cell_pixel_height = ch.ceil() as u32;
         self.terminal_dirty = true;
         log::info!(
             "DPI reinit: session={} new_ppp={new_ppp:.2} font_size={new_font_size:.1} \

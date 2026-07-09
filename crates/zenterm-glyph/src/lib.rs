@@ -170,6 +170,11 @@ pub struct GlyphAtlas {
     /// produced no actual substitution (identical to per-char baseline).
     /// Subsequent calls skip shaping entirely and fall through to per-char.
     no_effect_cache: HashSet<RunCacheKey>,
+    /// Cache for image data placed in the atlas, keyed by content hash.
+    /// Value is `(GlyphEntry, AllocationId)` so individual images can be
+    /// removed from the atlas without a full resize.
+    image_cache: HashMap<[u8; 32], (GlyphEntry, etagere::AllocId)>,
+
     /// Swash scale context (replaces cosmic-text's `SwashCache`).
     swash_ctx: ScaleContext,
     /// Cached cell width/height in pixels, set by [`cell_size()`](Self::cell_size).

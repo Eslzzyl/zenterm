@@ -142,6 +142,14 @@ impl SharedGlyphAtlas {
         self.shared.atlas_dirty.store(true, Ordering::Release);
     }
 
+    /// Remove an image from the atlas, freeing its GPU texture slot.
+    /// Called when the image is evicted from the terminal's `ImageCache`.
+    /// Holds the lock for the duration of the call.
+    pub fn remove_image(&self, hash: &[u8; 32]) {
+        let mut atlas = self.inner.lock().unwrap();
+        atlas.remove_image(hash);
+    }
+
     /// Mark the GPU copy as dirty without uploading.  Useful when
     /// the caller has already produced the new texture bytes via
     /// `ensure_glyph` and will call [`Self::sync_to_gpu`] at the end

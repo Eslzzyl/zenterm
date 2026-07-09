@@ -22,6 +22,7 @@ impl GlyphAtlas {
         self.glyph_cache.clear();
         self.run_cache.clear();
         self.no_effect_cache.clear();
+        self.image_cache.clear();
         Ok(())
     }
 }

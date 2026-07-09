@@ -4,6 +4,8 @@
 //! alacritty_terminal grid state. It uses `vte::ansi::Processor` to
 //! convert byte streams into semantic `Handler` calls on `Term`.
 
+pub mod image;
+
 mod term;
 
 pub use term::ColorScheme;

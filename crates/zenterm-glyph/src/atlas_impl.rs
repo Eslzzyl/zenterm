@@ -66,6 +66,7 @@ impl GlyphAtlas {
             glyph_cache: HashMap::new(),
             run_cache: HashMap::new(),
             no_effect_cache: HashSet::new(),
+            image_cache: HashMap::new(),
             swash_ctx: ScaleContext::new(),
             cell_width: 0.0,
             cell_height: 0.0,
@@ -980,4 +981,67 @@ impl GlyphAtlas {
         Ok(())
     }
 
+    /// Ensure an image is present in the atlas.
+    ///
+    /// `data` must be premultiplied RGBA pixels in sRGB colour space,
+    /// `width` / `height` in pixels, and `hash` is the unique content
+    /// identifier (computed by [`ImageDataType::hash`]).
+    ///
+    /// Returns the atlas [`GlyphEntry`] (atlas rect + UV helpers).
+    /// If the atlas is too small it will be grown automatically.
+    pub fn ensure_image(
+        &mut self,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        hash: [u8; 32],
+    ) -> Result<GlyphEntry> {
+        if let Some((entry, _)) = self.image_cache.get(&hash) {
+            return Ok(entry.clone());
+        }
+
+        let iw = width as i32;
+        let ih = height as i32;
+        let allocation: etagere::Allocation = loop {
+            match self.atlas.allocate(etagere::size2(iw, ih)) {
+                Some(a) => break a,
+                None => self.grow_atlas()?,
+            }
+        };
+        let rect = allocation.rectangle;
+
+        // Copy premultiplied RGBA into the atlas.
+        let atlas_w = self.texture_size as usize;
+        for y in 0..height {
+            for x in 0..width {
+                let si = ((y * width + x) * 4) as usize;
+                let dx = rect.min.x as usize + x as usize;
+                let dy = rect.min.y as usize + y as usize;
+                let di = (dy * atlas_w + dx) * 4;
+                if di + 3 < self.texture_data.len() && si + 3 < data.len() {
+                    self.texture_data[di..di + 4].copy_from_slice(&data[si..si + 4]);
+                }
+            }
+        }
+
+        let entry = GlyphEntry {
+            atlas_rect: rect,
+            bearing_x: 0.0,
+            bearing_y: 0.0,
+            advance: 0.0,
+            content_type: GlyphContentType::Color,
+            scale: 1.0,
+        };
+        self.image_cache.insert(hash, (entry.clone(), allocation.id));
+        Ok(entry)
+    }
+
+    /// Remove an image from the atlas, freeing its slot.
+    /// Called when the image is evicted from [`ImageCache`] so the GPU
+    /// texture space can be reused.
+    pub fn remove_image(&mut self, hash: &[u8; 32]) {
+        if let Some((_, id)) = self.image_cache.remove(hash) {
+            self.atlas.deallocate(id);
+        }
+    }
 }

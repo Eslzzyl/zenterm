@@ -112,6 +112,10 @@ pub struct TerminalSession {
     pub(crate) cached_bg: Vec<CellInstance>,
     pub(crate) cached_glyph: Vec<CellInstance>,
     pub(crate) cached_deco: Vec<CellInstance>,
+    /// Image quads with z_index < 0 (render behind text).
+    pub(crate) cached_image_below: Vec<CellInstance>,
+    /// Image quads with z_index >= 0 (render on top of text).
+    pub(crate) cached_image_above: Vec<CellInstance>,
 
     /// ── Title debounce ──────────────────────────────────────────────────
     ///
