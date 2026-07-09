@@ -51,6 +51,7 @@ pub enum NotificationState {
     None,
     Bell,
     Pending,
+    Desktop { title: String, body: String },
 }
 
 // ── TerminalSession ────────────────────────────────────────────────────

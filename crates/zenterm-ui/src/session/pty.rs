@@ -95,6 +95,27 @@ impl TerminalSession {
             self.notification = super::types::NotificationState::Bell;
         }
 
+        // ── Desktop notification (OSC 9 / OSC 777) ──────────────────────
+        if let Some((title, body)) = self.terminal.take_notification() {
+            log::info!("desktop notification: title={title:?} body={body:?}");
+            // Spawn on a background thread to avoid conflicts with the
+            // main thread's winit event loop (macOS UserNotifications
+            // framework can trigger unexpected Cocoa dialog callbacks).
+            std::thread::Builder::new()
+                .name("notify".into())
+                .spawn(move || {
+                    if let Err(e) = notify_rust::Notification::new()
+                        .summary(&title)
+                        .body(&body)
+                        .appname("Zenterm")
+                        .show()
+                    {
+                        log::error!("failed to show desktop notification: {e}");
+                    }
+                })
+                .ok();
+        }
+
         if !self.exit_effect_sent {
             if self.terminal.take_exit() || self.terminal.take_child_exit().is_some() {
                 log::info!("update: terminal requested exit, closing");

@@ -49,6 +49,9 @@ pub struct Terminal {
     /// `\x1b]7;…\x07` / `\x1b]7;…\x1b\\` sequences.  Consumed via
     /// [`Self::take_current_directory`].
     pending_current_directory: Option<String>,
+    /// Most recent OSC 9 / OSC 777 desktop notification.
+    /// Populated by [`Self::feed`]; consumed via [`Self::take_notification`].
+    pending_notification: Option<(String, String)>,
 }
 
 impl Terminal {
@@ -81,6 +84,7 @@ impl Terminal {
             pending_clipboard_store: None,
             pending_clipboard_load: None,
             pending_current_directory: None,
+            pending_notification: None,
         }
     }
 
@@ -100,6 +104,11 @@ impl Terminal {
             return Vec::new();
         }
         log::debug!("Terminal::feed: {} bytes: {:02x?}", bytes.len(), bytes);
+
+        // ── OSC 9 / OSC 777 (desktop notification) scan ─────────────────
+        if let Some(notif) = scan_osc9_or_777(bytes) {
+            self.pending_notification = Some(notif);
+        }
 
         // ── OSC 7 (current working directory) scan ──────────────────────
         // alacritty_terminal does not emit an `Event` for OSC 7, so we
@@ -394,6 +403,11 @@ impl Terminal {
         self.pending_clipboard_store.take()
     }
 
+    /// Take a pending desktop notification (title, body) from OSC 9/777.
+    pub fn take_notification(&mut self) -> Option<(String, String)> {
+        self.pending_notification.take()
+    }
+
     /// Take the most recent OSC 7 working-directory URL (if any).
     ///
     /// The value is the raw URL as emitted by the application
@@ -557,4 +571,59 @@ impl Terminal {
                 .unwrap_or(Rgba::WHITE),
         }
     }
+}
+
+/// Scan for OSC 9 (iTerm2) or OSC 777 (urxvt) desktop notification sequences.
+///
+/// Recognised forms:
+///
+/// ```text
+/// ESC ] 9 ; body BEL                 (OSC 9 — title = app name, body = text)
+/// ESC ] 777 ; notify ; title ; body BEL   (OSC 777 — title + body)
+/// ```
+///
+/// Returns `Some((title, body))` or `None`.
+fn scan_osc9_or_777(bytes: &[u8]) -> Option<(String, String)> {
+    // Find `ESC ]` introducer (0x1B 0x5D).
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == 0x1B && bytes[i + 1] == b']' {
+            let rest = &bytes[i + 2..];
+            if rest.starts_with(b"9;") {
+                // OSC 9 — body only
+                let body = read_osc_string(&rest[2..])?;
+                if body.is_empty() {
+                    return None;
+                }
+                return Some(("Zenterm".into(), body));
+            }
+            if rest.starts_with(b"777;") {
+                // OSC 777 — semicolon-separated args
+                let payload = read_osc_string(&rest[4..])?;
+                let mut parts = payload.splitn(3, ';');
+                let _maybe_notify = parts.next(); // "notify"
+                let title = parts.next().unwrap_or("").to_string();
+                let body = parts.next().unwrap_or("").to_string();
+                return Some((title, body));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Read bytes from `start` until a BEL (0x07) or ST (ESC \) terminator.
+/// Returns `None` if unterminated.
+fn read_osc_string(start: &[u8]) -> Option<String> {
+    let mut end = 0;
+    while end < start.len() {
+        if start[end] == 0x07 {
+            return std::str::from_utf8(&start[..end]).ok().map(|s| s.to_string());
+        }
+        if start[end] == 0x1B && end + 1 < start.len() && start[end + 1] == b'\\' {
+            return std::str::from_utf8(&start[..end]).ok().map(|s| s.to_string());
+        }
+        end += 1;
+    }
+    None
 }
