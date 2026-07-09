@@ -18,7 +18,7 @@ use zenterm_render::glyph_type;
 use zenterm_render::CellInstance;
 
 use super::shaping;
-use super::types::TerminalSession;
+use super::types::{TerminalSession, UrlSpan};
 use ligature::process_ligature_run;
 use self::pass1::emit_background_quad;
 use self::pass3::emit_deco_for_cell;
@@ -152,6 +152,46 @@ impl TerminalSession {
         }
         let mut has_new_glyphs = false;
 
+        // ── URL span detection (for hover underline) ──────────────────
+        self.url_spans.clear();
+        let hovered_url: Option<(usize, usize)> = if self.url_hover_underline {
+            // Re-scan visible rows with linkify.
+            let finder = linkify::LinkFinder::new();
+            for r in 0..rows {
+                let mut line = String::with_capacity(cols);
+                for c in 0..cols {
+                    if let Some(cell) = grid.cell(r, c) {
+                        line.push(cell.c);
+                    }
+                }
+                for link in finder.links(&line) {
+                    let start_col = line[..link.start()].chars().count();
+                    let end_col = line[..link.end()].chars().count();
+                    log::debug!(
+                        "url scan: row={} col={}-{} url={} line={:?}",
+                        r, start_col, end_col, link.as_str(), &line,
+                    );
+                    self.url_spans.push(UrlSpan {
+                        row: r,
+                        col_start: start_col,
+                        col_end: end_col,
+                        url: link.as_str().to_string(),
+                    });
+                }
+            }
+            log::debug!("url scan: {} spans, hover_cell={:?}", self.url_spans.len(), self.hover_cell);
+            // Find which URL (if any) the cursor is hovering over.
+            self.hover_cell.and_then(|(hr, hc)| {
+                let matched = self.url_spans
+                    .iter()
+                    .find(|span| span.row == hr && hc >= span.col_start && hc < span.col_end);
+                log::debug!("hover match: row={} col={} matched={:?}", hr, hc, matched.as_ref().map(|s| (s.row, s.col_start, s.col_end)));
+                matched.map(|span| (span.row, span.col_end))
+            })
+        } else {
+            None
+        };
+
         for row in 0..rows {
             let mut col = 0;
             let mut last_checked_run_end: usize = 0;
@@ -213,6 +253,34 @@ impl TerminalSession {
                 let run_start = col;
                 let run_end = shaping::detect_run_end(&grid, row, col, cols);
 
+                // ── URL hover underline ──────────────────────────────────
+                // Must be BEFORE the ligature branch, which can skip over
+                // multiple cells via `col = run_end; continue`.
+                log::debug!("url_check: hovered_url={:?} row={} col={} terminal_dirty={}",
+                    hovered_url, row, col, self.terminal_dirty);
+                if let Some((url_row, url_col_end)) = hovered_url {
+                    if row == url_row && col < url_col_end {
+                        log::debug!("url_underline: emit row={} col={} end={}", row, col, url_col_end);
+                        let thickness = 1.0_f32.max((ch * 0.06).round());
+                        let deco_y = y_off + row as f32 * ch + baseline + 0.5;
+                        let deco_x = x_off + col as f32 * cw;
+                        self.cached_deco.push(CellInstance {
+                            clip_pos: [
+                                deco_x * x_scale - 1.0,
+                                1.0 - deco_y * y_scale,
+                            ],
+                            uv_min: [0.0; 2],
+                            uv_max: [0.0; 2],
+                            clip_cell_size: [cw * x_scale, thickness * y_scale],
+                            glyph_size: [0.0; 2],
+                            glyph_offset: [0.0; 2],
+                            fg_color: [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0],
+                            bg_color: [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0],
+                            flags: glyph_type::SOLID,
+                        });
+                    }
+                }
+
                 let ligatures_enabled = atlas.ligatures_enabled;
                 let ligature_eligible = ligatures_enabled
                     && run_end > run_start + 1
@@ -235,6 +303,36 @@ impl TerminalSession {
                         has_new_glyphs = true;
                     }
                     if outcome.handled {
+                        // ── URL underline for ligature-skipped cells ─────
+                        // The ligature branch jumps to run_end, skipping
+                        // all cells in (run_start .. run_end).  Any URL
+                        // underline for those cells must be emitted here.
+                        if let Some((url_row, url_col_end)) = hovered_url {
+                            if row == url_row {
+                                let emit_start = run_start.max(0);
+                                let emit_end = outcome.run_end.min(url_col_end);
+                                for c in emit_start..emit_end {
+                                    log::debug!("url_underline: ligature-bypass row={} col={} end={}", row, c, url_col_end);
+                                    let thickness = 1.0_f32.max((ch * 0.06).round());
+                                    let deco_y = y_off + row as f32 * ch + baseline + 0.5;
+                                    let deco_x = x_off + c as f32 * cw;
+                                    self.cached_deco.push(CellInstance {
+                                        clip_pos: [
+                                            deco_x * x_scale - 1.0,
+                                            1.0 - deco_y * y_scale,
+                                        ],
+                                        uv_min: [0.0; 2],
+                                        uv_max: [0.0; 2],
+                                        clip_cell_size: [cw * x_scale, thickness * y_scale],
+                                        glyph_size: [0.0; 2],
+                                        glyph_offset: [0.0; 2],
+                                        fg_color: [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0],
+                                        bg_color: [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0],
+                                        flags: glyph_type::SOLID,
+                                    });
+                                }
+                            }
+                        }
                         col = outcome.run_end;
                         continue;
                     }

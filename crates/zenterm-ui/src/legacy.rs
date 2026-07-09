@@ -39,6 +39,11 @@ pub fn render_legacy_single(
     // same as the session viewport (no multi-tab coordination needed).
     session.set_dock_viewport([0.0, 0.0], size_px);
     session.resize_to_viewport(size_px, ppp, ui.input(|i| i.time));
+
+    // Compute hover BEFORE cell-instance building so URL underline is
+    // rendered on the correct frame (not one frame behind).
+    let cell_rect = ui.max_rect();
+    session.compute_hover(ui, cell_rect);
     session.update_cell_instances([0.0, 0.0], size_px);
 
     let sense = egui::Sense::click_and_drag();

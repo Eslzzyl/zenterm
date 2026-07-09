@@ -77,6 +77,10 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         // Resize the terminal to match the new pixel area.
         session.resize_to_viewport(size_px, ppp, ui.input(|i| i.time));
 
+        // Compute hover BEFORE cell-instance building so URL underline
+        // is rendered on the correct frame (not one frame behind).
+        session.compute_hover(ui, rect);
+
         // Build GPU instance data and append to the shared instance
         // buffer.  Instances are positioned in the dock-area clip
         // space set via `set_dock_viewport`.

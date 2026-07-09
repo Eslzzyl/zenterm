@@ -233,6 +233,19 @@ impl Terminal {
         )
     }
 
+    /// Return the visible text of a viewport row as a `String`.
+    pub fn line_text(&self, row: usize) -> String {
+        use alacritty_terminal::index::{Column, Line};
+        let cols = self.term.columns();
+        let display_offset = self.term.grid().display_offset();
+        let grid_line = Line(row as i32 - display_offset as i32);
+        let mut text = String::with_capacity(cols);
+        for col in 0..cols {
+            text.push(self.term.grid()[grid_line][Column(col)].c);
+        }
+        text
+    }
+
     // ── Scrollback / display offset ─────────────────────────────────────
 
     /// Scroll the viewport by `count` lines.

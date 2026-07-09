@@ -5,6 +5,54 @@ use alacritty_terminal::term::TermMode;
 use super::types::{TerminalSession, SCROLLBAR_WIDTH, SCROLLBAR_MIN_THUMB_HEIGHT};
 
 impl TerminalSession {
+    /// Update `hover_cell` from the current egui pointer position.
+    /// Must be called **before** `update_cell_instances` so the URL
+    /// underline is rendered in the correct frame.
+    pub fn compute_hover(&mut self, ui: &egui::Ui, cell_rect: egui::Rect) {
+        if !self.url_hover_underline {
+            self.hover_cell = None;
+            return;
+        }
+        let ppp = ui.ctx().pixels_per_point();
+        let pos = ui.ctx().input(|i| i.pointer.hover_pos());
+        log::debug!(
+            "compute_hover: pointer_pos={:?} cell_rect={:?} cw={} ch={}",
+            pos,
+            cell_rect,
+            self.cell_width,
+            self.cell_height,
+        );
+        let new_hover = pos
+            .filter(|pos| cell_rect.contains(*pos))
+            .and_then(|pos| {
+                let col = ((pos.x - cell_rect.left()) * ppp / self.cell_width) as usize;
+                let row = ((pos.y - cell_rect.top()) * ppp / self.cell_height) as usize;
+                let cols = self.terminal.size().cols as usize;
+                let rows = self.terminal.size().rows as usize;
+                log::debug!(
+                    "compute_hover: col={} row={} cols={} rows={} cw={} ch={}",
+                    col, row, cols, rows, self.cell_width, self.cell_height,
+                );
+                if col < cols && row < rows {
+                    Some((row, col))
+                } else {
+                    log::debug!("compute_hover: cell ({},{}) out of bounds", row, col);
+                    None
+                }
+            });
+        log::debug!(
+            "compute_hover: old={:?} new={:?}",
+            self.hover_cell,
+            new_hover,
+        );
+        if new_hover != self.hover_cell {
+            self.hover_cell = new_hover;
+            if self.url_hover_underline {
+                self.terminal_dirty = true;
+            }
+        }
+    }
+
     /// Handle mouse events for this session's cell rectangle.
     ///
     /// Behaviour:
@@ -111,6 +159,22 @@ impl TerminalSession {
             let row = ((pos.y - cell_area.top()) * ppp / ch).round() as usize;
             (row.min(rows.saturating_sub(1)), col.min(cols.saturating_sub(1)))
         };
+
+        // ── Hover tracking (for URL underline) ──────────────────────────
+        let new_hover = if self.url_hover_underline {
+            let pos = response.hover_pos();
+            log::debug!("mouse: response.hover_pos()={:?}", pos);
+            pos.and_then(|p| pixel_to_cell(p))
+        } else {
+            None
+        };
+        if new_hover != self.hover_cell {
+            log::debug!("mouse: hover_cell {:?} → {:?}", self.hover_cell, new_hover);
+            self.hover_cell = new_hover;
+            if self.url_hover_underline {
+                self.terminal_dirty = true;
+            }
+        }
 
         // ── Drag start / selection ─────────────────────────────────────
         if response.drag_started() {
@@ -266,8 +330,31 @@ impl TerminalSession {
             }
         }
 
-        // ── Single click clears selection ──────────────────────────────
+        // ── Single click: URL open (Ctrl+Click) or clear selection ───
         if response.clicked() && !self.selecting && !mouse_reporting {
+            if self.url_open && !self.url_click_handled {
+                let ctrl = ui.ctx().input(|i| i.modifiers.ctrl || i.modifiers.mac_cmd);
+                if ctrl {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        if let Some((row, col)) = pixel_to_cell(pos) {
+                            let line = self.terminal.line_text(row);
+                            let finder = linkify::LinkFinder::new();
+                            for link in finder.links(&line) {
+                                let start_col = line[..link.start()].chars().count();
+                                let end_col = line[..link.end()].chars().count();
+                                if col >= start_col && col < end_col {
+                                    let url = link.as_str().to_string();
+                                    log::info!("url click: opening {url}");
+                                    let _ = open::that(&url);
+                                    self.url_click_handled = true;
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            self.url_click_handled = false;
             self.terminal.clear_selection();
             self.terminal_dirty = true;
         }
