@@ -32,6 +32,7 @@ class TestRunner:
         caps: Capabilities,
         include: Optional[Set[str]] = None,
         exclude: Optional[Set[str]] = None,
+        test_ids: Optional[Set[str]] = None,
         auto_mode: bool = False,
         quick_mode: bool = False,
         quiet_mode: bool = False,
@@ -40,6 +41,7 @@ class TestRunner:
         self.caps = caps
         self.include = include  # if set, only these categories
         self.exclude = exclude or set()
+        self.test_ids = test_ids  # if set, only these exact test IDs
         self.auto_mode = auto_mode  # skip interactive / visual tests
         self.quick_mode = quick_mode  # only core tests
         self.quiet_mode = quiet_mode  # suppress per-test output
@@ -83,8 +85,11 @@ class TestRunner:
         """Return the list of tests to run based on filters."""
         all_tests = list_tests()
 
-        # If include is set, only those categories
-        if self.include:
+        # If test_ids is set, filter by exact test ID (highest priority)
+        if self.test_ids is not None:
+            all_tests = [t for t in all_tests if t.test_id in self.test_ids]
+        # Otherwise, if include is set, only those categories
+        elif self.include:
             all_tests = [t for t in all_tests if t.category in self.include]
 
         # Remove excluded categories

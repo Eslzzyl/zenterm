@@ -29,6 +29,7 @@ from zenterm_test.capability import detect_capabilities, format_capabilities
 from zenterm_test.runner import TestRunner
 from zenterm_test.tests.all import register_all
 from zenterm_test.reporter import Report, tests_by_category
+from zenterm_test.selector import interactive_select
 
 
 _term: Optional["Terminal"] = None
@@ -130,12 +131,28 @@ def main():
         print(format_capabilities(caps))
         print()
 
+    # ── Interactive test selection ────────────────────────────────────
+    test_ids = None  # None means "no filter, run everything"
+    has_cli_filters = bool(args.include or args.exclude or args.quick or args.auto)
+    is_tty = hasattr(term, '_is_tty') and term._is_tty
+    if not has_cli_filters and is_tty and not args.quiet:
+        selected = interactive_select(term)
+        if selected is None:
+            term.write(b"\n  \033[33;1mTest selection cancelled.\033[0m\n")
+            term.flush()
+            return 0
+        test_ids = selected
+        # clear screen after selector
+        term.write(b"\033[H\033[J")
+        term.flush()
+
     # Build and run the suite
     runner = TestRunner(
         term=term,
         caps=caps,
         include=include_set,
         exclude=exclude_set,
+        test_ids=test_ids,
         auto_mode=args.auto or args.quiet,
         quick_mode=args.quick,
         quiet_mode=args.quiet,
