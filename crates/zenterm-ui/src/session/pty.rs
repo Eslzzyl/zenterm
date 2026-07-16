@@ -174,7 +174,9 @@ impl TerminalSession {
             return;
         }
         let suffix = if release { "m" } else { "M" };
-        let seq = format!("\x1b[{};{};{}{}", row + 1, col + 1, button, suffix);
+        // SGR format:  CSI < Cb ; Cx ; Cy M/m
+        //              button ; column ; row
+        let seq = format!("\x1b[{};{};{}{}", button, col + 1, row + 1, suffix);
         if let Err(e) = self.pty.write(seq.as_bytes()) {
             log::error!("SGR mouse write error: {e}");
         }
