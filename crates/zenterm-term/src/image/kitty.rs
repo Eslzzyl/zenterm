@@ -12,7 +12,7 @@ use image::{load_from_memory, RgbImage};
 
 use zenterm_core::image::{ImageData, ImageDataType};
 
-use crate::image::{ImageCache, PlacementParams, PlacementStyle};
+use crate::image::ImageCache;
 
 // ── helpers ────────────────────────────────────────────────────────────
 
@@ -107,6 +107,7 @@ fn decode_base64(data: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("base64 decode: {e}"))
 }
 
+#[allow(dead_code)]
 fn encode_base64(data: &[u8]) -> String {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD.encode(data)
@@ -714,7 +715,7 @@ pub fn decode_image_frame(
     drop(guard);
 
     // Recompute the overall hash.
-    let new_hash = {
+    let _new_hash = {
         let g = existing.data();
         g.hash()
     };
