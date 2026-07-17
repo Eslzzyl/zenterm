@@ -199,7 +199,10 @@ impl TerminalSession {
             if let Some(pos) = response.interact_pointer_pos() {
                 if let Some((row, col)) = pixel_to_cell(pos) {
                     if mouse_reporting {
-                        self.send_sgr_mouse(row, col, 0 | mod_bits, false);
+                        let btn = 0 | mod_bits; // left button
+                        self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
+                        self.sgr_mouse_buttons.push(btn);
+                        self.send_sgr_mouse(row, col, btn, false);
                     } else {
                         self.terminal.clear_selection();
                         self.terminal.start_selection(row, col);
@@ -261,7 +264,10 @@ impl TerminalSession {
             if mouse_reporting {
                 if let Some(pos) = response.interact_pointer_pos() {
                     if let Some((row, col)) = pixel_to_cell(pos) {
-                        self.send_sgr_mouse(row, col, 2 | mod_bits, false);
+                        let btn = 2 | mod_bits; // right button
+                        self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
+                        self.sgr_mouse_buttons.push(btn);
+                        self.send_sgr_mouse(row, col, btn, false);
                     }
                 }
             }
@@ -272,7 +278,10 @@ impl TerminalSession {
             if mouse_reporting {
                 if let Some(pos) = response.interact_pointer_pos() {
                     if let Some((row, col)) = pixel_to_cell(pos) {
-                        self.send_sgr_mouse(row, col, 1 | mod_bits, false);
+                        let btn = 1 | mod_bits; // middle button
+                        self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
+                        self.sgr_mouse_buttons.push(btn);
+                        self.send_sgr_mouse(row, col, btn, false);
                     }
                 }
             } else {
@@ -460,13 +469,34 @@ impl TerminalSession {
                     .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos()))
                 {
                     if let Some((row, col)) = pixel_to_cell(pos) {
-                        self.send_sgr_mouse(row, col, 0 | mod_bits, true);
+                        // Use the last tracked button for the release encoding;
+                        // fall back to left button (0) if nothing is tracked.
+                        let base = self.sgr_mouse_buttons.last().copied().unwrap_or(0);
+                        self.sgr_mouse_buttons.pop();
+                        self.send_sgr_mouse(row, col, base | mod_bits, true);
                     }
                 }
             } else {
                 self.selecting = false;
                 self.terminal_dirty = true;
             }
+        }
+
+        // ── SGR left-click ───────────────────────────────────────────
+        // NOTE: `response.clicked()` fires for a press-release sequence
+        // without significant drag.  When SGR mouse is active we must
+        // forward both the press and the release to the PTY.
+        if response.clicked() && mouse_reporting {
+            if let Some(pos) = response.interact_pointer_pos() {
+                if let Some((row, col)) = pixel_to_cell(pos) {
+                    let btn = 0 | mod_bits; // left button
+                    self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
+                    self.send_sgr_mouse(row, col, btn, false); // press
+                    self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
+                    self.send_sgr_mouse(row, col, btn, true);  // release
+                }
+            }
+            return;
         }
 
         // ── Single click: URL open (Ctrl+Click) or clear selection ───
@@ -496,6 +526,30 @@ impl TerminalSession {
             self.url_click_handled = false;
             self.terminal.clear_selection();
             self.terminal_dirty = true;
+        }
+
+        // ── SGR motion (hover / drag move) ──────────────────────────────
+        // Forwarded when:
+        //   • any-event-mouse (1003) is active – any pointer movement, OR
+        //   • a button is currently pressed (drag, mode 1002).
+        if mouse_reporting {
+            let any_event = mode.contains(TermMode::MOUSE_MOTION);
+            let button_pressed = !self.sgr_mouse_buttons.is_empty();
+            if any_event || button_pressed {
+                let pos = ui.ctx().input(|i| i.pointer.hover_pos());
+                if let Some(pos) = pos {
+                    if let Some((row, col)) = pixel_to_cell(pos) {
+                        if self.last_sgr_motion_pos != Some((row, col)) {
+                            // Base button: 32 (motion flag) + last tracked
+                            // base button, or 32 if nothing is pressed (pure
+                            // hover with any-event-mouse).
+                            let base = self.sgr_mouse_buttons.last().copied().unwrap_or(0);
+                            self.send_sgr_mouse(row, col, 32 | base | mod_bits, false);
+                            self.last_sgr_motion_pos = Some((row, col));
+                        }
+                    }
+                }
+            }
         }
     }
 

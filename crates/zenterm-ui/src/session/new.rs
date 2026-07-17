@@ -87,6 +87,8 @@ impl TerminalSession {
             scrollbar_drag_start_y: 0.0,
             scrollbar_drag_start_offset: 0,
             scroll_accumulator_y: 0.0,
+            sgr_mouse_buttons: Vec::new(),
+            last_sgr_motion_pos: None,
         }
     }
 }

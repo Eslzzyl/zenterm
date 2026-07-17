@@ -161,6 +161,16 @@ pub struct TerminalSession {
     // Extracted as whole lines by dividing by cell_height; remainder is
     // preserved via `%= cell_height` to avoid losing fractional deltas.
     pub(crate) scroll_accumulator_y: f64,
+
+    // ── SGR mouse state ─────────────────────────────────────────────────
+    /// Tracked mouse-button codes for correct release encoding.
+    /// Each entry is `base_button | mod_bits` (base: 0=left, 1=middle, 2=right).
+    /// Popped on release so the release event carries the right button code.
+    pub(crate) sgr_mouse_buttons: Vec<u8>,
+    /// Last cell position for which we sent an SGR motion event.
+    /// Used to suppress duplicate motion events when the pointer hasn't
+    /// moved to a new cell.
+    pub(crate) last_sgr_motion_pos: Option<(usize, usize)>,
 }
 
 // ── Constants ──────────────────────────────────────────────────────────
