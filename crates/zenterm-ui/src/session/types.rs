@@ -155,6 +155,12 @@ pub struct TerminalSession {
     pub(crate) scrollbar_dragging: bool,
     pub(crate) scrollbar_drag_start_y: f32,
     pub(crate) scrollbar_drag_start_offset: usize,
+
+    // ── Scroll accumulation (alacritty-style pixel accumulator) ─────────
+    // Accumulates sub-cell scroll deltas from the trackpad across frames.
+    // Extracted as whole lines by dividing by cell_height; remainder is
+    // preserved via `%= cell_height` to avoid losing fractional deltas.
+    pub(crate) scroll_accumulator_y: f64,
 }
 
 // ── Constants ──────────────────────────────────────────────────────────

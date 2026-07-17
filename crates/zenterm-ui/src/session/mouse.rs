@@ -1,5 +1,7 @@
 //! Per-tab mouse handling + context menu for [`TerminalSession`].
 
+use std::time::Instant;
+
 use alacritty_terminal::term::TermMode;
 
 use super::types::{TerminalSession, SCROLLBAR_WIDTH, SCROLLBAR_MIN_THUMB_HEIGHT};
@@ -338,15 +340,66 @@ impl TerminalSession {
                     if let Some(pos) = pointer_pos {
                         if let Some((row, col)) = pixel_to_cell(pos) {
                             let total: f32 = scroll_ys.iter().sum();
-                            let lines = total.round() as i32;
+                            // Accumulate in pixel space (alacritty-style).
+                            // This preserves fractional deltas across frames
+                            // so slow/precise scrolling doesn't lose events.
+                            self.scroll_accumulator_y += total as f64 * self.cell_height as f64;
+                            let lines = (self.scroll_accumulator_y / self.cell_height as f64).abs() as i32;
                             if lines != 0 {
-                                let btn = if lines > 0 { 64 } else { 65 };
+                                let btn = if self.scroll_accumulator_y > 0.0 { 64 } else { 65 };
+                                let btn_val = btn | mod_bits;
                                 log::info!(
-                                    "[dbg] SGR: accumulated total={}, sending {} events btn={} col={} row={}",
-                                    total, lines.abs(), btn | mod_bits, col + 1, row + 1,
+                                    "[dbg] SGR: acc={}, sending {} events btn={} col={} row={}",
+                                    self.scroll_accumulator_y, lines, btn_val, col + 1, row + 1,
                                 );
-                                for _ in 0..lines.abs() {
-                                    self.send_sgr_mouse(row, col, btn | mod_bits, false);
+                                // Batch all SGR sequences into a single PTY
+                                // write to avoid N `flush()` calls per frame.
+                                // Rapid scrolling can fill the PTY buffer and
+                                // cause individual flushes to block.
+                                let col_1 = col + 1;
+                                let row_1 = row + 1;
+                                let count = lines as usize;
+                                let mut batch = Vec::with_capacity(count * 16);
+                                for _ in 0..count {
+                                    batch.push(b'\x1b');
+                                    batch.push(b'[');
+                                    batch.push(b'<');
+                                    // button (always 2 digits: 64-81)
+                                    batch.push(b'0' + (btn_val / 10));
+                                    batch.push(b'0' + (btn_val % 10));
+                                    batch.push(b';');
+                                    // column (1-3 digits)
+                                    if col_1 >= 100 {
+                                        batch.push(b'0' + (col_1 / 100) as u8);
+                                        batch.push(b'0' + ((col_1 / 10) % 10) as u8);
+                                    } else if col_1 >= 10 {
+                                        batch.push(b'0' + (col_1 / 10) as u8);
+                                    }
+                                    batch.push(b'0' + (col_1 % 10) as u8);
+                                    batch.push(b';');
+                                    // row (1-3 digits)
+                                    if row_1 >= 100 {
+                                        batch.push(b'0' + (row_1 / 100) as u8);
+                                        batch.push(b'0' + ((row_1 / 10) % 10) as u8);
+                                    } else if row_1 >= 10 {
+                                        batch.push(b'0' + (row_1 / 10) as u8);
+                                    }
+                                    batch.push(b'0' + (row_1 % 10) as u8);
+                                    batch.push(b'M');
+                                }
+                                // Preserve the fractional remainder in pixel
+                                // space, matching alacritty's approach.
+                                self.scroll_accumulator_y %= self.cell_height as f64;
+                                let write_start = Instant::now();
+                                if let Err(e) = self.pty.write(&batch) {
+                                    log::error!("SGR mouse batch write error: {e}");
+                                }
+                                let write_elapsed = write_start.elapsed();
+                                if write_elapsed > std::time::Duration::from_millis(10) {
+                                    log::warn!(
+                                        "[perf] SGR batch write: {} bytes in {:?}",
+                                        batch.len(), write_elapsed,
+                                    );
                                 }
                             } else {
                                 log::info!("[dbg] SGR: accumulated total={} too small, skipping", total);

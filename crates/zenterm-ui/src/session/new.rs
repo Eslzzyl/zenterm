@@ -74,6 +74,7 @@ impl TerminalSession {
             scrollbar_dragging: false,
             scrollbar_drag_start_y: 0.0,
             scrollbar_drag_start_offset: 0,
+            scroll_accumulator_y: 0.0,
         }
     }
 }
