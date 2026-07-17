@@ -1,20 +1,14 @@
 //! WGPU-based terminal rendering pipeline.
 //!
-//! Renders the visible terminal grid as instanced quads in a single draw
-//! call via `egui_wgpu::CallbackTrait`.
-//!
-//! # Sub-modules
-//!
-//! - [`atlas`] — helpers for creating/updating a wgpu texture from a glyph atlas.
-//! - [`callback`] — [`egui_wgpu::CallbackTrait`] implementation that bridges
-//!   the render pass into egui's wgpu pipeline.
+//! Renders the visible terminal grid as instanced quads via
+//! `egui_wgpu::CallbackTrait`.  Supports multiple glyph atlas textures
+//! — each texture slot gets its own bind group and instances are drawn
+//! in per-slot segments (see `AtlasRange`).
 
 pub mod atlas;
 pub mod callback;
 pub mod shaders;
 
-// Re-export the public types from the callback module so consumers can
-// import them from the crate root.
 pub use callback::CallbackHandle;
 
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -28,7 +22,9 @@ use crate::shaders::{TERMINAL_FS, TERMINAL_VS};
 /// Glyph type flags for per-instance shader dispatch.
 ///
 /// These tell the fragment shader how to interpret the texture data
-/// sampled from the glyph atlas.
+/// sampled from the glyph atlas.  Stored in the low 8 bits of
+/// [`CellInstance::flags`]; the upper bits are reserved for
+/// [`AtlasRange::atlas_index`] in the CPU grouping layer.
 pub mod glyph_type {
     /// Default: LCD subpixel coverage (R=red, G=green, B=blue).
     /// The shader does per-channel `mix(bg, fg, coverage)`.
@@ -80,16 +76,36 @@ pub struct CellInstance {
     pub flags: u32,
 }
 
+/// Describes a contiguous range of instances in the GPU buffer that
+/// belong to one atlas texture slot.
+#[derive(Debug, Clone)]
+pub struct AtlasRange {
+    /// Index into [`TerminalRenderPass::atlas_bind_groups`].
+    pub atlas_index: usize,
+    /// Start offset (in instances) within the GPU instance buffer.
+    pub start: u32,
+    /// Number of instances in this range.
+    pub count: u32,
+}
+
 /// The terminal render pass.
 ///
 /// Owns the wgpu pipeline, static vertex/index buffers, a dynamically
-/// written instance buffer, and the atlas bind group.
+/// written instance buffer, and one [`wgpu::BindGroup`] per atlas
+/// texture slot.
 pub struct TerminalRenderPass {
     pipeline: wgpu::RenderPipeline,
     instance_buf: wgpu::Buffer,
     vertex_buf: wgpu::Buffer,
     index_buf: wgpu::Buffer,
-    atlas_bind_group: wgpu::BindGroup,
+    /// Shared bind-group layout (one texture + one sampler).
+    bind_group_layout: wgpu::BindGroupLayout,
+    /// One bind group per atlas texture slot.
+    atlas_bind_groups: Vec<wgpu::BindGroup>,
+    /// Sampler shared by all atlas textures.
+    atlas_sampler: wgpu::Sampler,
+    /// Per-slot instance ranges for segmented drawing.
+    atlas_ranges: Vec<AtlasRange>,
     num_instances: AtomicU32,
     max_instances: u32,
 }
@@ -98,12 +114,14 @@ impl TerminalRenderPass {
     /// Create a new render pass.
     ///
     /// The pipeline is configured to render into a surface with the given
-    /// `target_format`.  `atlas_view` and `sampler` are bound at group 0
-    /// so the fragment shader can sample glyph textures.
+    /// `target_format`.  One bind group is created per `atlas_views`
+    /// entry, all sharing the same [`wgpu::BindGroupLayout`] so the
+    /// shader sees a uniform `texture_2d<f32>` at binding 0 regardless
+    /// of which slot is active.
     pub fn new(
         device: &wgpu::Device,
         target_format: wgpu::TextureFormat,
-        atlas_view: &wgpu::TextureView,
+        atlas_views: &[&wgpu::TextureView],
         sampler: &wgpu::Sampler,
     ) -> Result<Self> {
         let vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -140,50 +158,58 @@ impl TerminalRenderPass {
             mapped_at_creation: false,
         });
 
-        // Bind group layout.
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("terminal.bind_group_layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+        // Bind group layout (shared by all slots).
+        let bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("terminal.bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
 
-        let atlas_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("terminal.atlas_bind_group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(atlas_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        });
+        // One bind group per texture view.
+        let atlas_bind_groups: Vec<wgpu::BindGroup> = atlas_views
+            .iter()
+            .map(|view| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("terminal.atlas_bind_group"),
+                    layout: &bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
+                    ],
+                })
+            })
+            .collect();
 
         // Pipeline layout.
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("terminal.pipeline_layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
-            immediate_size: 0,
-        });
+        let pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("terminal.pipeline_layout"),
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
+            });
 
         // Render pipeline with both vertex and instance buffer layouts.
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -273,15 +299,52 @@ impl TerminalRenderPass {
             }),
             cache: None,
             multiview_mask: None,
-        });        Ok(Self {
+        });
+        Ok(Self {
             pipeline,
             instance_buf,
             vertex_buf,
             index_buf,
-            atlas_bind_group,
+            bind_group_layout,
+            atlas_bind_groups,
+            atlas_sampler: sampler.clone(),
+            atlas_ranges: Vec::new(),
             num_instances: AtomicU32::new(0),
             max_instances,
         })
+    }
+
+    /// Replace the set of atlas texture views (e.g. when a new slot
+    /// was pushed onto the atlas).  Creates one bind group per view.
+    pub fn update_atlas_views(
+        &mut self,
+        device: &wgpu::Device,
+        atlas_views: &[&wgpu::TextureView],
+    ) {
+        self.atlas_bind_groups = atlas_views
+            .iter()
+            .map(|view| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("terminal.atlas_bind_group"),
+                    layout: &self.bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.atlas_sampler),
+                        },
+                    ],
+                })
+            })
+            .collect();
+    }
+
+    /// Set the per-slot instance ranges for segmented drawing.
+    pub fn set_atlas_ranges(&mut self, ranges: Vec<AtlasRange>) {
+        self.atlas_ranges = ranges;
     }
 
     /// Write a new set of cell instances to the GPU instance buffer.
@@ -314,54 +377,69 @@ impl TerminalRenderPass {
         self.num_instances.store(count, Ordering::Release);
     }
 
-    /// Draw into an existing render pass (used by [`callback::TerminalWgpuCallback`]).
+    /// Draw into an existing render pass.
+    ///
+    /// When multiple atlas slots are active the draw is segmented by
+    /// [`AtlasRange`], binding the corresponding texture for each
+    /// segment.  Instances not covered by any range (such as SOLID
+    /// background and decoration quads that don't sample the atlas
+    /// texture) are drawn with bind group 0.
+    ///
+    /// The common case (single slot, no ranges) takes the fast path
+    /// with one bind + one draw call.
     pub fn draw_to_pass(&self, rpass: &mut wgpu::RenderPass) {
         let count = self.num_instances.load(Ordering::Acquire);
         if count == 0 {
             return;
         }
         rpass.set_pipeline(&self.pipeline);
-        rpass.set_bind_group(0, &self.atlas_bind_group, &[]);
         rpass.set_vertex_buffer(0, self.vertex_buf.slice(..));
         rpass.set_vertex_buffer(1, self.instance_buf.slice(..));
         rpass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-        rpass.draw_indexed(0..6, 0, 0..count);
-    }
 
-    /// Legacy standalone draw — creates its own render pass on the given
-    /// surface view.  Used for testing; the callback-based path is preferred.
-    pub fn draw(&self, _device: &wgpu::Device, queue: &wgpu::Queue, view: &wgpu::TextureView) {
-        let count = self.num_instances.load(Ordering::Acquire);
-        if count == 0 {
+        if self.atlas_ranges.is_empty() || self.atlas_bind_groups.is_empty() {
+            // Single-slot / empty fast path.
+            if let Some(bg) = self.atlas_bind_groups.first() {
+                rpass.set_bind_group(0, bg, &[]);
+            }
+            rpass.draw_indexed(0..6, 0, 0..count);
             return;
         }
-        // Get the surface config from the view's texture format — we need
-        // a real surface config for the render pass descriptor format.
-        // This is a simplistic approach; prefer `draw_to_pass`.
-        let mut encoder =
-            _device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("terminal.draw"),
-            });
-        {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("terminal.draw_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            self.draw_to_pass(&mut rpass);
+
+        // Multi-slot segmented draw.  Gaps between ranges (flat
+        // instances such as SOLID bg/deco that aren't in any range)
+        // are drawn with bind group 0 — they don't sample the texture.
+        let mut drawn_end = 0u32;
+        for range in &self.atlas_ranges {
+            if range.count == 0 {
+                continue;
+            }
+            if range.atlas_index >= self.atlas_bind_groups.len() {
+                log::warn!(
+                    "draw_to_pass: atlas_index {} out of range ({} bind groups)",
+                    range.atlas_index,
+                    self.atlas_bind_groups.len()
+                );
+                continue;
+            }
+
+            // Draw gap before this range (flat instances).
+            if range.start > drawn_end {
+                rpass.set_bind_group(0, &self.atlas_bind_groups[0], &[]);
+                rpass.draw_indexed(0..6, 0, drawn_end..range.start);
+            }
+
+            // Draw this atlas range with its texture.
+            rpass.set_bind_group(0, &self.atlas_bind_groups[range.atlas_index], &[]);
+            rpass.draw_indexed(0..6, 0, range.start..range.start + range.count);
+            drawn_end = range.start + range.count;
         }
-        queue.submit(std::iter::once(encoder.finish()));
+
+        // Draw remaining instances after the last range.
+        if drawn_end < count {
+            rpass.set_bind_group(0, &self.atlas_bind_groups[0], &[]);
+            rpass.draw_indexed(0..6, 0, drawn_end..count);
+        }
     }
 
     /// Maximum number of instances this render pass can hold.

@@ -1,9 +1,24 @@
 //! Glyph atlas — rasterizes characters with `cosmic-text` (shaping) + `swash`
-//! (subpixel rasterization) and packs them into a GPU-friendly texture atlas.
+//! (subpixel rasterization) and packs them into GPU-friendly texture atlases.
 //!
 //! Unlike cosmic-text's built-in `SwashCache` (which hardcodes `Format::Alpha`),
 //! we call swash directly with `Format::Subpixel` to get per-channel RGB coverage
 //! values for LCD subpixel rendering.
+//!
+//! # Multi-atlas architecture
+//!
+//! The atlas stores glyphs across multiple independent texture slots
+//! ([`AtlasSlot`]), each with its own [`etagere::AtlasAllocator`] and pixel
+//! buffer.  When a slot runs out of space a new, larger slot is pushed onto
+//! [`GlyphAtlas::slots`].  Existing slots are *never* modified or evicted, so
+//! all [`GlyphEntry`] UV coordinates remain valid forever — matching the
+//! strategy used by Alacritty.
+//!
+//! ```text
+//!   Slot 0 (512×512, mostly full)
+//!   Slot 1 (1024×1024, just started)
+//!     ↑ never touched again once full
+//! ```
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -39,7 +54,12 @@ pub enum GlyphContentType {
 
 /// A single glyph's position and metrics within the atlas.
 #[derive(Debug, Clone)]
-pub struct GlyphEntry {    /// Allocated rectangle within the atlas texture (in pixels).
+pub struct GlyphEntry {
+    /// Index into [`GlyphAtlas::slots`] identifying which atlas texture
+    /// this glyph is stored in.  Once assigned this index never changes
+    /// — the slot and its texture are kept alive indefinitely.
+    pub atlas_index: u32,
+    /// Allocated rectangle within the atlas texture (in pixels).
     pub atlas_rect: etagere::Rectangle,
     /// Horizontal bearing (pixels from origin to glyph left edge).
     pub bearing_x: f32,
@@ -63,6 +83,30 @@ pub struct GlyphEntry {    /// Allocated rectangle within the atlas texture (in 
     pub scale: f32,
 }
 
+/// A single atlas texture slot — a square region of texture with its own
+/// rectangle allocator and pixel data.
+///
+/// Each slot is an independent GPU texture.  When a slot fills up,
+/// [`GlyphAtlas::grow_atlas`] pushes a new larger slot without touching
+/// the existing one, so all prior [`GlyphEntry`] references remain valid.
+pub struct AtlasSlot {
+    /// Rectangle allocator for packing glyphs into this slot.
+    pub allocator: AtlasAllocator,
+    /// RGBA pixel data of this slot's texture.
+    pub texture_data: Vec<u8>,
+    /// Width and height of this slot (square, power of two).
+    pub size: u32,
+}
+
+impl std::fmt::Debug for AtlasSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AtlasSlot")
+            .field("size", &self.size)
+            .field("texture_data.len", &self.texture_data.len())
+            .finish()
+    }
+}
+
 /// Cache key for a multi-character run that may produce ligature glyphs.
 ///
 /// When ligature shaping is implemented, consecutive same-style characters
@@ -79,33 +123,18 @@ pub struct GlyphEntry {    /// Allocated rectangle within the atlas texture (in 
 ///
 /// When bold/italic style is plumbed through shaping, this key will be
 /// extended with style flags so that `->` in bold gets a different (or
-/// same) cache entry depending on how the font handles bold ligatures.
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct RunCacheKey {
-    /// The raw text spanned by the run.
+/// the same) cache entry.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct RunCacheKey {
     pub text: String,
-    /// Font size in `f32::to_bits()` form.
     pub font_size_bits: u32,
-    // FUTURE: add bold/italic style flags here when ligature-aware shaping
-    // is implemented.  Different OpenType features may be active for
-    // different font weights.
 }
 
-/// One glyph in a shaped run, after rasterisation and atlas packing.
+/// One shaped glyph output by a multi-character run.
 ///
-/// When no ligature substitution occurs, a run of N characters produces N
-/// [`ShapedGlyph`] entries, each covering exactly one cell.
-///
-/// When a ligature *does* occur (e.g. `->` becomes one glyph), a single
-/// [`ShapedGlyph`] entry covers multiple source characters / cells.  The
-/// renderer splits the ligature bitmap into per-cell strips by adjusting
-/// UV coordinates.
-///
-/// # Current (preparatory) state
-///
-/// Without actual ligature shaping, each `ShapedGlyph` always covers
-/// exactly one source character.  The `char_range` and `num_cells` fields
-/// are always `0..1` / `1` respectively.
+/// Ligature runs produce one `ShapedGlyph` per output glyph (which may
+/// cover multiple source cells).  The per-char path is identical but
+/// always has `num_cells == 1`.
 #[derive(Debug, Clone)]
 pub struct ShapedGlyph {
     /// Range in the source text that this glyph originated from.
@@ -134,21 +163,15 @@ pub struct ShapedGlyph {
 }
 
 /// The glyph atlas.
+///
+/// Manages a set of texture slots (see [`AtlasSlot`]) and caches.  New
+/// glyphs are packed into the current (last) slot; when it fills up,
+/// [`grow_atlas`](Self::grow_atlas) pushes a new larger slot.
 pub struct GlyphAtlas {
     pub font_system: FontSystem,
-    atlas: AtlasAllocator,
-    /// RGBA pixel data of the atlas texture.
-    ///
-    /// For subpixel-rendered glyphs each pixel stores
-    ///   R = red subpixel coverage,
-    ///   G = green subpixel coverage,
-    ///   B = blue subpixel coverage,
-    ///   A = max(R,G,B)  (opaque coverage).
-    ///
-    /// For color glyphs (emojis) the pixel is premultiplied RGBA.
-    pub texture_data: Vec<u8>,
-    /// Current atlas texture size (power of two).
-    pub texture_size: u32,
+    /// Texture slots, indexed by [`GlyphEntry::atlas_index`].
+    /// Slot 0 is always present; new slots are appended on demand.
+    pub slots: Vec<AtlasSlot>,
     font_size: f32,
     /// Font family name used for shaping (e.g. "Consolas", "Menlo").
     font_family: Cow<'static, str>,
@@ -172,7 +195,7 @@ pub struct GlyphAtlas {
     no_effect_cache: HashSet<RunCacheKey>,
     /// Cache for image data placed in the atlas, keyed by content hash.
     /// Value is `(GlyphEntry, AllocationId)` so individual images can be
-    /// removed from the atlas without a full resize.
+    /// removed from the atlas without invalidating a whole slot.
     image_cache: HashMap<[u8; 32], (GlyphEntry, etagere::AllocId)>,
 
     /// Swash scale context (replaces cosmic-text's `SwashCache`).
@@ -208,95 +231,10 @@ pub struct GlyphAtlas {
     /// the cursor visually matches the character body instead of overshooting
     /// into the "above-cap" buffer.  Cached by [`cap_height()`](Self::cap_height).
     cap_height: f32,
-
-    /// Whether OpenType ligature features (`liga`/`clig`) are enabled.
-    ///
-    /// When `true`, calls to [`shape_and_rasterize_run`](Self::shape_and_rasterize_run)
-    /// use `Shaping::Advanced` so the font's ligature substitution rules
-    /// can replace multi-character sequences with a single glyph.
-    ///
-    /// When `false`, all shaping uses `Shaping::Basic` (fast path, no
-    /// ligatures, no font fallback).
-    ///
-    /// Set from [`zenterm_config::font::FontConfig::ligatures`].
-    ///
-    /// This field is read by [`shape_and_rasterize_run`](Self::shape_and_rasterize_run)
-    /// to decide whether to use `Shaping::Advanced` (ligatures on) or
-    /// `Shaping::Basic` (ligatures off).
+    /// Whether OpenType ligature features are enabled.
     pub ligatures_enabled: bool,
-
-    /// Hinting mode for font rasterization.
-    pub hinting_mode: HintingMode,
-
-    /// Anti-aliasing render mode (subpixel LCD or grayscale).
-    pub render_mode: RenderMode,
-}
-
-#[cfg(test)]
-mod ligature_test {
-    use cosmic_text::{Buffer, FontSystem, Metrics, Shaping, Attrs, Family, FontFeatures, FeatureTag};
-
-    /// Minimal test: shape ">=" with JetBrainsMono and ligature features.
-    /// This bypasses all of zenterm's code to isolate cosmic-text/harfbuzz behavior.
-    fn test_ligature_shaping(text: &str, use_features: bool, font_path: &str, font_name: &str) {
-        let mut db = fontdb::Database::new();
-        let font_data = std::fs::read(font_path)
-            .unwrap_or_else(|e| panic!("Failed to read {}: {}", font_path, e));
-        db.load_font_data(font_data);
-
-        let mut font_system = FontSystem::new_with_locale_and_db(
-            "en-US".into(),
-            db,
-        );
-
-        let metrics = Metrics::new(18.0, 22.0);
-        let mut buf = Buffer::new(&mut font_system, metrics);
-        buf.set_size(Some(500.0), None);
-
-        let attrs = if use_features {
-            let mut font_features = FontFeatures::new();
-            font_features.enable(FeatureTag::STANDARD_LIGATURES);
-            font_features.enable(FeatureTag::CONTEXTUAL_LIGATURES);
-            font_features.enable(FeatureTag::CONTEXTUAL_ALTERNATES);
-            font_features.enable(FeatureTag::DISCRETIONARY_LIGATURES);
-            font_features.enable(FeatureTag::KERNING);
-            Attrs::new()
-                .family(Family::Name(font_name))
-                .font_features(font_features)
-        } else {
-            Attrs::new()
-                .family(Family::Name(font_name))
-        };
-
-        buf.set_text(text, &attrs, Shaping::Advanced, None);
-        buf.shape_until_scroll(&mut font_system, true);
-
-        let shape = buf.lines[0].shape_opt().expect("ShapeLine not found");
-        let span = &shape.spans[0];
-
-        let total_glyphs: usize = span.words.iter().map(|w| w.glyphs.len()).sum();
-        let expected = text.chars().count();
-        let label = if use_features { "feat" } else { "def " };
-        if total_glyphs < expected {
-            eprintln!("  [{label}] {:?}: LIGATURE OK ({})", text, total_glyphs);
-        } else {
-            eprintln!("  [{label}] {:?}: no ligature ({})", text, total_glyphs);
-        }
-    }
-
-    #[test]
-    fn test_ligatures() {
-        let jetbrains = (
-            concat!(env!("HOME"), "/Library/Fonts/JetBrainsMonoNerdFont-Regular.ttf"),
-            "JetBrainsMono Nerd Font",
-        );
-
-        let test_cases = ["->", ">=", "!=", "<=", "=>", "::", "//", "||", "&&"];
-
-        eprintln!("\n=== JetBrainsMono Nerd Font ===");
-        for text in &test_cases {
-            test_ligature_shaping(text, false, jetbrains.0, jetbrains.1);
-            test_ligature_shaping(text, true, jetbrains.0, jetbrains.1);
-        }
-    }
+    /// Hinting mode for glyph rasterization.
+    hinting_mode: HintingMode,
+    /// Render mode (subpixel or grayscale).
+    render_mode: RenderMode,
 }

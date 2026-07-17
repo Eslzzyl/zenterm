@@ -17,7 +17,7 @@ use zenterm_core::image::ImageCell;
 use zenterm_core::image::ImageDataType;
 use zenterm_glyph::GlyphContentType;
 use zenterm_render::glyph_type;
-use zenterm_render::CellInstance;
+use zenterm_render::{AtlasRange, CellInstance};
 
 use super::shaping;
 use super::types::{TerminalSession, UrlSpan};
@@ -76,10 +76,10 @@ impl TerminalSession {
         // works correctly.
         if self.pty_exited || !self.terminal_dirty {
             let has_instances = !self.cached_bg.is_empty()
-                || !self.cached_glyph.is_empty()
+                || self.cached_glyph_per_atlas.iter().any(|v| !v.is_empty())
                 || !self.cached_deco.is_empty()
-                || !self.cached_image_below.is_empty()
-                || !self.cached_image_above.is_empty();
+                || self.cached_image_below.iter().any(|v| !v.is_empty())
+                || self.cached_image_above.iter().any(|v| !v.is_empty());
             if has_instances {
                 let mut buf = self
                     .gpu
@@ -87,15 +87,60 @@ impl TerminalSession {
                     .instances
                     .lock()
                     .expect("SharedRenderState.instances poisoned");
+                let mut ranges = self
+                    .gpu
+                    .shared
+                    .atlas_ranges
+                    .lock()
+                    .expect("atlas_ranges poisoned");
                 buf.extend(&self.cached_bg);
-                buf.extend(&self.cached_glyph);
+                // Append per-atlas image instances (z < 0).
+                for (slot_idx, instances) in self.cached_image_below.iter().enumerate() {
+                    if instances.is_empty() {
+                        continue;
+                    }
+                    let start = buf.len() as u32;
+                    buf.extend(instances);
+                    ranges.push(AtlasRange {
+                        atlas_index: slot_idx,
+                        start,
+                        count: instances.len() as u32,
+                    });
+                }
+                // Append per-atlas glyph instances.
+                for (slot_idx, instances) in self.cached_glyph_per_atlas.iter().enumerate() {
+                    if instances.is_empty() {
+                        continue;
+                    }
+                    let start = buf.len() as u32;
+                    buf.extend(instances);
+                    ranges.push(AtlasRange {
+                        atlas_index: slot_idx,
+                        start,
+                        count: instances.len() as u32,
+                    });
+                }
                 buf.extend(&self.cached_deco);
+                // Append per-atlas image instances (z >= 0).
+                for (slot_idx, instances) in self.cached_image_above.iter().enumerate() {
+                    if instances.is_empty() {
+                        continue;
+                    }
+                    let start = buf.len() as u32;
+                    buf.extend(instances);
+                    ranges.push(AtlasRange {
+                        atlas_index: slot_idx,
+                        start,
+                        count: instances.len() as u32,
+                    });
+                }
+                drop(ranges);
+                drop(buf);
             }
             return has_instances;
         }
 
         let mut atlas = self.atlas.lock();
-        let tex_size = atlas.texture_size as f32;
         let cw = self.cell_width;
         let ch = self.cell_height;
 
@@ -149,15 +194,31 @@ impl TerminalSession {
         // Reuse cached instance buffers — clear instead of re-allocating.
         let instances_cap = rows * cols;
         self.cached_bg.clear();
-        self.cached_glyph.clear();
+        for v in &mut self.cached_glyph_per_atlas {
+            v.clear();
+        }
+        for v in &mut self.cached_image_below {
+            v.clear();
+        }
+        for v in &mut self.cached_image_above {
+            v.clear();
+        }
         self.cached_deco.clear();
-        self.cached_image_below.clear();
-        self.cached_image_above.clear();
         if self.cached_bg.capacity() < instances_cap {
             self.cached_bg.reserve(instances_cap - self.cached_bg.capacity());
         }
-        if self.cached_glyph.capacity() < instances_cap {
-            self.cached_glyph.reserve(instances_cap - self.cached_glyph.capacity());
+        if self.cached_deco.capacity() < instances_cap {
+            self.cached_deco.reserve(instances_cap - self.cached_deco.capacity());
+        }
+        if self.cached_image_below.capacity() < instances_cap {
+            self.cached_image_below.reserve(
+                instances_cap - self.cached_image_below.capacity(),
+            );
+        }
+        if self.cached_image_above.capacity() < instances_cap {
+            self.cached_image_above.reserve(
+                instances_cap - self.cached_image_above.capacity(),
+            );
         }
         if self.cached_deco.capacity() < instances_cap {
             self.cached_deco.reserve(instances_cap - self.cached_deco.capacity());
@@ -307,7 +368,7 @@ impl TerminalSession {
                         default_bg, baseline, cw, ch,
                         x_off, y_off, x_scale, y_scale, cols,
                         &mut self.cached_bg,
-                        &mut self.cached_glyph,
+                        &mut self.cached_glyph_per_atlas,
                         &mut self.cached_deco,
                     );
                     last_checked_run_end = outcome.last_checked;
@@ -372,9 +433,8 @@ impl TerminalSession {
                 // ── Image quads (z < 0: behind text) ────────────────────
                 if let Some(ref img) = cell.image {
                     if img.z_index < 0 {
-                        let buf = &mut self.cached_image_below;
                         emit_image_quad(
-                            buf, &mut atlas, img, col, row,
+                            &mut self.cached_image_below, &mut atlas, img, col, row,
                             cw, ch, x_off, y_off, x_scale, y_scale,
                         );
                     }
@@ -390,34 +450,51 @@ impl TerminalSession {
                         "per-char glyph: row={row} col={col} ch={ch_char:?} \
                          run_start={run_start} run_end={run_end}",
                     );
-                    if let Ok((entry, is_new)) = atlas.ensure_glyph(ch_char) {
-                        if is_new {
-                            has_new_glyphs = true;
+                    // Extract glyph entry data in a sub-scope so the
+                    // mutable borrow on `atlas` is released before we
+                    // access `atlas.slots` below.
+                    let (ai, ar, scale, sbx, sby, ct) = {
+                        if let Ok((entry, is_new)) = atlas.ensure_glyph(ch_char) {
+                            if is_new {
+                                has_new_glyphs = true;
+                            }
+                            (
+                                entry.atlas_index,
+                                entry.atlas_rect,
+                                entry.scale,
+                                entry.bearing_x * entry.scale,
+                                entry.bearing_y * entry.scale,
+                                entry.content_type,
+                            )
+                        } else {
+                            log::warn!(
+                                "glyph lookup failed for ch={ch_char:?}",
+                            );
+                            col += 1;
+                            continue;
                         }
+                    };
 
-                        let atlas_w =
-                            (entry.atlas_rect.max.x - entry.atlas_rect.min.x) as f32;
-                        let atlas_h =
-                            (entry.atlas_rect.max.y - entry.atlas_rect.min.y) as f32;
+                        let atlas_w = (ar.max.x - ar.min.x) as f32;
+                        let atlas_h = (ar.max.y - ar.min.y) as f32;
 
-                        let scale = entry.scale;
                         let mut scaled_w = atlas_w * scale;
                         let mut scaled_h = atlas_h * scale;
-                        let sbx = entry.bearing_x * scale;
-                        let sby = entry.bearing_y * scale;
 
-                        let mut glyph_x_px = x_off + (col as f32 * cw + sbx).round();
+                        let mut glyph_x_px =
+                            x_off + (col as f32 * cw + sbx).round();
                         let mut glyph_y_px =
                             y_off + (row as f32 * ch + (baseline - sby)).round();
 
+                        let slot_size = atlas.slots[ai as usize].size as f32;
                         let mut u_min =
-                            (entry.atlas_rect.min.x as f32 + 0.5) / tex_size;
+                            (ar.min.x as f32 + 0.5) / slot_size;
                         let mut v_min =
-                            (entry.atlas_rect.min.y as f32 + 0.5) / tex_size;
+                            (ar.min.y as f32 + 0.5) / slot_size;
                         let mut u_max =
-                            (entry.atlas_rect.max.x as f32 - 0.5) / tex_size;
+                            (ar.max.x as f32 - 0.5) / slot_size;
                         let mut v_max =
-                            (entry.atlas_rect.max.y as f32 - 0.5) / tex_size;
+                            (ar.max.y as f32 - 0.5) / slot_size;
 
                         let cell_left = x_off + col as f32 * cw;
                         let cell_top = y_off + row as f32 * ch;
@@ -460,7 +537,12 @@ impl TerminalSession {
                             (draw_fg, draw_bg)
                         };
 
-                        self.cached_glyph.push(CellInstance {
+                        // Ensure per-atlas cache vec is large enough.
+                        let ai_usize = ai as usize;
+                        if ai_usize >= self.cached_glyph_per_atlas.len() {
+                            self.cached_glyph_per_atlas.resize_with(ai_usize + 1, Vec::new);
+                        }
+                        self.cached_glyph_per_atlas[ai_usize].push(CellInstance {
                             clip_pos: [
                                 glyph_x_px * x_scale - 1.0,
                                 1.0 - glyph_y_px * y_scale,
@@ -478,19 +560,13 @@ impl TerminalSession {
                                 glyph_bg.r(), glyph_bg.g(),
                                 glyph_bg.b(), 1.0,
                             ],
-                            flags: match entry.content_type {
+                            flags: match ct {
                                 GlyphContentType::Subpixel => glyph_type::SUBPIXEL,
                                 GlyphContentType::Mask => glyph_type::MASK,
                                 GlyphContentType::Color => glyph_type::COLOR,
                             },
                         });
-                    } else {
-                        log::warn!(
-                            "update_cell_instances: glyph lookup failed for ch={:?}",
-                            ch_char,
-                        );
                     }
-                }
 
                 if has_deco || is_cursor {
                     emit_deco_for_cell(
@@ -528,9 +604,8 @@ impl TerminalSession {
                 // ── Image quads (z >= 0: on top of text) ────────────────
                 if let Some(ref img) = cell.image {
                     if img.z_index >= 0 {
-                        let buf = &mut self.cached_image_above;
                         emit_image_quad(
-                            buf, &mut atlas, img, col, row,
+                            &mut self.cached_image_above, &mut atlas, img, col, row,
                             cw, ch, x_off, y_off, x_scale, y_scale,
                         );
                     }
@@ -547,11 +622,54 @@ impl TerminalSession {
             .instances
             .lock()
             .expect("SharedRenderState.instances poisoned");
+        let mut ranges = self
+            .gpu
+            .shared
+            .atlas_ranges
+            .lock()
+            .expect("atlas_ranges poisoned");
         buf.extend(&self.cached_bg);
-        buf.extend(&self.cached_image_below);
-        buf.extend(&self.cached_glyph);
+        // Append per-atlas image instances (z < 0).
+        for (slot_idx, instances) in self.cached_image_below.iter().enumerate() {
+            if instances.is_empty() {
+                continue;
+            }
+            let start = buf.len() as u32;
+            buf.extend(instances);
+            ranges.push(AtlasRange {
+                atlas_index: slot_idx,
+                start,
+                count: instances.len() as u32,
+            });
+        }
+        // Append per-atlas glyph instances.
+        for (slot_idx, instances) in self.cached_glyph_per_atlas.iter().enumerate() {
+            if instances.is_empty() {
+                continue;
+            }
+            let start = buf.len() as u32;
+            buf.extend(instances);
+            ranges.push(AtlasRange {
+                atlas_index: slot_idx,
+                start,
+                count: instances.len() as u32,
+            });
+        }
         buf.extend(&self.cached_deco);
-        buf.extend(&self.cached_image_above);
+        // Append per-atlas image instances (z >= 0).
+        for (slot_idx, instances) in self.cached_image_above.iter().enumerate() {
+            if instances.is_empty() {
+                continue;
+            }
+            let start = buf.len() as u32;
+            buf.extend(instances);
+            ranges.push(AtlasRange {
+                atlas_index: slot_idx,
+                start,
+                count: instances.len() as u32,
+            });
+        }
+        drop(ranges);
         drop(buf);
         // Mark the GPU side as dirty (instance generation bumped by
         // the app after all sessions have appended).
@@ -568,7 +686,7 @@ impl TerminalSession {
 
 /// Emit a [`CellInstance`] for an [`ImageCell`] attached to a grid cell.
 fn emit_image_quad(
-    buf: &mut Vec<CellInstance>,
+    bufs: &mut Vec<Vec<CellInstance>>,
     atlas: &mut zenterm_glyph::GlyphAtlas,
     img: &ImageCell,
     col: usize,
@@ -599,15 +717,15 @@ fn emit_image_quad(
         Err(_) => return,
     };
 
-    let tex_size = atlas.texture_size as f32;
+    let slot_size = atlas.slots[entry.atlas_index as usize].size as f32;
     let ax = entry.atlas_rect.min.x as f32;
     let ay = entry.atlas_rect.min.y as f32;
 
     // Map ImageCell UV (image-space) → atlas UV.
-    let u_min = (ax + img.top_left.x * img_w as f32) / tex_size;
-    let v_min = (ay + img.top_left.y * img_h as f32) / tex_size;
-    let u_max = (ax + img.bottom_right.x * img_w as f32) / tex_size;
-    let v_max = (ay + img.bottom_right.y * img_h as f32) / tex_size;
+    let u_min = (ax + img.top_left.x * img_w as f32) / slot_size;
+    let v_min = (ay + img.top_left.y * img_h as f32) / slot_size;
+    let u_max = (ax + img.bottom_right.x * img_w as f32) / slot_size;
+    let v_max = (ay + img.bottom_right.y * img_h as f32) / slot_size;
 
     // Cell position in pixels (dock-relative).
     let clip_x = x_off + col as f32 * cw;
@@ -625,5 +743,9 @@ fn emit_image_quad(
         flags: glyph_type::IMAGE,
     };
 
-    buf.push(instance);
+    let ai = entry.atlas_index as usize;
+    if ai >= bufs.len() {
+        bufs.resize_with(ai + 1, Vec::new);
+    }
+    bufs[ai].push(instance);
 }

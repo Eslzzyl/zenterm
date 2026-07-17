@@ -19,7 +19,7 @@ use swash::scale::ScaleContext;
 use zenterm_core::{Error, HintingMode, RenderMode, Result, SubpixelLayout};
 
 use crate::builtin;
-use crate::{GlyphContentType, GlyphEntry, GlyphAtlas, RunCacheKey, ShapedGlyph};
+use crate::{AtlasSlot, GlyphContentType, GlyphEntry, GlyphAtlas, RunCacheKey, ShapedGlyph};
 
 impl GlyphAtlas {
     /// Create a new glyph atlas with the given font size (in pixels),
@@ -28,7 +28,8 @@ impl GlyphAtlas {
     /// `ligatures_enabled` controls whether OpenType ligature features
     /// are used during shaping.  See the [`ligatures_enabled`] field.
     ///
-    /// The atlas starts at 512×512 and grows as needed.
+    /// The atlas starts with a single 512×512 slot and grows by pushing
+    /// additional slots as needed (see [`grow_atlas`](Self::grow_atlas)).
     pub fn new(
         font_size: f32,
         font_family: Cow<'static, str>,
@@ -50,14 +51,17 @@ impl GlyphAtlas {
         let metrics = Metrics::new(font_size, font_size);
 
         let initial_size: u32 = 512;
-        let atlas = AtlasAllocator::new(etagere::size2(initial_size as i32, initial_size as i32));
+        let allocator = AtlasAllocator::new(etagere::size2(initial_size as i32, initial_size as i32));
         let texture_data = vec![0u8; (initial_size * initial_size * 4) as usize];
+        let first_slot = AtlasSlot {
+            allocator,
+            texture_data,
+            size: initial_size,
+        };
 
         Self {
             font_system,
-            atlas,
-            texture_data,
-            texture_size: initial_size,
+            slots: vec![first_slot],
             font_size,
             font_family,
             pixels_per_point,
@@ -389,6 +393,7 @@ impl GlyphAtlas {
                     cache_key.font_id,
                 );
                 return Ok(GlyphEntry {
+                    atlas_index: 0,
                     atlas_rect: etagere::Rectangle {
                         min: etagere::Point::new(0, 0),
                         max: etagere::Point::new(0, 0),
@@ -407,6 +412,7 @@ impl GlyphAtlas {
 
         if width <= 0 || height <= 0 {
             return Ok(GlyphEntry {
+                atlas_index: 0,
                 atlas_rect: etagere::Rectangle {
                     min: etagere::Point::new(0, 0),
                     max: etagere::Point::new(0, 0),
@@ -419,17 +425,26 @@ impl GlyphAtlas {
             });
         }
 
-        // Allocate in atlas.
+        // Allocate in the current (last) atlas slot.
+        // If full, push a new larger slot — existing slots are unchanged.
+        // slot_idx is recomputed each iteration so that after grow_atlas
+        // pushes a new slot we retry the fresh slot, not the old full one.
         let allocation = loop {
-            match self.atlas.allocate(etagere::size2(width, height)) {
-                Some(id) => break id,
+            let idx = self.slots.len() - 1;
+            match self.slots[idx]
+                .allocator
+                .allocate(etagere::size2(width, height))
+            {
+                Some(id) => break (id, idx),
                 None => self.grow_atlas()?,
             }
         };
-        let rectangle = self.atlas.get(allocation.id);
+        let (allocation, slot_idx) = allocation;
+        let rectangle = self.slots[slot_idx].allocator.get(allocation.id);
 
-        // Copy pixels into the RGBA atlas.
-        let atlas_w = self.texture_size as usize;
+        // Copy pixels into the slot's RGBA texture data.
+        let atlas_w = self.slots[slot_idx].size as usize;
+        let texture_data = &mut self.slots[slot_idx].texture_data;
 
         match img.content {
             SwashContent::SubpixelMask => {
@@ -438,15 +453,15 @@ impl GlyphAtlas {
                     let px = (rectangle.min.x as usize) + (i % width as usize);
                     let py = (rectangle.min.y as usize) + (i / width as usize);
                     let idx = (py * atlas_w + px) * 4;
-                    if idx + 3 < self.texture_data.len() {
+                    if idx + 3 < texture_data.len() {
                         let r = chunk[0];
                         let g = chunk[1];
                         let b = chunk[2];
                         let a = r.max(g).max(b);
-                        self.texture_data[idx] = r;
-                        self.texture_data[idx + 1] = g;
-                        self.texture_data[idx + 2] = b;
-                        self.texture_data[idx + 3] = a;
+                        texture_data[idx] = r;
+                        texture_data[idx + 1] = g;
+                        texture_data[idx + 2] = b;
+                        texture_data[idx + 3] = a;
                     }
                 }
             }
@@ -456,11 +471,11 @@ impl GlyphAtlas {
                     let px = (rectangle.min.x as usize) + (i % width as usize);
                     let py = (rectangle.min.y as usize) + (i / width as usize);
                     let idx = (py * atlas_w + px) * 4;
-                    if idx + 3 < self.texture_data.len() {
-                        self.texture_data[idx] = coverage;
-                        self.texture_data[idx + 1] = coverage;
-                        self.texture_data[idx + 2] = coverage;
-                        self.texture_data[idx + 3] = 255;
+                    if idx + 3 < texture_data.len() {
+                        texture_data[idx] = coverage;
+                        texture_data[idx + 1] = coverage;
+                        texture_data[idx + 2] = coverage;
+                        texture_data[idx + 3] = 255;
                     }
                 }
             }
@@ -470,8 +485,8 @@ impl GlyphAtlas {
                     let px = (rectangle.min.x as usize) + (i % width as usize);
                     let py = (rectangle.min.y as usize) + (i / width as usize);
                     let idx = (py * atlas_w + px) * 4;
-                    if idx + 3 < self.texture_data.len() {
-                        self.texture_data[idx..idx + 4].copy_from_slice(chunk);
+                    if idx + 3 < texture_data.len() {
+                        texture_data[idx..idx + 4].copy_from_slice(chunk);
                     }
                 }
             }
@@ -484,6 +499,7 @@ impl GlyphAtlas {
         };
 
         Ok(GlyphEntry {
+            atlas_index: slot_idx as u32,
             atlas_rect: rectangle,
             bearing_x: img.placement.left as f32,
             bearing_y: img.placement.top as f32,
@@ -744,6 +760,7 @@ impl GlyphAtlas {
                 self.glyph_cache.insert(
                     key,
                     GlyphEntry {
+                        atlas_index: 0,
                         atlas_rect: etagere::Rectangle {
                             min: etagere::Point::new(0, 0),
                             max: etagere::Point::new(0, 0),
@@ -780,6 +797,7 @@ impl GlyphAtlas {
                 self.glyph_cache.insert(
                     key,
                     GlyphEntry {
+                        atlas_index: 0,
                         atlas_rect: etagere::Rectangle {
                             min: etagere::Point::new(0, 0),
                             max: etagere::Point::new(0, 0),
@@ -802,6 +820,7 @@ impl GlyphAtlas {
             self.glyph_cache.insert(
                 key,
                 GlyphEntry {
+                    atlas_index: 0,
                     atlas_rect: etagere::Rectangle {
                         min: etagere::Point::new(0, 0),
                         max: etagere::Point::new(0, 0),
@@ -816,17 +835,25 @@ impl GlyphAtlas {
             return Ok(());
         }
 
-        // ── 4. Allocate in atlas ─────────────────────────────────────
+        // ── 4. Allocate in current atlas slot ──────────────────────────
+        // slot_idx is recomputed each iteration so that after grow_atlas
+        // pushes a new slot we retry the fresh slot, not the old full one.
         let allocation = loop {
-            match self.atlas.allocate(etagere::size2(width, height)) {
-                Some(id) => break id,
+            let idx = self.slots.len() - 1;
+            match self.slots[idx]
+                .allocator
+                .allocate(etagere::size2(width, height))
+            {
+                Some(id) => break (id, idx),
                 None => self.grow_atlas()?,
             }
         };
-        let rectangle = self.atlas.get(allocation.id);
+        let (allocation, slot_idx) = allocation;
+        let rectangle = self.slots[slot_idx].allocator.get(allocation.id);
 
-        // ── 5. Copy pixels into the RGBA atlas ───────────────────────
-        let atlas_w = self.texture_size as usize;
+        // ── 5. Copy pixels into the slot's RGBA texture data ───────────
+        let atlas_w = self.slots[slot_idx].size as usize;
+        let texture_data = &mut self.slots[slot_idx].texture_data;
 
         match img.content {
             SwashContent::SubpixelMask => {
@@ -836,15 +863,15 @@ impl GlyphAtlas {
                     let px = (rectangle.min.x as usize) + (i % width as usize);
                     let py = (rectangle.min.y as usize) + (i / width as usize);
                     let idx = (py * atlas_w + px) * 4;
-                    if idx + 3 < self.texture_data.len() {
+                    if idx + 3 < texture_data.len() {
                         let r = chunk[0];
                         let g = chunk[1];
                         let b = chunk[2];
                         let a = r.max(g).max(b);
-                        self.texture_data[idx] = r;
-                        self.texture_data[idx + 1] = g;
-                        self.texture_data[idx + 2] = b;
-                        self.texture_data[idx + 3] = a;
+                        texture_data[idx] = r;
+                        texture_data[idx + 1] = g;
+                        texture_data[idx + 2] = b;
+                        texture_data[idx + 3] = a;
                     }
                 }
             }
@@ -857,11 +884,11 @@ impl GlyphAtlas {
                     let px = (rectangle.min.x as usize) + (i % width as usize);
                     let py = (rectangle.min.y as usize) + (i / width as usize);
                     let idx = (py * atlas_w + px) * 4;
-                    if idx + 3 < self.texture_data.len() {
-                        self.texture_data[idx] = coverage;
-                        self.texture_data[idx + 1] = coverage;
-                        self.texture_data[idx + 2] = coverage;
-                        self.texture_data[idx + 3] = 255;
+                    if idx + 3 < texture_data.len() {
+                        texture_data[idx] = coverage;
+                        texture_data[idx + 1] = coverage;
+                        texture_data[idx + 2] = coverage;
+                        texture_data[idx + 3] = 255;
                     }
                 }
             }
@@ -871,8 +898,8 @@ impl GlyphAtlas {
                     let px = (rectangle.min.x as usize) + (i % width as usize);
                     let py = (rectangle.min.y as usize) + (i / width as usize);
                     let idx = (py * atlas_w + px) * 4;
-                    if idx + 3 < self.texture_data.len() {
-                        self.texture_data[idx..idx + 4].copy_from_slice(chunk);
+                    if idx + 3 < texture_data.len() {
+                        texture_data[idx..idx + 4].copy_from_slice(chunk);
                     }
                 }
             }
@@ -888,6 +915,7 @@ impl GlyphAtlas {
         self.glyph_cache.insert(
             key,
             GlyphEntry {
+                atlas_index: slot_idx as u32,
                 atlas_rect: rectangle,
                 bearing_x: img.placement.left as f32,
                 bearing_y: img.placement.top as f32,
@@ -923,6 +951,7 @@ impl GlyphAtlas {
             self.glyph_cache.insert(
                 key,
                 GlyphEntry {
+                    atlas_index: 0,
                     atlas_rect: etagere::Rectangle {
                         min: etagere::Point::new(0, 0),
                         max: etagere::Point::new(0, 0),
@@ -937,17 +966,25 @@ impl GlyphAtlas {
             return Ok(());
         }
 
-        // Allocate in atlas.
+        // Allocate in the current atlas slot.
+        // slot_idx is recomputed each iteration so that after grow_atlas
+        // pushes a new slot we retry the fresh slot, not the old full one.
         let allocation = loop {
-            match self.atlas.allocate(etagere::size2(width, height)) {
-                Some(id) => break id,
+            let idx = self.slots.len() - 1;
+            match self.slots[idx]
+                .allocator
+                .allocate(etagere::size2(width, height))
+            {
+                Some(id) => break (id, idx),
                 None => self.grow_atlas()?,
             }
         };
-        let rectangle = self.atlas.get(allocation.id);
+        let (allocation, slot_idx) = allocation;
+        let rectangle = self.slots[slot_idx].allocator.get(allocation.id);
 
-        // Copy grayscale pixel data into the RGBA atlas.
-        let atlas_w = self.texture_size as usize;
+        // Copy grayscale pixel data into the slot's RGBA texture.
+        let atlas_w = self.slots[slot_idx].size as usize;
+        let texture_data = &mut self.slots[slot_idx].texture_data;
         for y in 0..height {
             for x in 0..width {
                 let src_idx = (y * width + x) as usize;
@@ -955,13 +992,13 @@ impl GlyphAtlas {
                 let dst_y = rectangle.min.y as usize + y as usize;
                 let dst_idx = (dst_y * atlas_w + dst_x) * 4;
                 let coverage = glyph.data[src_idx];
-                if dst_idx + 3 < self.texture_data.len() {
+                if dst_idx + 3 < texture_data.len() {
                     // Store coverage in all three RGB channels so both
                     // SUBPIXEL and MASK shader paths work.  A is opaque.
-                    self.texture_data[dst_idx] = coverage;
-                    self.texture_data[dst_idx + 1] = coverage;
-                    self.texture_data[dst_idx + 2] = coverage;
-                    self.texture_data[dst_idx + 3] = 255;
+                    texture_data[dst_idx] = coverage;
+                    texture_data[dst_idx + 1] = coverage;
+                    texture_data[dst_idx + 2] = coverage;
+                    texture_data[dst_idx + 3] = 255;
                 }
             }
         }
@@ -969,6 +1006,7 @@ impl GlyphAtlas {
         self.glyph_cache.insert(
             key,
             GlyphEntry {
+                atlas_index: slot_idx as u32,
                 atlas_rect: rectangle,
                 bearing_x: glyph.bearing_x,
                 bearing_y: glyph.bearing_y,
@@ -1002,29 +1040,39 @@ impl GlyphAtlas {
 
         let iw = width as i32;
         let ih = height as i32;
-        let allocation: etagere::Allocation = loop {
-            match self.atlas.allocate(etagere::size2(iw, ih)) {
-                Some(a) => break a,
+
+        // Allocate in the current atlas slot.
+        // slot_idx is recomputed each iteration so that after grow_atlas
+        // pushes a new slot we retry the fresh slot, not the old full one.
+        let (allocation, slot_idx) = loop {
+            let idx = self.slots.len() - 1;
+            match self.slots[idx]
+                .allocator
+                .allocate(etagere::size2(iw, ih))
+            {
+                Some(a) => break (a, idx),
                 None => self.grow_atlas()?,
             }
         };
         let rect = allocation.rectangle;
 
-        // Copy premultiplied RGBA into the atlas.
-        let atlas_w = self.texture_size as usize;
+        // Copy premultiplied RGBA into the slot's texture.
+        let atlas_w = self.slots[slot_idx].size as usize;
+        let texture_data = &mut self.slots[slot_idx].texture_data;
         for y in 0..height {
             for x in 0..width {
                 let si = ((y * width + x) * 4) as usize;
                 let dx = rect.min.x as usize + x as usize;
                 let dy = rect.min.y as usize + y as usize;
                 let di = (dy * atlas_w + dx) * 4;
-                if di + 3 < self.texture_data.len() && si + 3 < data.len() {
-                    self.texture_data[di..di + 4].copy_from_slice(&data[si..si + 4]);
+                if di + 3 < texture_data.len() && si + 3 < data.len() {
+                    texture_data[di..di + 4].copy_from_slice(&data[si..si + 4]);
                 }
             }
         }
 
         let entry = GlyphEntry {
+            atlas_index: slot_idx as u32,
             atlas_rect: rect,
             bearing_x: 0.0,
             bearing_y: 0.0,
@@ -1036,12 +1084,14 @@ impl GlyphAtlas {
         Ok(entry)
     }
 
-    /// Remove an image from the atlas, freeing its slot.
+    /// Remove an image from the atlas, freeing its texture slot.
     /// Called when the image is evicted from [`ImageCache`] so the GPU
     /// texture space can be reused.
     pub fn remove_image(&mut self, hash: &[u8; 32]) {
-        if let Some((_, id)) = self.image_cache.remove(hash) {
-            self.atlas.deallocate(id);
+        if let Some((entry, id)) = self.image_cache.remove(hash) {
+            self.slots[entry.atlas_index as usize]
+                .allocator
+                .deallocate(id);
         }
     }
 }

@@ -60,7 +60,7 @@ impl TerminalSession {
             exit_effect_sent: false,
             default_bg,
             cached_bg: Vec::new(),
-            cached_glyph: Vec::new(),
+            cached_glyph_per_atlas: Vec::new(),
             cached_deco: Vec::new(),
             cached_image_below: Vec::new(),
             cached_image_above: Vec::new(),

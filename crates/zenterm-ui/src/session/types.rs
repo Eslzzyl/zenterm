@@ -110,12 +110,15 @@ pub struct TerminalSession {
 
     // ── Cell-instance cache (avoids full rebuild when terminal is idle) ──
     pub(crate) cached_bg: Vec<CellInstance>,
-    pub(crate) cached_glyph: Vec<CellInstance>,
+    /// Per-atlas-slot glyph instance caches.  Indexed by atlas_index;
+    /// grows dynamically as new slots are created.  Each inner vec holds
+    /// the instances that belong to that slot's GPU texture.
+    pub(crate) cached_glyph_per_atlas: Vec<Vec<CellInstance>>,
     pub(crate) cached_deco: Vec<CellInstance>,
-    /// Image quads with z_index < 0 (render behind text).
-    pub(crate) cached_image_below: Vec<CellInstance>,
-    /// Image quads with z_index >= 0 (render on top of text).
-    pub(crate) cached_image_above: Vec<CellInstance>,
+    /// Image quads with z_index < 0 (render behind text), per atlas slot.
+    pub(crate) cached_image_below: Vec<Vec<CellInstance>>,
+    /// Image quads with z_index >= 0 (render on top of text), per atlas slot.
+    pub(crate) cached_image_above: Vec<Vec<CellInstance>>,
 
     /// ── Title debounce ──────────────────────────────────────────────────
     ///

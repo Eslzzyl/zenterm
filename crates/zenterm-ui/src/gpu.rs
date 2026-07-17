@@ -34,6 +34,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use zenterm_render::callback::SharedRenderState;
+use zenterm_render::AtlasRange;
 
 /// Application-wide GPU handle set, shared by reference across all
 /// terminal sessions and the wgpu paint callback.
@@ -80,6 +81,20 @@ impl SharedGpuContext {
     pub fn clear_instances(&self) {
         let mut buf = self.shared.instances.lock().expect("instances poisoned");
         buf.clear();
+    }
+
+    /// Clear the shared atlas ranges.  Call alongside `clear_instances`
+    /// at the start of each frame.
+    pub fn clear_atlas_ranges(&self) {
+        let mut buf = self.shared.atlas_ranges.lock().expect("atlas_ranges poisoned");
+        buf.clear();
+    }
+
+    /// Append an atlas range to the shared list.  Called by each
+    /// session after it appends its glyph instances.
+    pub fn push_atlas_range(&self, range: AtlasRange) {
+        let mut buf = self.shared.atlas_ranges.lock().expect("atlas_ranges poisoned");
+        buf.push(range);
     }
 
     /// Bump the instance generation counter.  Call once per frame

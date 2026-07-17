@@ -64,7 +64,9 @@ pub(crate) fn process_ligature_run(
     y_scale: f32,
     cols: usize,
     bg_instances: &mut Vec<CellInstance>,
-    glyph_instances: &mut Vec<CellInstance>,
+    // Per-atlas-slot glyph instance caches, indexed by atlas_index.
+    // The caller ensures the outer vec is large enough.
+    glyph_instances: &mut Vec<Vec<CellInstance>>,
     deco_instances: &mut Vec<CellInstance>,
 ) -> LigatureOutcome {
     let run_text = shaping::extract_run_text(grid, row, run_start, run_end);
@@ -187,7 +189,7 @@ pub(crate) fn process_ligature_run(
                     let a_right = atlas_rect.max.x as f32;
                     let a_top = atlas_rect.min.y as f32;
                     let a_bot = atlas_rect.max.y as f32;
-                    let tex_size = atlas.texture_size as f32;
+                    let slot_size = atlas.slots[sg.entry.atlas_index as usize].size as f32;
 
                     let (mut u_min, mut u_max, strip_w);
                     if actual_num_cells > 1 {
@@ -197,22 +199,18 @@ pub(crate) fn process_ligature_run(
                         let sw = strip_right - strip_left;
                         // UV: a horizontal slice of the atlas.
                         // origin_to_bitmap shifts the UV origin to the bitmap
-                        // start when the glyph has a negative bearing (extends
-                        // left of the cell origin).
-                        let origin_to_bitmap = (-sg.entry.bearing_x).max(0.0);
-                        u_min = (a_left + 0.5 + strip_left + origin_to_bitmap) / tex_size;
-                        u_max = (a_left + 0.5 + strip_right + origin_to_bitmap) / tex_size;
+                        let origin_to_bitmap = sg.entry.bearing_x;
+                        u_min = (a_left + 0.5 + strip_left + origin_to_bitmap) / slot_size;
+                        u_max = (a_left + 0.5 + strip_right + origin_to_bitmap) / slot_size;
                         strip_w = sw;
                     } else {
-                        // Single-cell glyph: full atlas rect.
-                        strip_w = (a_right - a_left) as f32;
-                        u_min = (a_left + 0.5) / tex_size;
-                        u_max = (a_right - 0.5) / tex_size;
-                    };
+                        u_min = (a_left + 0.5) / slot_size;
+                        u_max = (a_right - 0.5) / slot_size;
+                        strip_w = sg.entry.advance;
+                    }
 
-                    let mut v_min = (a_top + 0.5) / tex_size;
-                    let mut v_max = (a_bot - 0.5) / tex_size;
-
+                    let mut v_min = (a_top + 0.5) / slot_size;
+                    let mut v_max = (a_bot - 0.5) / slot_size;
                     let glyph_h = (a_bot - a_top) as f32;
                     let sbx = sg.entry.bearing_x;
                     let sby = sg.entry.bearing_y;
@@ -287,7 +285,11 @@ pub(crate) fn process_ligature_run(
                         (c_draw_fg, c_bg_color)
                     };
 
-                    glyph_instances.push(CellInstance {
+                    let ai = sg.entry.atlas_index as usize;
+                    if ai >= glyph_instances.len() {
+                        glyph_instances.resize_with(ai + 1, Vec::new);
+                    }
+                    glyph_instances[ai].push(CellInstance {
                         clip_pos: [gqx, gqy],
                         uv_min: [u_min, v_min],
                         uv_max: [u_max, v_max],

@@ -29,7 +29,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use zenterm_core::{HintingMode, RenderMode, Result, SubpixelLayout};
 use zenterm_glyph::{GlyphAtlas, ShapedGlyph};
-use zenterm_render::callback::{AtlasUpdate, SharedRenderState};use std::sync::atomic::Ordering;
+use zenterm_render::callback::{AtlasSlotData, AtlasUpdate, SharedRenderState};
+use std::sync::atomic::Ordering;
 
 /// Guard returned by [`SharedGlyphAtlas::lock`].  Provides mutable
 /// access to the underlying [`GlyphAtlas`].
@@ -41,8 +42,6 @@ pub struct GlyphAtlasGuard<'a> {
 pub struct SharedGlyphAtlas {
     inner: Mutex<GlyphAtlas>,
     shared: Arc<SharedRenderState>,
-    /// Last known atlas size used to detect growth (texture resize).
-    last_size: Mutex<u32>,
 }
 
 impl SharedGlyphAtlas {
@@ -74,21 +73,23 @@ impl SharedGlyphAtlas {
 
         // Pre-seed the GPU with whatever the atlas already has so the
         // first frame doesn't render with a blank texture.
-        let size = atlas.texture_size;
+        let slots: Vec<AtlasSlotData> = atlas
+            .slots
+            .iter()
+            .map(|s| AtlasSlotData {
+                size: s.size,
+                data: s.texture_data.clone(),
+            })
+            .collect();
         {
             let mut update = shared.atlas_update.lock().unwrap();
-            *update = Some(AtlasUpdate {
-                size,
-                data: atlas.texture_data.clone(),
-                resized: true,
-            });
+            *update = Some(AtlasUpdate { slots });
         }
         shared.atlas_dirty.store(true, Ordering::Release);
 
         Self {
             inner: Mutex::new(atlas),
             shared,
-            last_size: Mutex::new(size),
         }
     }
 
@@ -115,8 +116,10 @@ impl SharedGlyphAtlas {
     }
 
     /// Read the current atlas texture size (pixels, square).
+    /// Returns the size of the first (largest) slot.
     pub fn texture_size(&self) -> u32 {
-        self.lock().guard.texture_size
+        let atlas = self.inner.lock().unwrap();
+        atlas.slots.first().map(|s| s.size).unwrap_or(512)
     }
 
     /// Push the latest atlas pixels to the GPU.
@@ -124,21 +127,23 @@ impl SharedGlyphAtlas {
     /// Called after new glyphs were rasterised.  The caller already
     /// guarantees that `texture_data` has changed, so we unconditionally
     /// stage the payload and mark dirty for `prepare()` to pick up.
+    ///
+    /// All atlas slots are uploaded every time.  For slots that already
+    /// have a GPU texture this is a cheap pixel upload; new slots create
+    /// new GPU textures.
     pub fn sync_to_gpu(&self) {
         let atlas = self.inner.lock().unwrap();
-        let current_size = atlas.texture_size;
-        let mut last = self.last_size.lock().unwrap();
-        let resized = current_size != *last;
-        if resized {
-            *last = current_size;
-        }
+        let slots: Vec<AtlasSlotData> = atlas
+            .slots
+            .iter()
+            .map(|s| AtlasSlotData {
+                size: s.size,
+                data: s.texture_data.clone(),
+            })
+            .collect();
 
         let mut update = self.shared.atlas_update.lock().unwrap();
-        *update = Some(AtlasUpdate {
-            size: current_size,
-            data: atlas.texture_data.clone(),
-            resized,
-        });
+        *update = Some(AtlasUpdate { slots });
         self.shared.atlas_dirty.store(true, Ordering::Release);
     }
 
@@ -171,7 +176,7 @@ impl SharedGlyphAtlas {
         hinting_mode: HintingMode,
         render_mode: RenderMode,
     ) -> (f32, f32) {
-        let (cw, ch, size) = {
+        let (cw, ch) = {
             let mut atlas = self.inner.lock().unwrap();
             *atlas = GlyphAtlas::new(
                 font_size,
@@ -183,19 +188,22 @@ impl SharedGlyphAtlas {
                 render_mode,
             );
             let (cw, ch) = atlas.cell_size().expect("cell_size after DPI reinit");
-            let size = atlas.texture_size;
-            (cw, ch, size)
+            (cw, ch)
         };
+        let atlas = self.inner.lock().unwrap();
+        let slots: Vec<AtlasSlotData> = atlas
+            .slots
+            .iter()
+            .map(|s| AtlasSlotData {
+                size: s.size,
+                data: s.texture_data.clone(),
+            })
+            .collect();
         {
             let mut update = self.shared.atlas_update.lock().unwrap();
-            *update = Some(AtlasUpdate {
-                size,
-                data: self.inner.lock().unwrap().texture_data.clone(),
-                resized: true,
-            });
+            *update = Some(AtlasUpdate { slots });
         }
         self.shared.atlas_dirty.store(true, Ordering::Release);
-        *self.last_size.lock().unwrap() = size;
         (cw, ch)
     }
 
