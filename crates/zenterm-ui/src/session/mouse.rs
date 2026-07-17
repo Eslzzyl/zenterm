@@ -74,6 +74,12 @@ impl TerminalSession {
                 TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION,
             );
 
+        // SGR modifier encoding: Shift=4, Alt=8, Ctrl=16
+        let mods = ui.ctx().input(|i| i.modifiers);
+        let mod_bits = (if mods.shift { 4u8 } else { 0 })
+            | (if mods.alt { 8u8 } else { 0 })
+            | (if mods.ctrl { 16u8 } else { 0 });
+
         let cw = self.cell_width;
         let ch = self.cell_height;
         let ppp = ui.ctx().pixels_per_point();
@@ -181,7 +187,7 @@ impl TerminalSession {
             if let Some(pos) = response.interact_pointer_pos() {
                 if let Some((row, col)) = pixel_to_cell(pos) {
                     if mouse_reporting {
-                        self.send_sgr_mouse(row, col, 0, false);
+                        self.send_sgr_mouse(row, col, 0 | mod_bits, false);
                     } else {
                         self.terminal.clear_selection();
                         self.terminal.start_selection(row, col);
@@ -205,7 +211,7 @@ impl TerminalSession {
             if mouse_reporting {
                 if let Some(pos) = pointer_pos {
                     if let Some((row, col)) = pixel_to_cell(pos) {
-                        self.send_sgr_mouse(row, col, 32, false);
+                        self.send_sgr_mouse(row, col, 32 | mod_bits, false);
                     }
                 }
             } else if self.selecting {
@@ -243,7 +249,7 @@ impl TerminalSession {
             if mouse_reporting {
                 if let Some(pos) = response.interact_pointer_pos() {
                     if let Some((row, col)) = pixel_to_cell(pos) {
-                        self.send_sgr_mouse(row, col, 2, false);
+                        self.send_sgr_mouse(row, col, 2 | mod_bits, false);
                     }
                 }
             }
@@ -254,7 +260,7 @@ impl TerminalSession {
             if mouse_reporting {
                 if let Some(pos) = response.interact_pointer_pos() {
                     if let Some((row, col)) = pixel_to_cell(pos) {
-                        self.send_sgr_mouse(row, col, 1, false);
+                        self.send_sgr_mouse(row, col, 1 | mod_bits, false);
                     }
                 }
             } else {
@@ -271,34 +277,71 @@ impl TerminalSession {
         }
 
         // ── Mouse wheel: consume events to prevent egui scrolling ──────
-        if response.hovered() || self.scrollbar_dragging {
-            let total_scroll: f32 = ui.ctx().input(|i| {
-                i.events
-                    .iter()
-                    .filter_map(|e| match e {
-                        egui::Event::MouseWheel { delta, unit, .. } => {
-                            let y = delta.y;
-                            match unit {
-                                egui::MouseWheelUnit::Line => Some(y),
-                                egui::MouseWheelUnit::Point => Some(y * 4.0 / ch),
-                                egui::MouseWheelUnit::Page => Some(y * rows as f32),
+        // NOTE: use direct rect+pointer comparison instead of
+        // `response.hovered()` / `rect_contains_pointer()` because egui's
+        // `rect_contains_pointer` also checks that the top-most widget at the
+        // pointer position belongs to the same layer; a dock-internal
+        // `Sense::hover()` overlay covering the root node may cause that check
+        // to fail even when the pointer is physically in the terminal area.
+        let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
+        let pointer_in_terminal = pointer_pos.map_or(false, |p| response.rect.contains(p));
+        if pointer_in_terminal || self.scrollbar_dragging {
+            if mouse_reporting {
+                // Collect each scroll event's direction so we can forward
+                // them individually as SGR mouse events.
+                let scroll_ys: Vec<f32> = ui.ctx().input(|i| {
+                    i.events
+                        .iter()
+                        .filter_map(|e| match e {
+                            egui::Event::MouseWheel { delta, unit, .. } => {
+                                let y = match unit {
+                                    egui::MouseWheelUnit::Line => delta.y,
+                                    egui::MouseWheelUnit::Point => delta.y * 4.0 / ch,
+                                    egui::MouseWheelUnit::Page => delta.y * rows as f32,
+                                };
+                                if y != 0.0 { Some(y) } else { None }
                             }
-                        }
-                        _ => None,
-                    })
-                    .sum()
-            });
-            if total_scroll.abs() > 0.0 {
+                            _ => None,
+                        })
+                        .collect()
+                });
+                // Consume all wheel events to prevent egui from using them.
                 ui.ctx()
                     .input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::MouseWheel { .. })));
-                if mouse_reporting {
-                    let btn = if total_scroll > 0.0 { 64 } else { 65 };
-                    if let Some(pos) = response.interact_pointer_pos() {
+                // Send one SGR scroll event per OS wheel event.
+                if !scroll_ys.is_empty() {
+                    if let Some(pos) = pointer_pos {
                         if let Some((row, col)) = pixel_to_cell(pos) {
-                            self.send_sgr_mouse(row, col, btn, true);
+                            let wheel_count = scroll_ys.len();
+                            log::debug!("mouse wheel: {} events at cell=({},{}), sending SGR", wheel_count, row, col);
+                            for y in scroll_ys {
+                                let btn = if y > 0.0 { 64 } else { 65 };
+                                self.send_sgr_mouse(row, col, btn | mod_bits, false);
+                            }
                         }
                     }
-                } else {
+                }
+            } else {
+                // Accumulate scroll amount for local scrollback scrolling.
+                let total_scroll: f32 = ui.ctx().input(|i| {
+                    i.events
+                        .iter()
+                        .filter_map(|e| match e {
+                            egui::Event::MouseWheel { delta, unit, .. } => {
+                                let y = delta.y;
+                                match unit {
+                                    egui::MouseWheelUnit::Line => Some(y),
+                                    egui::MouseWheelUnit::Point => Some(y * 4.0 / ch),
+                                    egui::MouseWheelUnit::Page => Some(y * rows as f32),
+                                }
+                            }
+                            _ => None,
+                        })
+                        .sum()
+                });
+                if total_scroll.abs() > 0.0 {
+                    ui.ctx()
+                        .input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::MouseWheel { .. })));
                     // Do not scroll while an alternate-screen app is running
                     // (e.g. vim, less — the app handles its own scrolling).
                     if !mode.contains(TermMode::ALT_SCREEN) {
@@ -321,7 +364,7 @@ impl TerminalSession {
                     .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos()))
                 {
                     if let Some((row, col)) = pixel_to_cell(pos) {
-                        self.send_sgr_mouse(row, col, 0, true);
+                        self.send_sgr_mouse(row, col, 0 | mod_bits, true);
                     }
                 }
             } else {

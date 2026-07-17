@@ -766,7 +766,7 @@ impl Terminal {
         match assembled {
             KittyImage::TransmitData { transmit, verbosity } => {
                 if verbosity != kitty::KittyImageVerbosity::Quiet {
-                    if let Ok(id) = kitty::decode_image_data(transmit, &mut self.image_cache) {
+                    if let Ok(_) = kitty::decode_image_data(transmit, &mut self.image_cache) {
                         // Send OK for I= (numbered transmissions).
                     }
                 } else {
@@ -909,7 +909,7 @@ impl Terminal {
                     }
                 }
             }
-            kitty::KittyImageDelete::ByImageNumber { image_number, placement_id, delete } => {
+            kitty::KittyImageDelete::ByImageNumber { image_number: _, placement_id, delete } => {
                 // Look up the image_id from the number mapping.
                 // We don't store number_to_id in ImageCache publicly, so for now
                 // scan placements by image data hash (approximate).
