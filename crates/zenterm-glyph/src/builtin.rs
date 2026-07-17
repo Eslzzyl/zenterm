@@ -24,6 +24,17 @@ pub struct BuiltinParams {
     /// Used as `bearing_y` so the glyph bitmap is vertically positioned on
     /// the baseline like a real font glyph.
     pub cell_ascent: f32,
+    /// Underline thickness from font metrics, in pixels.
+    ///
+    /// This is the font's design underline thickness (from the OS/2 or `post`
+    /// table), scaled to physical pixels.  When zero (unset), the fallback
+    /// heuristic `cell_width / 8` is used instead.
+    ///
+    /// WezTerm uses this value as the stroke width for box-drawing
+    /// characters so that the rendered lines match the font's own stroke
+    /// weight, rather than a purely geometric formula which may produce
+    /// overly thick lines at larger cell sizes.
+    pub underline_thickness: f32,
 }
 
 /// A software-rasterized built-in glyph.
@@ -66,6 +77,7 @@ pub fn render(c: char, params: &BuiltinParams) -> Option<BuiltinGlyph> {
     let w = params.cell_width;
     let h = params.cell_height;
     let by = params.cell_ascent;
+    let ut = params.underline_thickness;
 
     match c {
         // ── Full block █ (U+2588) ────────────────────────────────────
@@ -113,48 +125,48 @@ pub fn render(c: char, params: &BuiltinParams) -> Option<BuiltinGlyph> {
 
         // ── Box drawing (basic horizontal/vertical) ──────────────────
         // Light ─ (U+2500)
-        '\u{2500}' => Some(hline(w, h, by, true)),
+        '\u{2500}' => Some(hline(w, h, by, false, ut)),
         // Light │ (U+2502)
-        '\u{2502}' => Some(vline(w, h, by, true)),
+        '\u{2502}' => Some(vline(w, h, by, false, ut)),
         // Heavy ━ (U+2501)
-        '\u{2501}' => Some(hline(w, h, by, false)),
+        '\u{2501}' => Some(hline(w, h, by, true, ut)),
         // Heavy ┃ (U+2503)
-        '\u{2503}' => Some(vline(w, h, by, false)),
+        '\u{2503}' => Some(vline(w, h, by, true, ut)),
 
         // ── Box drawing corners ──────────────────────────────────────
         // Light ┌ (U+250C)
-        '\u{250c}' => Some(corner(w, h, by, Corner::DownRight, true)),
+        '\u{250c}' => Some(corner(w, h, by, Corner::DownRight, false, ut)),
         // Light ┐ (U+2510)
-        '\u{2510}' => Some(corner(w, h, by, Corner::DownLeft, true)),
+        '\u{2510}' => Some(corner(w, h, by, Corner::DownLeft, false, ut)),
         // Light └ (U+2514)
-        '\u{2514}' => Some(corner(w, h, by, Corner::UpRight, true)),
+        '\u{2514}' => Some(corner(w, h, by, Corner::UpRight, false, ut)),
         // Light ┘ (U+2518)
-        '\u{2518}' => Some(corner(w, h, by, Corner::UpLeft, true)),
+        '\u{2518}' => Some(corner(w, h, by, Corner::UpLeft, false, ut)),
 
         // Heavy ┏ (U+250F)
-        '\u{250f}' => Some(corner(w, h, by, Corner::DownRight, false)),
+        '\u{250f}' => Some(corner(w, h, by, Corner::DownRight, true, ut)),
         // Heavy ┓ (U+2513)
-        '\u{2513}' => Some(corner(w, h, by, Corner::DownLeft, false)),
+        '\u{2513}' => Some(corner(w, h, by, Corner::DownLeft, true, ut)),
         // Heavy ┗ (U+2517)
-        '\u{2517}' => Some(corner(w, h, by, Corner::UpRight, false)),
+        '\u{2517}' => Some(corner(w, h, by, Corner::UpRight, true, ut)),
         // Heavy ┛ (U+251B)
-        '\u{251b}' => Some(corner(w, h, by, Corner::UpLeft, false)),
+        '\u{251b}' => Some(corner(w, h, by, Corner::UpLeft, true, ut)),
 
         // ── T-junctions (light) ──────────────────────────────────────
         // ├ (U+251C)
-        '\u{251c}' => Some(t_junction(w, h, by, true, TType::Left)),
+        '\u{251c}' => Some(t_junction(w, h, by, false, TType::Left, ut)),
         // ┤ (U+2524)
-        '\u{2524}' => Some(t_junction(w, h, by, true, TType::Right)),
+        '\u{2524}' => Some(t_junction(w, h, by, false, TType::Right, ut)),
         // ┬ (U+252C)
-        '\u{252c}' => Some(t_junction(w, h, by, true, TType::Down)),
+        '\u{252c}' => Some(t_junction(w, h, by, false, TType::Down, ut)),
         // ┴ (U+2534)
-        '\u{2534}' => Some(t_junction(w, h, by, true, TType::Up)),
+        '\u{2534}' => Some(t_junction(w, h, by, false, TType::Up, ut)),
         // ┼ (U+253C)
-        '\u{253c}' => Some(cross(w, h, by, true)),
+        '\u{253c}' => Some(cross(w, h, by, false, ut)),
 
         // ── Cross (heavy) ────────────────────────────────────────────
         // ╋ (U+254B)
-        '\u{254b}' => Some(cross(w, h, by, false)),
+        '\u{254b}' => Some(cross(w, h, by, true, ut)),
 
         _ => None,
     }
@@ -162,12 +174,18 @@ pub fn render(c: char, params: &BuiltinParams) -> Option<BuiltinGlyph> {
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-/// Stroke thickness for box drawing, proportional to cell width.
+/// Stroke thickness for box drawing.
 ///
-/// Uses one eighth of the cell width (matching Alacritty's approach in
-/// `builtin_font.rs:calculate_stroke_size`), with a minimum of 1px.
-fn line_width(w: u32, _h: u32) -> u32 {
-    (w as f32 / 8.0).round().max(1.0) as u32
+/// Prefers the font's design underline thickness when available (matching
+/// WezTerm's approach).  Falls back to one eighth of the cell width
+/// (matching Alacritty's approach in `builtin_font.rs:calculate_stroke_size`),
+/// with a minimum of 1px.
+fn line_width(w: u32, _h: u32, underline_thickness: f32) -> u32 {
+    if underline_thickness > 0.0 {
+        (underline_thickness.round().max(1.0)) as u32
+    } else {
+        (w as f32 / 8.0).round().max(1.0) as u32
+    }
 }
 
 /// Set a single pixel in the buffer.
@@ -356,9 +374,9 @@ fn quadrant_three(
 // ── Box drawing helpers ─────────────────────────────────────────────────
 
 /// Horizontal line (─ ━).
-fn hline(w: u32, h: u32, by: f32, heavy: bool) -> BuiltinGlyph {
+fn hline(w: u32, h: u32, by: f32, heavy: bool, underline_thickness: f32) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
-    let lw = line_width(w, h);
+    let lw = line_width(w, h, underline_thickness);
     let sw = if heavy { lw * 2 } else { lw };
     let y = h / 2;
     draw_hline(&mut data, w, h, y.saturating_sub(sw / 2), sw, 255);
@@ -366,9 +384,9 @@ fn hline(w: u32, h: u32, by: f32, heavy: bool) -> BuiltinGlyph {
 }
 
 /// Vertical line (│ ┃).
-fn vline(w: u32, h: u32, by: f32, heavy: bool) -> BuiltinGlyph {
+fn vline(w: u32, h: u32, by: f32, heavy: bool, underline_thickness: f32) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
-    let lw = line_width(w, h);
+    let lw = line_width(w, h, underline_thickness);
     let sw = if heavy { lw * 2 } else { lw };
     let x = w / 2;
     draw_vline(&mut data, w, h, x.saturating_sub(sw / 2), sw, 255);
@@ -380,50 +398,49 @@ enum Corner { DownRight, DownLeft, UpRight, UpLeft }
 /// Box drawing corner (┌ ┐ └ ┘) and heavy variants (┏ ┓ ┗ ┛).
 ///
 /// `heavy=false` → light stroke, `heavy=true` → double-width heavy stroke.
-fn corner(w: u32, h: u32, by: f32, which: Corner, heavy: bool) -> BuiltinGlyph {
+fn corner(w: u32, h: u32, by: f32, which: Corner, heavy: bool, underline_thickness: f32) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
-    let lw = line_width(w, h);
+    let lw = line_width(w, h, underline_thickness);
     let sw = if heavy { lw * 2 } else { lw };
     let cx = w / 2;
     let cy = h / 2;
 
-    // Each corner only draws 2 of the 4 possible segments (matching
-    // Alacritty's 4-segment model and WezTerm's Poly path approach):
-    //
-    //   │
-    // ──┼──  h1=left hline, h2=right hline
-    //   │    v1=top vline, v2=bottom vline
-    //
-    //   ┌ = h2 + v2    ┐ = h1 + v2
-    //   └ = h2 + v1    ┘ = h1 + v1
+    // Stroke-aligned edges.  The horizontal and vertical arms both occupy
+    // columns [x0, x1) and rows [y0, y1) respectively, so their overlap
+    // at (x0..x1, y0..y1) forms a solid corner with no missing pixels.
+    let x0 = cx.saturating_sub(sw / 2);
+    let y0 = cy.saturating_sub(sw / 2);
+    let x1 = (cx + sw / 2).min(w);
+    let y1 = (cy + sw / 2).min(h);
+
     match which {
         Corner::DownRight => {
             // ┌: right horizontal + bottom vertical
-            draw_hline_segment(&mut data, w, h, cx, cy.saturating_sub(sw / 2),
-                               w.saturating_sub(cx), sw, 255);
-            draw_vline_segment(&mut data, w, h, cx.saturating_sub(sw / 2), cy,
-                               h.saturating_sub(cy), sw, 255);
+            draw_hline_segment(&mut data, w, h, x0, y0,
+                               w.saturating_sub(x0), sw, 255);
+            draw_vline_segment(&mut data, w, h, x0, y0,
+                               h.saturating_sub(y0), sw, 255);
         }
         Corner::DownLeft => {
             // ┐: left horizontal + bottom vertical
-            draw_hline_segment(&mut data, w, h, 0, cy.saturating_sub(sw / 2),
-                               cx, sw, 255);
-            draw_vline_segment(&mut data, w, h, cx.saturating_sub(sw / 2), cy,
-                               h.saturating_sub(cy), sw, 255);
+            draw_hline_segment(&mut data, w, h, 0, y0,
+                               x1, sw, 255);
+            draw_vline_segment(&mut data, w, h, x0, y0,
+                               h.saturating_sub(y0), sw, 255);
         }
         Corner::UpRight => {
             // └: right horizontal + top vertical
-            draw_hline_segment(&mut data, w, h, cx, cy.saturating_sub(sw / 2),
-                               w.saturating_sub(cx), sw, 255);
-            draw_vline_segment(&mut data, w, h, cx.saturating_sub(sw / 2), 0,
-                               cy, sw, 255);
+            draw_hline_segment(&mut data, w, h, x0, y0,
+                               w.saturating_sub(x0), sw, 255);
+            draw_vline_segment(&mut data, w, h, x0, 0,
+                               y1, sw, 255);
         }
         Corner::UpLeft => {
             // ┘: left horizontal + top vertical
-            draw_hline_segment(&mut data, w, h, 0, cy.saturating_sub(sw / 2),
-                               cx, sw, 255);
-            draw_vline_segment(&mut data, w, h, cx.saturating_sub(sw / 2), 0,
-                               cy, sw, 255);
+            draw_hline_segment(&mut data, w, h, 0, y0,
+                               x1, sw, 255);
+            draw_vline_segment(&mut data, w, h, x0, 0,
+                               y1, sw, 255);
         }
     }
     builtin_result(w, h, by, data)
@@ -434,37 +451,43 @@ enum TType { Left, Right, Up, Down }
 /// Box drawing T-junction (├ ┤ ┬ ┴).
 ///
 /// `heavy=false` → light stroke, `heavy=true` → double-width heavy stroke.
-fn t_junction(w: u32, h: u32, by: f32, heavy: bool, ttype: TType) -> BuiltinGlyph {
+fn t_junction(w: u32, h: u32, by: f32, heavy: bool, ttype: TType, underline_thickness: f32) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
-    let lw = line_width(w, h);
+    let lw = line_width(w, h, underline_thickness);
     let sw = if heavy { lw * 2 } else { lw };
     let cx = w / 2;
     let cy = h / 2;
 
+    // Stroke-aligned edges (same scheme as corner()).
+    let x0 = cx.saturating_sub(sw / 2);
+    let y0 = cy.saturating_sub(sw / 2);
+    let x1 = (cx + sw / 2).min(w);
+    let y1 = (cy + sw / 2).min(h);
+
     match ttype {
         TType::Left => {
             // ├: full vertical + right horizontal
-            draw_vline(&mut data, w, h, cx.saturating_sub(sw / 2), sw, 255);
-            draw_hline_segment(&mut data, w, h, cx, cy.saturating_sub(sw / 2),
-                               w.saturating_sub(cx), sw, 255);
+            draw_vline(&mut data, w, h, x0, sw, 255);
+            draw_hline_segment(&mut data, w, h, x0, y0,
+                               w.saturating_sub(x0), sw, 255);
         }
         TType::Right => {
             // ┤: full vertical + left horizontal
-            draw_vline(&mut data, w, h, cx.saturating_sub(sw / 2), sw, 255);
-            draw_hline_segment(&mut data, w, h, 0, cy.saturating_sub(sw / 2),
-                               cx, sw, 255);
+            draw_vline(&mut data, w, h, x0, sw, 255);
+            draw_hline_segment(&mut data, w, h, 0, y0,
+                               x1, sw, 255);
         }
         TType::Down => {
             // ┬: full horizontal + bottom vertical
-            draw_hline(&mut data, w, h, cy.saturating_sub(sw / 2), sw, 255);
-            draw_vline_segment(&mut data, w, h, cx.saturating_sub(sw / 2), cy,
-                               h.saturating_sub(cy), sw, 255);
+            draw_hline(&mut data, w, h, y0, sw, 255);
+            draw_vline_segment(&mut data, w, h, x0, y0,
+                               h.saturating_sub(y0), sw, 255);
         }
         TType::Up => {
             // ┴: full horizontal + top vertical
-            draw_hline(&mut data, w, h, cy.saturating_sub(sw / 2), sw, 255);
-            draw_vline_segment(&mut data, w, h, cx.saturating_sub(sw / 2), 0,
-                               cy, sw, 255);
+            draw_hline(&mut data, w, h, y0, sw, 255);
+            draw_vline_segment(&mut data, w, h, x0, 0,
+                               y1, sw, 255);
         }
     }
     builtin_result(w, h, by, data)
@@ -473,9 +496,9 @@ fn t_junction(w: u32, h: u32, by: f32, heavy: bool, ttype: TType) -> BuiltinGlyp
 /// Box drawing cross (┼ ╋).
 ///
 /// `heavy=false` → light stroke, `heavy=true` → double-width heavy stroke.
-fn cross(w: u32, h: u32, by: f32, heavy: bool) -> BuiltinGlyph {
+fn cross(w: u32, h: u32, by: f32, heavy: bool, underline_thickness: f32) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
-    let lw = line_width(w, h);
+    let lw = line_width(w, h, underline_thickness);
     let sw = if heavy { lw * 2 } else { lw };
     let cx = w / 2;
     let cy = h / 2;

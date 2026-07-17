@@ -74,6 +74,7 @@ impl GlyphAtlas {
             swash_ctx: ScaleContext::new(),
             cell_width: 0.0,
             cell_height: 0.0,
+            underline_thickness_px: 0.0,
             cell_ascent: 0.0,
             cell_descent: 0.0,
             cap_height: 0.0,
@@ -564,6 +565,9 @@ impl GlyphAtlas {
         // adjacent columns (width) and rows (height).
         self.cell_width = entry.advance.ceil();
         self.cell_height = self.metrics.line_height.ceil();
+        // Measure the font's underline thickness for box-drawing stroke
+        // width (matching WezTerm's approach).
+        self.measure_underline_thickness();
         // Authoritative baseline: ask cosmic-text where it would put the
         // baseline for a full-height glyph.  This is exactly the value
         // alacritty calls `ascent` and wezterm calls `ascender` — the
@@ -692,6 +696,54 @@ impl GlyphAtlas {
     /// Return the cached cell dimensions (must call `cell_size()` first).
     pub fn cell_dimensions(&self) -> (f32, f32) {
         (self.cell_width, self.cell_height)
+    }
+
+    /// Measure the font's design underline thickness in pixels.
+    ///
+    /// Queries the primary font matching the configured family name and
+    /// extracts the underline thickness from the font's OS/2 or `post`
+    /// table (via skrifa metrics).  This value is used as the stroke width
+    /// for box-drawing characters so that rendered lines match the font's
+    /// own stroke weight (matching WezTerm's approach).
+    ///
+    /// If the font cannot be found or the metric is unavailable, the field
+    /// stays at its default (0.0), and `builtin.rs` falls back to the
+    /// Alacritty heuristic (`cell_width / 8`).
+    fn measure_underline_thickness(&mut self) {
+        use cosmic_text::fontdb::{Family, Query, Stretch, Style, Weight};
+
+        let families = [Family::Name(&self.font_family), Family::Monospace];
+        let query = Query {
+            families: &families,
+            weight: Weight::NORMAL,
+            stretch: Stretch::Normal,
+            style: Style::Normal,
+        };
+
+        let Some(id) = self.font_system.db().query(&query) else {
+            return;
+        };
+        let Some(font) = self.font_system.get_font(id, Weight::NORMAL) else {
+            return;
+        };
+
+        let metrics = font.metrics();
+        let Some(ref underline) = metrics.underline else {
+            return;
+        };
+
+        // Scale from font design units to physical pixels.
+        let ppem = self.font_size * self.pixels_per_point;
+        self.underline_thickness_px =
+            underline.thickness * ppem / metrics.units_per_em as f32;
+
+        log::info!(
+            "GlyphAtlas::underline_thickness: design={:.2} units/em={} ppem={:.2} => {:.2}px",
+            underline.thickness,
+            metrics.units_per_em,
+            ppem,
+            self.underline_thickness_px,
+        );
     }
 
     /// Return the cell's baseline offset: the y-down distance from the cell
@@ -939,6 +991,7 @@ impl GlyphAtlas {
             cell_width: cw,
             cell_height: ch,
             cell_ascent: self.cell_ascent,
+            underline_thickness: self.underline_thickness_px,
         };
         let glyph = builtin::render(c, &params).ok_or_else(|| {
             Error::Glyph(format!("builtin render failed for U+{:04X}", c as u32))

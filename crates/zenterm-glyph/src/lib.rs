@@ -203,6 +203,16 @@ pub struct GlyphAtlas {
     /// Cached cell width/height in pixels, set by [`cell_size()`](Self::cell_size).
     cell_width: f32,
     cell_height: f32,
+    /// Underline thickness from font metrics, in pixels.
+    ///
+    /// This is the font's design underline thickness (from the OS/2 or `post`
+    /// table), scaled to physical pixels.  Used as the base stroke width for
+    /// box-drawing characters so that rendered lines match the font's own
+    /// stroke weight (matching WezTerm's approach).
+    ///
+    /// When zero (unset), built-in line drawing falls back to the Alacritty
+    /// heuristic of `cell_width / 8`.
+    underline_thickness_px: f32,
     /// Distance from the cell TOP to the baseline, in pixels.
     ///
     /// This is the authoritative baseline position produced by `cosmic-text`'s
