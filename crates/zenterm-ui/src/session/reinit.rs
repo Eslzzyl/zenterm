@@ -101,13 +101,17 @@ impl TerminalSession {
         }
         let cols = (vp_width_px / self.cell_width).max(10.0) as u16;
         let rows = (vp_height_px / self.cell_height).max(5.0) as u16;
-        let new_size = TermSize::new(rows, cols);
-        if new_size != self.terminal.size() {
-            self.terminal.resize(new_size);
-            self.pty.resize(new_size).ok();
-            self.terminal_dirty = true;
-            self.last_resize_at = Some(time);
+        let current = self.terminal.size();
+        if rows == current.rows && cols == current.cols {
+            return;
         }
+        let pixel_width = (cols as f32 * self.cell_width) as u16;
+        let pixel_height = (rows as f32 * self.cell_height) as u16;
+        let new_size = TermSize::new(rows, cols, pixel_width, pixel_height);
+        self.terminal.resize(new_size);
+        self.pty.resize(new_size).ok();
+        self.terminal_dirty = true;
+        self.last_resize_at = Some(time);
         let _ = ppp;
     }
 

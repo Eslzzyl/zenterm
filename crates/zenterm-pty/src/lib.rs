@@ -51,8 +51,8 @@ impl PtySession {
             .openpty(PtySize {
                 rows: size.rows,
                 cols: size.cols,
-                pixel_width: 0,
-                pixel_height: 0,
+                pixel_width: size.pixel_width,
+                pixel_height: size.pixel_height,
             })
             .map_err(|e| Error::Pty(e.to_string()))?;
 
@@ -210,8 +210,8 @@ impl PtySession {
                 .resize(PtySize {
                     rows: size.rows,
                     cols: size.cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
+                    pixel_width: size.pixel_width,
+                    pixel_height: size.pixel_height,
                 })
                 .map_err(|e| Error::Pty(e.to_string())),
             None => Ok(()),

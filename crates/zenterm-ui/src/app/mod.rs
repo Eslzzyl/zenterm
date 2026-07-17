@@ -143,6 +143,8 @@ impl ZentermApp {
         let size = zenterm_core::size::TermSize::new(
             config.window.dimensions.lines,
             config.window.dimensions.columns,
+            0,
+            0,
         );
         let mut session = TerminalSession::new(
             first_id,

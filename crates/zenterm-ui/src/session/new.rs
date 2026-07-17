@@ -24,12 +24,24 @@ impl TerminalSession {
         atlas: Arc<SharedGlyphAtlas>,
         callback: CallbackHandle,
     ) -> Self {
-        let pty = zenterm_pty::PtySession::spawn(size).expect("failed to spawn PTY");
+        let mut pty = zenterm_pty::PtySession::spawn(size).expect("failed to spawn PTY");
         let mut terminal = Terminal::new(size, scheme);
 
         let (cell_width, cell_height) = atlas.cell_size();
-        terminal.cell_pixel_width = cell_width.ceil() as u32;
-        terminal.cell_pixel_height = cell_height.ceil() as u32;
+        let cell_w = cell_width.ceil() as u32;
+        let cell_h = cell_height.ceil() as u32;
+        terminal.cell_pixel_width = cell_w;
+        terminal.cell_pixel_height = cell_h;
+
+        // Compute total pixel dimensions from initial cell size * rows/cols.
+        let px_w = (size.cols as f32 * cell_width).ceil() as u16;
+        let px_h = (size.rows as f32 * cell_height).ceil() as u16;
+        terminal.pixel_width = px_w as u32;
+        terminal.pixel_height = px_h as u32;
+        // Propagate pixel dimensions to the PTY so TIOCGWINSZ reports them.
+        if let Err(e) = pty.resize(TermSize::new(size.rows, size.cols, px_w, px_h)) {
+            log::error!("failed to resize PTY with pixel dims: {e}");
+        }
 
         // Initialise `last_vp_size_px` so the first render picks up the
         // resize correctly.  Starting at [0, 0] is fine; the first

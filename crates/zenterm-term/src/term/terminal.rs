@@ -61,6 +61,12 @@ pub struct Terminal {
     pub cell_pixel_width: u32,
     pub cell_pixel_height: u32,
 
+    // ── Total text-area pixel dimensions ───────────────────────────
+    /// Total text-area width in pixels (set by the UI layer on resize).
+    pub pixel_width: u32,
+    /// Total text-area height in pixels (set by the UI layer on resize).
+    pub pixel_height: u32,
+
     // ── Pending side-effects (consumed by the app after each feed()) ────
     pending_title: Option<String>,
     pending_bell: bool,
@@ -107,6 +113,8 @@ impl Terminal {
             kitty_accumulator: KittyAccumulator::default(),
             cell_pixel_width: 0,
             cell_pixel_height: 0,
+            pixel_width: size.pixel_width as u32,
+            pixel_height: size.pixel_height as u32,
             pending_title: None,
             pending_bell: false,
             pending_exit: false,
@@ -185,6 +193,28 @@ impl Terminal {
                     }
                 }
             }
+            // Check for CSI 16 t (Report Cell Size in pixels).
+            // vte 0.15.0 does not dispatch param=16 for final byte 't',
+            // so we handle it here directly.
+            if bytes[esc_pos + 1] == b'[' {
+                let mut j = esc_pos + 2;
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b't' && j > esc_pos + 2 {
+                    if let Ok(param_str) = std::str::from_utf8(&bytes[esc_pos + 2..j]) {
+                        if param_str == "16" {
+                            let cols = self.term.columns();
+                            let rows = self.term.screen_lines();
+                            let cell_w = if cols > 0 { self.pixel_width / cols as u32 } else { 0 };
+                            let cell_h = if rows > 0 { self.pixel_height / rows as u32 } else { 0 };
+                            let response = format!("\x1b[6;{};{}t", cell_h, cell_w);
+                            replies.extend_from_slice(response.as_bytes());
+                            prev_end = Some(j + 1);
+                        }
+                    }
+                }
+            }
         }
         let t_apc_elapsed = t_apc_start.elapsed();
 
@@ -246,11 +276,15 @@ impl Terminal {
                 }
                 Event::TextAreaSizeRequest(formatter) => {
                     log::debug!("Terminal::feed: TextAreaSizeRequest");
+                    let cols = self.term.columns() as u16;
+                    let rows = self.term.screen_lines() as u16;
+                    let cell_w = if cols > 0 { (self.pixel_width / cols as u32) as u16 } else { 0 };
+                    let cell_h = if rows > 0 { (self.pixel_height / rows as u32) as u16 } else { 0 };
                     let size = WindowSize {
-                        num_lines: self.term.screen_lines() as u16,
-                        num_cols: self.term.columns() as u16,
-                        cell_width: 0,
-                        cell_height: 0,
+                        num_lines: rows,
+                        num_cols: cols,
+                        cell_width: cell_w,
+                        cell_height: cell_h,
                     };
                     let response = formatter(size);
                     replies.extend_from_slice(response.as_bytes());
@@ -333,13 +367,17 @@ impl Terminal {
         }
         self.image_placements.clear();
         self.damage.mark_all();
+        self.pixel_width = size.pixel_width as u32;
+        self.pixel_height = size.pixel_height as u32;
     }
 
-    /// Get the current terminal size (in cells).
+    /// Get the current terminal size (in cells and pixels).
     pub fn size(&self) -> TermSize {
         TermSize::new(
             self.term.screen_lines() as u16,
             self.term.columns() as u16,
+            self.pixel_width as u16,
+            self.pixel_height as u16,
         )
     }
 
