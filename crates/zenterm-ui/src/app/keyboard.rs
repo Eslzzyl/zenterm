@@ -225,6 +225,7 @@ impl ZentermApp {
             if let Some(id) = self.active_session_id {
                 if let Some(session) = self.sessions.get_mut(&id) {
                     if !session.terminal.mode().contains(TermMode::ALT_SCREEN) {
+                        log::info!("[dbg] keyboard: NOT alt_screen → consuming PageUp/Down for scrollback");
                         let rows = session.terminal.size().rows as i32;
                         let mut scrolled = false;
                         ctx.input(|input| {
@@ -277,10 +278,14 @@ impl ZentermApp {
                             });
                             return true;
                         }
+                    } else {
+                        log::info!("[dbg] keyboard: ALT_SCREEN active → PageUp/Down/Home/End will be forwarded to PTY");
                     }
                 }
             }
         }
+
+        log::info!("[dbg] keyboard: handle_shortcuts returning false (no shortcut consumed)");
 
         false
     }

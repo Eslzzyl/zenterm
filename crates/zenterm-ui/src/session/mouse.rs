@@ -73,6 +73,16 @@ impl TerminalSession {
             && mode.intersects(
                 TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION,
             );
+        log::info!(
+            "[dbg] mouse_reporting={} mode={:#b} sgr={} click={} drag={} motion={} alt_screen={}",
+            mouse_reporting,
+            mode.bits(),
+            mode.contains(TermMode::SGR_MOUSE),
+            mode.contains(TermMode::MOUSE_REPORT_CLICK),
+            mode.contains(TermMode::MOUSE_DRAG),
+            mode.contains(TermMode::MOUSE_MOTION),
+            mode.contains(TermMode::ALT_SCREEN),
+        );
 
         // SGR modifier encoding: Shift=4, Alt=8, Ctrl=16
         let mods = ui.ctx().input(|i| i.modifiers);
@@ -286,6 +296,11 @@ impl TerminalSession {
         let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
         let pointer_in_terminal = pointer_pos.map_or(false, |p| response.rect.contains(p));
         if pointer_in_terminal || self.scrollbar_dragging {
+            log::info!(
+                "[dbg] wheel: enter processing, pointer_in_terminal={} scrollbar_dragging={} mouse_reporting={} num_events={}",
+                pointer_in_terminal, self.scrollbar_dragging, mouse_reporting,
+                ui.ctx().input(|i| i.events.len()),
+            );
             if mouse_reporting {
                 // Collect each scroll event's direction so we can forward
                 // them individually as SGR mouse events.
@@ -305,20 +320,42 @@ impl TerminalSession {
                         })
                         .collect()
                 });
+                log::info!(
+                    "[dbg] SGR branch: collected {} wheel events: {:?}, pointer_pos={:?}, pixel_to_cell={:?}",
+                    scroll_ys.len(), scroll_ys,
+                    pointer_pos,
+                    pointer_pos.and_then(|p| pixel_to_cell(p)),
+                );
                 // Consume all wheel events to prevent egui from using them.
                 ui.ctx()
                     .input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::MouseWheel { .. })));
-                // Send one SGR scroll event per OS wheel event.
+                // Send SGR scroll events with delta accumulation.
+                // Accumulate all scroll deltas and send one event per
+                // line of total scroll.  Without this, each tiny sub-line
+                // trackpad delta (e.g. 0.09 lines) would generate its own
+                // SGR event, making scrolling feel sluggish.
                 if !scroll_ys.is_empty() {
                     if let Some(pos) = pointer_pos {
                         if let Some((row, col)) = pixel_to_cell(pos) {
-                            let wheel_count = scroll_ys.len();
-                            log::debug!("mouse wheel: {} events at cell=({},{}), sending SGR", wheel_count, row, col);
-                            for y in scroll_ys {
-                                let btn = if y > 0.0 { 64 } else { 65 };
-                                self.send_sgr_mouse(row, col, btn | mod_bits, false);
+                            let total: f32 = scroll_ys.iter().sum();
+                            let lines = total.round() as i32;
+                            if lines != 0 {
+                                let btn = if lines > 0 { 64 } else { 65 };
+                                log::info!(
+                                    "[dbg] SGR: accumulated total={}, sending {} events btn={} col={} row={}",
+                                    total, lines.abs(), btn | mod_bits, col + 1, row + 1,
+                                );
+                                for _ in 0..lines.abs() {
+                                    self.send_sgr_mouse(row, col, btn | mod_bits, false);
+                                }
+                            } else {
+                                log::info!("[dbg] SGR: accumulated total={} too small, skipping", total);
                             }
+                        } else {
+                            log::info!("[dbg] SGR: pixel_to_cell returned None (pointer over scrollbar?)");
                         }
+                    } else {
+                        log::info!("[dbg] SGR: pointer_pos is None, can't send SGR");
                     }
                 }
             } else {
@@ -350,6 +387,12 @@ impl TerminalSession {
                             self.terminal.scroll_display(lines);
                             self.terminal_dirty = true;
                         }
+                    } else {
+                        log::info!(
+                            "[dbg] non-SGR + ALT_SCREEN: consuming {} scroll events without forwarding! total_scroll={}",
+                            total_scroll.abs().round() as i32,
+                            total_scroll,
+                        );
                     }
                 }
             }

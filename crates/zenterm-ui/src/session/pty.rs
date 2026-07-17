@@ -171,6 +171,10 @@ impl TerminalSession {
                 TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION,
             );
         if !mouse_active {
+            log::info!(
+                "[dbg] pty::send_sgr_mouse: mouse not active, discarding seq button={}",
+                button,
+            );
             return;
         }
         let suffix = if release { "m" } else { "M" };
