@@ -198,15 +198,25 @@ pub(crate) fn process_ligature_run(
                         strip_right = strip_right.min(sg.entry.advance);
                         let sw = strip_right - strip_left;
                         // UV: a horizontal slice of the atlas.
-                        // origin_to_bitmap shifts the UV origin to the bitmap
+                        // origin_to_bitmap shifts the UV origin to the bitmap.
+                        // The bearing_x is the offset from glyph origin to the
+                        // bitmap's left edge.  Screen position X maps to atlas
+                        // position a_left + (X - origin - bearing_x), so the
+                        // strip for cell i (offset i*cw from origin) starts at
+                        // atlas position a_left + i*cw - bearing_x.
                         let origin_to_bitmap = sg.entry.bearing_x;
-                        u_min = (a_left + 0.5 + strip_left + origin_to_bitmap) / slot_size;
-                        u_max = (a_left + 0.5 + strip_right + origin_to_bitmap) / slot_size;
+                        u_min = (a_left + 0.5 + strip_left - origin_to_bitmap) / slot_size;
+                        u_max = (a_left + 0.5 + strip_right - origin_to_bitmap) / slot_size;
                         strip_w = sw;
                     } else {
                         u_min = (a_left + 0.5) / slot_size;
                         u_max = (a_right - 0.5) / slot_size;
-                        strip_w = sg.entry.advance;
+                        // Use the actual bitmap width (not advance) so the
+                        // quad matches the texture 1:1, avoiding Nearest-filter
+                        // stretch when advance > bitmap_width (e.g. narrow
+                        // chars like 'i', 'l', '|' or contextual alternates
+                        // with negative bearing).
+                        strip_w = (a_right - a_left) as f32;
                     }
 
                     let mut v_min = (a_top + 0.5) / slot_size;
