@@ -138,26 +138,52 @@ impl Terminal {
         // Response bytes collected during processing; written back to PTY.
         let mut replies = Vec::new();
 
-        // ── APC / DCS scan (loop — handle all sequences in one batch) ────
-        let mut scan_pos = 0;
-        while scan_pos < bytes.len() {
-            if let Some((payload, end)) = scan_next_apc(bytes, scan_pos) {
-                if let Some(cmd) = KittyImage::parse_apc(&payload) {
-                    let reply = self.handle_kitty_command(cmd);
-                    if let Some(r) = reply {
-                        replies.extend_from_slice(r.as_bytes());
+        // ── APC / DCS scan ──────────────────────────────────────────────
+        // Use memchr to efficiently find ESC bytes (0x1b) that start APC
+        // (ESC _ G ... ST) and DCS (ESC P ... ST) sequences, instead of
+        // scanning byte-by-byte which is O(n²) in the naive loop.
+        let t_apc_start = std::time::Instant::now();
+        let esc_positions = memchr::memchr_iter(0x1b, bytes);
+        let mut prev_end: Option<usize> = None;
+        for esc_pos in esc_positions {
+            // Skip positions we've already consumed as part of a prior match.
+            if prev_end.is_some_and(|end| esc_pos < end) {
+                continue;
+            }
+            if esc_pos + 2 >= bytes.len() {
+                break;
+            }
+            // Check for APC: ESC _ G
+            if bytes[esc_pos + 1] == b'_' && bytes[esc_pos + 2] == b'G' {
+                let payload_start = esc_pos + 3;
+                // Find the string terminator ST: ESC \
+                if let Some(st_rel) = bytes[payload_start..].windows(2).position(|w| w == [0x1b, b'\\']) {
+                    let payload = &bytes[payload_start..payload_start + st_rel];
+                    if let Some(cmd) = KittyImage::parse_apc(payload) {
+                        let reply = self.handle_kitty_command(cmd);
+                        if let Some(r) = reply {
+                            replies.extend_from_slice(r.as_bytes());
+                        }
+                    }
+                    prev_end = Some(payload_start + st_rel + 2);
+                }
+            }
+            // Check for DCS: ESC P (Sixel)
+            if bytes[esc_pos + 1] == b'P' {
+                let param_start = esc_pos + 2;
+                let mut j = param_start;
+                while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == b';') {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b'q' {
+                    let payload_start = j + 1;
+                    if let Some(st_rel) = bytes[payload_start..].windows(2).position(|w| w == [0x1b, b'\\']) {
+                        let params = sixel::parse_dcs_params(&bytes[param_start..j]);
+                        self.handle_sixel(&bytes[payload_start..payload_start + st_rel], &params);
+                        prev_end = Some(payload_start + st_rel + 2);
                     }
                 }
-                scan_pos = end;
-                continue;
             }
-            if let Some((params_raw, payload, end)) = scan_next_sixel_dcs(bytes, scan_pos) {
-                let params = sixel::parse_dcs_params(params_raw);
-                self.handle_sixel(payload, &params);
-                scan_pos = end;
-                continue;
-            }
-            scan_pos += 1;
         }
 
         // ── OSC 9 / OSC 777 (desktop notification) scan ─────────────────
