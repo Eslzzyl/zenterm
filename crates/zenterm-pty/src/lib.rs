@@ -190,8 +190,13 @@ impl PtySession {
     /// Write bytes to the shell's stdin.
     pub fn write(&mut self, data: &[u8]) -> Result<()> {
         if let Some(writer) = self.writer.as_mut() {
+            let start = std::time::Instant::now();
             writer.write_all(data).map_err(Error::Io)?;
             writer.flush().map_err(Error::Io)?;
+            let elapsed = start.elapsed();
+            if elapsed > std::time::Duration::from_millis(10) {
+                log::warn!("[perf] pty::write({} bytes) took {:?}", data.len(), elapsed);
+            }
             Ok(())
         } else {
             Err(Error::Pty("writer already taken".into()))

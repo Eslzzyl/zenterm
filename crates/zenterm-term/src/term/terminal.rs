@@ -133,6 +133,7 @@ impl Terminal {
         if bytes.is_empty() {
             return Vec::new();
         }
+        let start = std::time::Instant::now();
         log::debug!("Terminal::feed: {} bytes: {:02x?}", bytes.len(), bytes);
 
         // Response bytes collected during processing; written back to PTY.
@@ -185,8 +186,10 @@ impl Terminal {
                 }
             }
         }
+        let t_apc_elapsed = t_apc_start.elapsed();
 
         // ── OSC 9 / OSC 777 (desktop notification) scan ─────────────────
+        let t_osc_start = std::time::Instant::now();
         if let Some(notif) = scan_osc9_or_777(bytes) {
             self.pending_notification = Some(notif);
         }
@@ -200,12 +203,17 @@ impl Terminal {
         if let Some(url) = scan_osc7(bytes) {
             self.pending_current_directory = Some(url);
         }
+        let t_osc_elapsed = t_osc_start.elapsed();
 
+        // ── VT parser ───────────────────────────────────────────────────
+        let t_vt_start = std::time::Instant::now();
         self.processor.advance(&mut self.term, bytes);
+        let t_vt_elapsed = t_vt_start.elapsed();
 
         // Propagate damage from alacritty_terminal's internal tracker.
         // Each VT operation (write char, cursor move, scroll, etc.)
         // already marks the affected lines — we just read them out.
+        let t_damage_start = std::time::Instant::now();
         match self.term.damage() {
             TermDamage::Full => self.damage.mark_all(),
             TermDamage::Partial(iter) => {
@@ -215,11 +223,13 @@ impl Terminal {
             }
         }
         self.term.reset_damage();
+        let t_damage_elapsed = t_damage_start.elapsed();
 
         // ── Drain the event channel ────────────────────────────────────
         // The custom `Listener` (above) receives every `Event::PtyWrite`,
         // `ColorRequest`, etc. that the `Handler` emits.  We process them
         // here and return the collected response bytes.
+        let t_evt_start = std::time::Instant::now();
         while let Ok(event) = self.rx.try_recv() {
             match event {
                 Event::PtyWrite(text) => {
@@ -294,6 +304,16 @@ impl Terminal {
                     // are noise that we don't need to act on.
                 }
             }
+        }
+        let t_evt_elapsed = t_evt_start.elapsed();
+
+        let elapsed = start.elapsed();
+        if elapsed > std::time::Duration::from_millis(50) {
+            log::warn!(
+                "[perf] Terminal::feed({} bytes) took {:?} (apc_scan={:?} osc_scan={:?} vt_parse={:?} damage={:?} events={:?})",
+                bytes.len(), elapsed,
+                t_apc_elapsed, t_osc_elapsed, t_vt_elapsed, t_damage_elapsed, t_evt_elapsed,
+            );
         }
 
         replies
@@ -726,51 +746,7 @@ fn read_osc_string(start: &[u8]) -> Option<String> {
 
 /// Scan for the next Kitty APC sequence starting at `offset`.
 /// Returns `(payload, end_pos)` where `end_pos` is the byte after `\x1b\\`.
-fn scan_next_apc(bytes: &[u8], offset: usize) -> Option<(Vec<u8>, usize)> {
-    let mut i = offset;
-    while i + 2 < bytes.len() {
-        if bytes[i] == 0x1B && bytes[i + 1] == b'_' && bytes[i + 2] == b'G' {
-            let start = i + 3;
-            let mut j = start;
-            while j + 1 < bytes.len() {
-                if bytes[j] == 0x1B && bytes[j + 1] == b'\\' {
-                    return Some((bytes[start..j].to_vec(), j + 2));
-                }
-                j += 1;
-            }
-            return None;
-        }
-        i += 1;
-    }
-    None
-}
 
-/// Scan for the next sixel DCS sequence starting at `offset`.
-/// Returns `(params_raw, payload, end_pos)`.
-fn scan_next_sixel_dcs(bytes: &[u8], offset: usize) -> Option<(&[u8], &[u8], usize)> {
-    let mut i = offset;
-    while i + 2 < bytes.len() {
-        if bytes[i] == 0x1B && bytes[i + 1] == b'P' {
-            let param_start = i + 2;
-            let mut j = param_start;
-            while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == b';') {
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j] == b'q' {
-                let payload_start = j + 1;
-                let mut k = payload_start;
-                while k + 1 < bytes.len() {
-                    if bytes[k] == 0x1B && bytes[k + 1] == b'\\' {
-                        return Some((&bytes[param_start..j], &bytes[payload_start..k], k + 2));
-                    }
-                    k += 1;
-                }
-            }
-        }
-        i += 1;
-    }
-    None
-}
 
 // ── Kitty protocol handler ─────────────────────────────────────────────
 
