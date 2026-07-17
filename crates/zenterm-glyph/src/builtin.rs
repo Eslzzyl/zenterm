@@ -188,24 +188,64 @@ fn fill_region(buf: &mut [u8], buf_w: u32, _buf_h: u32,
     }
 }
 
-/// Draw a horizontal line at row `y`, full width.
-fn draw_hline(buf: &mut [u8], w: u32, h: u32, y: u32, thickness: u32, val: u8) {
+/// Draw a horizontal line segment starting at `start_x` for `length` pixels.
+fn draw_hline_segment(
+    buf: &mut [u8],
+    w: u32,
+    h: u32,
+    start_x: u32,
+    y: u32,
+    length: u32,
+    thickness: u32,
+    val: u8,
+) {
+    if length == 0 {
+        return;
+    }
     for t in 0..thickness {
         let row = y + t;
         if row < h {
-            fill_region(buf, w, h, 0, row, w, 1, val);
+            let end_x = (start_x + length).min(w);
+            if start_x < end_x {
+                fill_region(buf, w, h, start_x, row, end_x - start_x, 1, val);
+            }
         }
     }
 }
 
-/// Draw a vertical line at column `x`, full height.
-fn draw_vline(buf: &mut [u8], w: u32, h: u32, x: u32, thickness: u32, val: u8) {
+/// Draw a vertical line segment starting at `start_y` for `length` pixels.
+fn draw_vline_segment(
+    buf: &mut [u8],
+    w: u32,
+    h: u32,
+    x: u32,
+    start_y: u32,
+    length: u32,
+    thickness: u32,
+    val: u8,
+) {
+    if length == 0 {
+        return;
+    }
     for t in 0..thickness {
         let col = x + t;
         if col < w {
-            fill_region(buf, w, h, col, 0, 1, h, val);
+            let end_y = (start_y + length).min(h);
+            if start_y < end_y {
+                fill_region(buf, w, h, col, start_y, 1, end_y - start_y, val);
+            }
         }
     }
+}
+
+/// Draw a horizontal line across the full width at row `y`.
+fn draw_hline(buf: &mut [u8], w: u32, h: u32, y: u32, thickness: u32, val: u8) {
+    draw_hline_segment(buf, w, h, 0, y, w, thickness, val);
+}
+
+/// Draw a vertical line across the full height at column `x`.
+fn draw_vline(buf: &mut [u8], w: u32, h: u32, x: u32, thickness: u32, val: u8) {
+    draw_vline_segment(buf, w, h, x, 0, h, thickness, val);
 }
 
 // ── Glyph generators ────────────────────────────────────────────────────
@@ -315,62 +355,75 @@ fn quadrant_three(
 
 // ── Box drawing helpers ─────────────────────────────────────────────────
 
-/// Horizontal line (─).
-fn hline(w: u32, h: u32, by: f32, _light: bool) -> BuiltinGlyph {
+/// Horizontal line (─ ━).
+fn hline(w: u32, h: u32, by: f32, heavy: bool) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
     let lw = line_width(w, h);
+    let sw = if heavy { lw * 2 } else { lw };
     let y = h / 2;
-    draw_hline(&mut data, w, h, y.saturating_sub(lw / 2), lw, 255);
+    draw_hline(&mut data, w, h, y.saturating_sub(sw / 2), sw, 255);
     builtin_result(w, h, by, data)
 }
 
-/// Vertical line (│).
-fn vline(w: u32, h: u32, by: f32, _light: bool) -> BuiltinGlyph {
+/// Vertical line (│ ┃).
+fn vline(w: u32, h: u32, by: f32, heavy: bool) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
     let lw = line_width(w, h);
+    let sw = if heavy { lw * 2 } else { lw };
     let x = w / 2;
-    draw_vline(&mut data, w, h, x.saturating_sub(lw / 2), lw, 255);
+    draw_vline(&mut data, w, h, x.saturating_sub(sw / 2), sw, 255);
     builtin_result(w, h, by, data)
 }
 
 enum Corner { DownRight, DownLeft, UpRight, UpLeft }
 
-/// Box drawing corner (┌ ┐ └ ┘).
-fn corner(w: u32, h: u32, by: f32, which: Corner, _light: bool) -> BuiltinGlyph {
+/// Box drawing corner (┌ ┐ └ ┘) and heavy variants (┏ ┓ ┗ ┛).
+///
+/// `heavy=false` → light stroke, `heavy=true` → double-width heavy stroke.
+fn corner(w: u32, h: u32, by: f32, which: Corner, heavy: bool) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
     let lw = line_width(w, h);
+    let sw = if heavy { lw * 2 } else { lw };
     let cx = w / 2;
     let cy = h / 2;
 
+    // Each corner only draws 2 of the 4 possible segments (matching
+    // Alacritty's 4-segment model and WezTerm's Poly path approach):
+    //
+    //   │
+    // ──┼──  h1=left hline, h2=right hline
+    //   │    v1=top vline, v2=bottom vline
+    //
+    //   ┌ = h2 + v2    ┐ = h1 + v2
+    //   └ = h2 + v1    ┘ = h1 + v1
     match which {
         Corner::DownRight => {
-            draw_vline(&mut data, w, h, cx.saturating_sub(lw / 2), lw, 255);
-            draw_hline(&mut data, w, h, cy.saturating_sub(lw / 2), lw, 255);
-            // Fill the corner intersection
-            fill_region(&mut data, w, h,
-                        cx.saturating_sub(lw / 2), cy.saturating_sub(lw / 2),
-                        lw, lw, 255);
+            // ┌: right horizontal + bottom vertical
+            draw_hline_segment(&mut data, w, h, cx, cy.saturating_sub(sw / 2),
+                               w.saturating_sub(cx), sw, 255);
+            draw_vline_segment(&mut data, w, h, cx.saturating_sub(sw / 2), cy,
+                               h.saturating_sub(cy), sw, 255);
         }
         Corner::DownLeft => {
-            draw_vline(&mut data, w, h, cx.saturating_sub(lw / 2), lw, 255);
-            draw_hline(&mut data, w, h, cy.saturating_sub(lw / 2), lw, 255);
-            fill_region(&mut data, w, h,
-                        cx.saturating_sub(lw / 2), cy.saturating_sub(lw / 2),
-                        lw, lw, 255);
+            // ┐: left horizontal + bottom vertical
+            draw_hline_segment(&mut data, w, h, 0, cy.saturating_sub(sw / 2),
+                               cx, sw, 255);
+            draw_vline_segment(&mut data, w, h, cx.saturating_sub(sw / 2), cy,
+                               h.saturating_sub(cy), sw, 255);
         }
         Corner::UpRight => {
-            draw_vline(&mut data, w, h, cx.saturating_sub(lw / 2), lw, 255);
-            draw_hline(&mut data, w, h, cy.saturating_sub(lw / 2), lw, 255);
-            fill_region(&mut data, w, h,
-                        cx.saturating_sub(lw / 2), cy.saturating_sub(lw / 2),
-                        lw, lw, 255);
+            // └: right horizontal + top vertical
+            draw_hline_segment(&mut data, w, h, cx, cy.saturating_sub(sw / 2),
+                               w.saturating_sub(cx), sw, 255);
+            draw_vline_segment(&mut data, w, h, cx.saturating_sub(sw / 2), 0,
+                               cy, sw, 255);
         }
         Corner::UpLeft => {
-            draw_vline(&mut data, w, h, cx.saturating_sub(lw / 2), lw, 255);
-            draw_hline(&mut data, w, h, cy.saturating_sub(lw / 2), lw, 255);
-            fill_region(&mut data, w, h,
-                        cx.saturating_sub(lw / 2), cy.saturating_sub(lw / 2),
-                        lw, lw, 255);
+            // ┘: left horizontal + top vertical
+            draw_hline_segment(&mut data, w, h, 0, cy.saturating_sub(sw / 2),
+                               cx, sw, 255);
+            draw_vline_segment(&mut data, w, h, cx.saturating_sub(sw / 2), 0,
+                               cy, sw, 255);
         }
     }
     builtin_result(w, h, by, data)
@@ -379,44 +432,55 @@ fn corner(w: u32, h: u32, by: f32, which: Corner, _light: bool) -> BuiltinGlyph 
 enum TType { Left, Right, Up, Down }
 
 /// Box drawing T-junction (├ ┤ ┬ ┴).
-fn t_junction(w: u32, h: u32, by: f32, _light: bool, ttype: TType) -> BuiltinGlyph {
+///
+/// `heavy=false` → light stroke, `heavy=true` → double-width heavy stroke.
+fn t_junction(w: u32, h: u32, by: f32, heavy: bool, ttype: TType) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
     let lw = line_width(w, h);
+    let sw = if heavy { lw * 2 } else { lw };
     let cx = w / 2;
     let cy = h / 2;
 
-    // Horizontal bar across full width
-    draw_hline(&mut data, w, h, cy.saturating_sub(lw / 2), lw, 255);
-
     match ttype {
         TType::Left => {
-            // Vertical bar from top to center
-            draw_vline(&mut data, w, h, cx.saturating_sub(lw / 2), lw, 255);
+            // ├: full vertical + right horizontal
+            draw_vline(&mut data, w, h, cx.saturating_sub(sw / 2), sw, 255);
+            draw_hline_segment(&mut data, w, h, cx, cy.saturating_sub(sw / 2),
+                               w.saturating_sub(cx), sw, 255);
         }
         TType::Right => {
-            // Vertical bar from top to center
-            draw_vline(&mut data, w, h, cx.saturating_sub(lw / 2), lw, 255);
+            // ┤: full vertical + left horizontal
+            draw_vline(&mut data, w, h, cx.saturating_sub(sw / 2), sw, 255);
+            draw_hline_segment(&mut data, w, h, 0, cy.saturating_sub(sw / 2),
+                               cx, sw, 255);
         }
         TType::Down => {
-            // Vertical bar from center to bottom
-            draw_vline(&mut data, w, h, cx.saturating_sub(lw / 2), lw, 255);
+            // ┬: full horizontal + bottom vertical
+            draw_hline(&mut data, w, h, cy.saturating_sub(sw / 2), sw, 255);
+            draw_vline_segment(&mut data, w, h, cx.saturating_sub(sw / 2), cy,
+                               h.saturating_sub(cy), sw, 255);
         }
         TType::Up => {
-            // Vertical bar from center to bottom
-            draw_vline(&mut data, w, h, cx.saturating_sub(lw / 2), lw, 255);
+            // ┴: full horizontal + top vertical
+            draw_hline(&mut data, w, h, cy.saturating_sub(sw / 2), sw, 255);
+            draw_vline_segment(&mut data, w, h, cx.saturating_sub(sw / 2), 0,
+                               cy, sw, 255);
         }
     }
     builtin_result(w, h, by, data)
 }
 
 /// Box drawing cross (┼ ╋).
-fn cross(w: u32, h: u32, by: f32, _light: bool) -> BuiltinGlyph {
+///
+/// `heavy=false` → light stroke, `heavy=true` → double-width heavy stroke.
+fn cross(w: u32, h: u32, by: f32, heavy: bool) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
     let lw = line_width(w, h);
+    let sw = if heavy { lw * 2 } else { lw };
     let cx = w / 2;
     let cy = h / 2;
-    draw_hline(&mut data, w, h, cy.saturating_sub(lw / 2), lw, 255);
-    draw_vline(&mut data, w, h, cx.saturating_sub(lw / 2), lw, 255);
+    draw_hline(&mut data, w, h, cy.saturating_sub(sw / 2), sw, 255);
+    draw_vline(&mut data, w, h, cx.saturating_sub(sw / 2), sw, 255);
     builtin_result(w, h, by, data)
 }
 
