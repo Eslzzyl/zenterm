@@ -224,6 +224,8 @@ impl TerminalSession {
             self.cached_deco.reserve(instances_cap - self.cached_deco.capacity());
         }
         let mut has_new_glyphs = false;
+        let mut img_below_count: usize = 0;
+        let mut img_above_count: usize = 0;
 
         // ── URL span detection (for hover underline) ──────────────────
         self.url_spans.clear();
@@ -437,6 +439,7 @@ impl TerminalSession {
                             &mut self.cached_image_below, &mut atlas, img, col, row,
                             cw, ch, x_off, y_off, x_scale, y_scale,
                         );
+                        img_below_count += 1;
                     }
                 }
 
@@ -608,11 +611,21 @@ impl TerminalSession {
                             &mut self.cached_image_above, &mut atlas, img, col, row,
                             cw, ch, x_off, y_off, x_scale, y_scale,
                         );
+                        img_above_count += 1;
                     }
                 }
 
                 col += 1;
             }
+        }
+
+        if img_below_count > 0 || img_above_count > 0 {
+            log::debug!(
+                "[img] render frame: below={}, above={}, total_placements={}, dirty={}",
+                img_below_count, img_above_count,
+                self.terminal.image_placements_count(),
+                self.terminal_dirty,
+            );
         }
 
         // Append to the shared instance buffer in draw order.

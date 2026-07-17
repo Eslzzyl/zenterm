@@ -164,15 +164,32 @@ impl Terminal {
             }
             // Check for APC: ESC _ G
             if bytes[esc_pos + 1] == b'_' && bytes[esc_pos + 2] == b'G' {
-                let payload_start = esc_pos + 3;
+                log::debug!(
+                    "[img] APC found at offset={}, remaining={} bytes",
+                    esc_pos, bytes.len() - esc_pos,
+                );
+                let payload_start = esc_pos + 2;
                 // Find the string terminator ST: ESC \
                 if let Some(st_rel) = bytes[payload_start..].windows(2).position(|w| w == [0x1b, b'\\']) {
                     let payload = &bytes[payload_start..payload_start + st_rel];
                     if let Some(cmd) = KittyImage::parse_apc(payload) {
+                        log::debug!(
+                            "[img] Kitty APC parsed: variant={}, payload_len={}",
+                            kitty_cmd_variant_name(&cmd), payload.len(),
+                        );
                         let reply = self.handle_kitty_command(cmd);
                         if let Some(r) = reply {
+                            log::debug!(
+                                "[img] Kitty query response: {} bytes",
+                                r.len(),
+                            );
                             replies.extend_from_slice(r.as_bytes());
                         }
+                    } else {
+                        log::warn!(
+                            "[img] Kitty APC parse FAILED, first 80 bytes: {:?}",
+                            String::from_utf8_lossy(&payload[..payload.len().min(80)]),
+                        );
                     }
                     prev_end = Some(payload_start + st_rel + 2);
                 }
@@ -197,6 +214,20 @@ impl Terminal {
             // vte 0.15.0 does not dispatch param=16 for final byte 't',
             // so we handle it here directly.
             if bytes[esc_pos + 1] == b'[' {
+                // ── CSI 2 J : Erase Display — clear image placements ──
+                if esc_pos + 3 < bytes.len()
+                    && bytes[esc_pos + 2] == b'2'
+                    && bytes[esc_pos + 3] == b'J'
+                {
+                    if !self.image_placements.is_empty() {
+                        log::debug!(
+                            "[img] CSI 2J (Erase Display): clearing {} image placements",
+                            self.image_placements.len(),
+                        );
+                        self.image_placements.clear();
+                    }
+                }
+
                 let mut j = esc_pos + 2;
                 while j < bytes.len() && bytes[j].is_ascii_digit() {
                     j += 1;
@@ -209,6 +240,10 @@ impl Terminal {
                             let cell_w = if cols > 0 { self.pixel_width / cols as u32 } else { 0 };
                             let cell_h = if rows > 0 { self.pixel_height / rows as u32 } else { 0 };
                             let response = format!("\x1b[6;{};{}t", cell_h, cell_w);
+                            log::info!(
+                                "[img] CSI 16t response: cell_w={cell_w}, cell_h={cell_h}, pixel={}x{}, grid={}x{}",
+                                self.pixel_width, self.pixel_height, cols, rows,
+                            );
                             replies.extend_from_slice(response.as_bytes());
                             prev_end = Some(j + 1);
                         }
@@ -435,6 +470,11 @@ impl Terminal {
     /// Whether the viewport is at the bottom (showing latest output).
     pub fn is_at_bottom(&self) -> bool {
         self.term.grid().display_offset() == 0
+    }
+
+    /// Return the number of active image placements (for diagnostics).
+    pub fn image_placements_count(&self) -> usize {
+        self.image_placements.len()
     }
 
     /// Get a view of the visible grid with resolved colours.
@@ -798,36 +838,61 @@ impl Terminal {
             Ok(Some(assembled)) => assembled,
             Ok(None) => return None, // waiting for more chunks
             Err(e) => {
-                log::error!("kitty accumulator: {e}");
+                log::error!("[img] kitty accumulator error: {e}");
                 return None;
             }
         };
 
+        log::debug!(
+            "[img] handle_kitty_command: variant={}, cache_images={}, placements={}",
+            kitty_cmd_variant_name(&assembled),
+            self.image_cache.all_hashes().len(),
+            self.image_placements.len(),
+        );
+
         match assembled {
             KittyImage::TransmitData { transmit, verbosity } => {
+                log::debug!(
+                    "[img] TransmitData: fmt={:?}, w={:?}, h={:?}, id={:?}, num={:?}",
+                    transmit.format, transmit.width, transmit.height,
+                    transmit.image_id, transmit.image_number,
+                );
                 if verbosity != kitty::KittyImageVerbosity::Quiet {
-                    if let Ok(_) = kitty::decode_image_data(transmit, &mut self.image_cache) {
-                        // Send OK for I= (numbered transmissions).
+                    match kitty::decode_image_data(transmit, &mut self.image_cache) {
+                        Ok(id) => log::debug!("[img] TransmitData decode OK, image_id={id}"),
+                        Err(e) => log::error!("[img] TransmitData decode FAILED: {e}"),
                     }
                 } else {
                     let _ = kitty::decode_image_data(transmit, &mut self.image_cache);
                 }
             }
             KittyImage::TransmitDataAndDisplay { transmit, placement, .. } => {
+                log::debug!(
+                    "[img] TransmitDataAndDisplay: fmt={:?}, w={:?}, h={:?}, id={:?}, num={:?}",
+                    transmit.format, transmit.width, transmit.height,
+                    transmit.image_id, transmit.image_number,
+                );
                 match kitty::decode_image_data(transmit, &mut self.image_cache) {
                     Ok(image_id) => {
+                        log::debug!("[img] decode OK, image_id={image_id}, calling kitty_place_image");
                         self.kitty_place_image(Some(image_id), None, placement);
                     }
-                    Err(e) => log::error!("kitty transmit+display: {e}"),
+                    Err(e) => log::error!("[img] decode FAILED: {e}"),
                 }
             }
             KittyImage::Display { image_id, image_number, placement, .. } => {
+                log::debug!("[img] Display: image_id={image_id:?}, num={image_number:?}");
                 self.kitty_place_image(image_id, image_number, placement);
             }
             KittyImage::Delete { what, .. } => {
+                log::debug!("[img] Delete");
                 self.handle_kitty_delete(what);
             }
             KittyImage::Query { transmit } => {
+                log::debug!(
+                    "[img] Query: id={:?}, num={:?}",
+                    transmit.image_id, transmit.image_number,
+                );
                 // Respond with OK (we support the protocol).
                 return Some(kitty::kitty_response(
                     transmit.image_id,
@@ -836,13 +901,15 @@ impl Terminal {
                 ));
             }
             KittyImage::TransmitFrame { transmit, frame, .. } => {
+                log::debug!("[img] TransmitFrame");
                 if let Err(e) = kitty::decode_image_frame(transmit, frame, &mut self.image_cache) {
-                    log::error!("kitty frame transmit: {e}");
+                    log::error!("[img] frame transmit FAILED: {e}");
                 }
             }
             KittyImage::ComposeFrame { frame, .. } => {
+                log::debug!("[img] ComposeFrame");
                 if let Err(e) = kitty::handle_compose_frame(frame, &mut self.image_cache) {
-                    log::error!("kitty compose frame: {e}");
+                    log::error!("[img] compose frame FAILED: {e}");
                 }
             }
         }
@@ -856,10 +923,16 @@ impl Terminal {
         placement: kitty::KittyImagePlacement,
     ) {
         let id = self.image_cache.assign_id(image_id, image_number);
+        log::debug!(
+            "[img] kitty_place_image: resolved_id={id}, image_id={image_id:?}, \
+             num={image_number:?}, cell_pixel={}x{}, do_not_move={}",
+            self.cell_pixel_width, self.cell_pixel_height,
+            placement.do_not_move_cursor,
+        );
         let data = match self.image_cache.get(id) {
             Some(d) => d.clone(),
             None => {
-                log::error!("kitty place: image id {id} not found");
+                log::error!("[img] kitty place: image id {id} not found in cache");
                 return;
             }
         };
@@ -868,7 +941,10 @@ impl Terminal {
         let img_h = data.data().height();
 
         if self.cell_pixel_width == 0 || self.cell_pixel_height == 0 {
-            log::warn!("kitty: cell pixel size not set, skipping placement");
+            log::warn!(
+                "[img] kitty_place_image: cell_pixel is 0 ({}x{}), SKIPPING placement",
+                self.cell_pixel_width, self.cell_pixel_height,
+            );
             return;
         }
 
@@ -914,14 +990,29 @@ impl Terminal {
             self.image_placements.insert((grid_line, *col), cell.clone());
         }
 
-        if result.move_cursor {
-            // Kitty moves cursor to after the bottom-right of the image.
+        let new_cursor = if result.move_cursor {
             let new_col = (cursor.pos.column + result.width_in_cells).min(cols.saturating_sub(1));
             let new_row = (cursor.pos.line + result.height_in_cells)
                 .saturating_sub(1)
                 .min(rows.saturating_sub(1));
-            self.term.grid_mut().cursor.point.column = alacritty_terminal::index::Column(new_col);
-            self.term.grid_mut().cursor.point.line = alacritty_terminal::index::Line(new_row as i32);
+            (new_col, new_row)
+        } else {
+            (cursor.pos.column, cursor.pos.line)
+        };
+        log::debug!(
+            "[img] placed {} cells ({}x{}), total_placements={}, \
+             img={}x{}px, cursor ({},{})→({},{})",
+            result.cells.len(), result.width_in_cells, result.height_in_cells,
+            self.image_placements.len(),
+            img_w, img_h,
+            cursor.pos.column, cursor.pos.line,
+            new_cursor.0, new_cursor.1,
+        );
+
+        if result.move_cursor {
+            // Kitty moves cursor to after the bottom-right of the image.
+            self.term.grid_mut().cursor.point.column = alacritty_terminal::index::Column(new_cursor.0);
+            self.term.grid_mut().cursor.point.line = alacritty_terminal::index::Line(new_cursor.1 as i32);
         }
 
         self.damage.mark_all();
@@ -1063,5 +1154,19 @@ impl Terminal {
             }
             Err(e) => log::error!("sixel render: {e}"),
         }
+    }
+}
+
+// ── Diagnostic helpers ────────────────────────────────────────────────
+
+fn kitty_cmd_variant_name(cmd: &KittyImage) -> &'static str {
+    match cmd {
+        KittyImage::TransmitData { .. } => "TransmitData",
+        KittyImage::TransmitDataAndDisplay { .. } => "TransmitDataAndDisplay",
+        KittyImage::Display { .. } => "Display",
+        KittyImage::Delete { .. } => "Delete",
+        KittyImage::Query { .. } => "Query",
+        KittyImage::TransmitFrame { .. } => "TransmitFrame",
+        KittyImage::ComposeFrame { .. } => "ComposeFrame",
     }
 }
