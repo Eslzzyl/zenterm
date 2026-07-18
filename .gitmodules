@@ -29,3 +29,8 @@
 [submodule "freetype"]
 	path = freetype
 	url = https://github.com/freetype/freetype.git
+	shallow = true
+[submodule "ghostty"]
+	path = ghostty
+	url = https://github.com/ghostty-org/ghostty.git
+	shallow = true
