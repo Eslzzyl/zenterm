@@ -304,14 +304,55 @@ impl Terminal {
         let t_apc_elapsed = t_apc_start.elapsed();
 
         // ── Unified OSC scan ─────────────────────────────────────────
-        // Scan for all `ESC ] <number> ; <payload> (BEL|ST)` sequences
-        // and dispatch by number.
+        // Collect all OSC sequences; they are handled below AFTER the
+        // VT parser has processed the corresponding bytes, so that
+        // cursor-dependent handlers (e.g. iTerm2 inline image) see the
+        // correct cursor position.
         let t_osc_start = std::time::Instant::now();
-        for osc in scan_oscs(bytes) {
+        let oscs = scan_oscs(bytes);
+        let t_osc_elapsed = t_osc_start.elapsed();
+
+        // ── Fresh-line injection ─────────────────────────────────────────
+        // OSC 133 commands L, A, and N signal that the terminal should
+        // perform a fresh line (\r\n) before processing subsequent output.
+        let injected_vec;
+        let vt_bytes: &[u8] = if self.pending_fresh_line {
+            self.pending_fresh_line = false;
+            injected_vec = {
+                let mut v = Vec::with_capacity(2 + bytes.len());
+                v.push(b'\r');
+                v.push(b'\n');
+                v.extend_from_slice(bytes);
+                v
+            };
+            &injected_vec
+        } else {
+            bytes
+        };
+
+        // ── VT parser + OSC dispatch (interleaved) ──────────────────────
+        // Process the byte stream incrementally so each OSC handler sees
+        // the terminal state (cursor position etc.) AFTER the bytes that
+        // precede the OSC have been parsed by the VT parser.
+        let t_vt_start = std::time::Instant::now();
+        let shift = vt_bytes.len() - bytes.len();
+        let mut prev_vt_off = 0;
+
+        for osc in &oscs {
+            let vt_osc_start = osc.byte_start + shift;
+            let vt_osc_end = osc.byte_end + shift;
+
+            // Process bytes before this OSC (cursor positioning, text, etc.).
+            if vt_osc_start > prev_vt_off {
+                self.processor.advance(&mut self.term, &vt_bytes[prev_vt_off..vt_osc_start]);
+            }
+
+            // Dispatch the OSC — cursor/grid state now reflects the prefix
+            // bytes processed above.
             match osc.number {
                 7 => {
                     // OSC 7 — current working directory.
-                    self.pending_current_directory = Some(osc.payload);
+                    self.pending_current_directory = Some(osc.payload.clone());
                 }
                 9 => {
                     // OSC 9 — iTerm2 notification OR ConEmu progress bar.
@@ -320,7 +361,7 @@ impl Terminal {
                     } else {
                         // iTerm2-style notification.
                         self.pending_notification =
-                            Some(("Zenterm".into(), osc.payload));
+                            Some(("Zenterm".into(), osc.payload.clone()));
                     }
                 }
                 777 => {
@@ -372,11 +413,9 @@ impl Terminal {
                 }
                 1337 => {
                     // OSC 1337 — iTerm2 proprietary.
-                    // Parse the sub-command and handle each variant.
                     if let Some(cmd) = parse_iterm_proprietary(&osc.payload) {
                         match cmd {
                             ITermProprietary::SetMark => {
-                                // Record a navigation mark at the current cursor position.
                                 let cursor = self.cursor();
                                 self.marks.push((cursor.pos.column, cursor.pos.line));
                                 log::debug!(
@@ -386,31 +425,25 @@ impl Terminal {
                                 );
                             }
                             ITermProprietary::StealFocus => {
-                                // Store for UI layer (window focus request).
                                 self.pending_iterm_action =
                                     Some(ITermProprietary::StealFocus);
                             }
                             ITermProprietary::ClearScrollback => {
-                                // Immediate terminal action: clear scrollback history.
                                 self.term.grid_mut().clear_history();
                                 self.damage.mark_all();
                             }
                             ITermProprietary::CurrentDir(path) => {
-                                // Reuse existing OSC 7 current-directory pending slot.
                                 self.pending_current_directory = Some(path);
                             }
                             ITermProprietary::SetProfile(name) => {
-                                // Store for UI layer (profile switching).
                                 self.pending_iterm_action =
                                     Some(ITermProprietary::SetProfile(name));
                             }
                             ITermProprietary::HighlightCursorLine(enabled) => {
-                                // Store for UI layer (renderer cursor guide).
                                 self.pending_iterm_action =
                                     Some(ITermProprietary::HighlightCursorLine(enabled));
                             }
                             ITermProprietary::RequestCellSize => {
-                                // Respond with cell pixel dimensions.
                                 if self.cell_pixel_width > 0
                                     && self.cell_pixel_height > 0
                                 {
@@ -426,17 +459,11 @@ impl Terminal {
                                     replies.extend_from_slice(response.as_bytes());
                                 }
                             }
-                            ITermProprietary::ReportCellSize { .. } => {
-                                // This is a response we (or another terminal)
-                                // wrote to the PTY — ignore when read back.
-                            }
+                            ITermProprietary::ReportCellSize { .. } => {}
                             ITermProprietary::Copy(text) => {
-                                // Base64-decoded text → clipboard store.
                                 self.pending_clipboard_store = Some(text);
                             }
                             ITermProprietary::ReportVariable(name) => {
-                                // Look up the variable — check built-in
-                                // session variables first, then user_vars.
                                 let value = self
                                     .iterm_builtin_var(&name)
                                     .or_else(|| self.user_vars.get(&name).cloned());
@@ -453,7 +480,6 @@ impl Terminal {
                                         "\x1b]1337;ReportVariable={b64_name}={b64_val}\x1b\\"
                                     )
                                 } else {
-                                    // Variable not found — respond with empty value.
                                     let b64_name =
                                         crate::term::osc::base64_encode_for_response(
                                             name.as_bytes(),
@@ -472,16 +498,16 @@ impl Terminal {
                                 self.user_vars.insert(name, value);
                             }
                             ITermProprietary::SetBadgeFormat(format) => {
-                                // Store for UI layer.
                                 self.pending_iterm_action =
                                     Some(ITermProprietary::SetBadgeFormat(format));
                             }
                             ITermProprietary::File(file_data) => {
                                 if file_data.inline {
-                                    // Display as inline image.
+                                    // Cursor position is now correct because
+                                    // the VT parser has processed all bytes
+                                    // preceding this OSC in the buffer.
                                     self.handle_iterm_inline_image(file_data);
                                 } else {
-                                    // Store for UI layer (file download).
                                     self.pending_iterm_action =
                                         Some(ITermProprietary::File(file_data));
                                 }
@@ -499,7 +525,6 @@ impl Terminal {
                                     }
                                     ITermUnicodeVersionOp::Pop(label) => {
                                         if let Some(l) = label {
-                                            // Pop until matching label.
                                             while let Some((ver, ol)) =
                                                 self.unicode_version_stack.pop()
                                             {
@@ -509,7 +534,6 @@ impl Terminal {
                                                 }
                                             }
                                         } else {
-                                            // Pop one level.
                                             if let Some((ver, _)) =
                                                 self.unicode_version_stack.pop()
                                             {
@@ -526,30 +550,17 @@ impl Terminal {
                     // Unknown OSC — ignored.
                 }
             }
+
+            // Skip the OSC bytes — the VT parser never sees them.  This is
+            // safe because Term's osc_dispatch ignores all our custom OSC
+            // numbers.
+            prev_vt_off = vt_osc_end;
         }
-        let t_osc_elapsed = t_osc_start.elapsed();
 
-        // ── Fresh-line injection ─────────────────────────────────────────
-        // OSC 133 commands L, A, and N signal that the terminal should
-        // perform a fresh line (\r\n) before processing subsequent output.
-        let injected_vec;
-        let vt_bytes: &[u8] = if self.pending_fresh_line {
-            self.pending_fresh_line = false;
-            injected_vec = {
-                let mut v = Vec::with_capacity(2 + bytes.len());
-                v.push(b'\r');
-                v.push(b'\n');
-                v.extend_from_slice(bytes);
-                v
-            };
-            &injected_vec
-        } else {
-            bytes
-        };
-
-        // ── VT parser ───────────────────────────────────────────────────
-        let t_vt_start = std::time::Instant::now();
-        self.processor.advance(&mut self.term, vt_bytes);
+        // Process remaining bytes after the last OSC.
+        if prev_vt_off < vt_bytes.len() {
+            self.processor.advance(&mut self.term, &vt_bytes[prev_vt_off..]);
+        }
         let t_vt_elapsed = t_vt_start.elapsed();
 
         // Propagate damage from alacritty_terminal's internal tracker.

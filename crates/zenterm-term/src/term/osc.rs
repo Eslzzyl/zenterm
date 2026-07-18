@@ -24,6 +24,10 @@ pub(crate) struct OscMatch {
     /// Payload between the number and the terminator (BEL/ST).
     /// This is the raw UTF-8 content after the first `;`.
     pub payload: String,
+    /// Byte offset of the `ESC` (0x1b) that starts this OSC (`ESC ] …`).
+    pub byte_start: usize,
+    /// Byte offset after the terminator (one past the `BEL` or `ST`).
+    pub byte_end: usize,
 }
 
 /// Scan `bytes` for all well-formed `ESC ] <number> ; <payload> (BEL|ST)`
@@ -86,16 +90,26 @@ pub(crate) fn scan_oscs(bytes: &[u8]) -> Vec<OscMatch> {
             Some(end) => {
                 let payload_bytes = &tail[..end];
                 if let Ok(payload) = std::str::from_utf8(payload_bytes) {
+                    let byte_start = i;
+                    let terminator_len = match tail[end] {
+                        0x07 => 1,      // BEL
+                        _ => 2,         // ST (ESC \)
+                    };
+                    let byte_end = payload_start + end + terminator_len;
                     results.push(OscMatch {
                         number,
                         payload: payload.to_string(),
+                        byte_start,
+                        byte_end,
                     });
+                    // Advance past the entire OSC sequence.
+                    i = byte_end;
+                } else {
+                    i = payload_start + end + match tail[end] {
+                        0x07 => 1,
+                        _ => 2,
+                    };
                 }
-                // Advance past the entire OSC sequence.
-                i = payload_start + end + match tail[end] {
-                    0x07 => 1,      // BEL
-                    _ => 2,         // ST (ESC \)
-                };
             }
             None => {
                 // Unterminated — stop scanning; the rest may be a
