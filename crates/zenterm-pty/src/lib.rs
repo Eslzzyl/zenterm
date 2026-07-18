@@ -56,7 +56,10 @@ impl PtySession {
             })
             .map_err(|e| Error::Pty(e.to_string()))?;
 
-        let cmd = CommandBuilder::new_default_prog();
+        let mut cmd = CommandBuilder::new_default_prog();
+        // Declare we are zenterm, so programs querying TERM_PROGRAM (e.g.
+        // ratatui-image's Picker) don't mistake us for another terminal.
+        cmd.env("TERM_PROGRAM", "zenterm");
         let child = pair
             .slave
             .spawn_command(cmd)
