@@ -47,18 +47,69 @@ use super::TermDimensions;
 const PLACEHOLDER_CHAR: char = '\u{10EEEE}';
 
 /// Row/column diacritics for encoding position in Unicode placeholders.
-/// Derived from: https://sw.kovidgoyal.net/kitty/_downloads/f0a0de9ec8d9ff4456206db8e0814937/rowcolumn-diacritics.txt
+/// From Kitty: https://sw.kovidgoyal.net/kitty/_downloads/1792bad15b12979994cd6ecc54c967a6/rowcolumn-diacritics.txt
 /// The index into the array determines the value.
 const DIACRITICS: &[char] = &[
-    '\u{0305}', '\u{030D}', '\u{030E}', '\u{0310}', '\u{0312}',
-    '\u{033D}', '\u{033E}', '\u{033F}', '\u{0346}', '\u{034A}',
-    '\u{034B}', '\u{034C}', '\u{0350}', '\u{0351}', '\u{0352}',
-    '\u{0357}', '\u{035B}', '\u{0363}', '\u{0364}', '\u{0365}',
-    '\u{0366}', '\u{0367}', '\u{0368}', '\u{0369}', '\u{036A}',
-    '\u{036B}', '\u{036C}', '\u{036D}', '\u{036E}', '\u{036F}',
-    '\u{0370}', '\u{0371}', '\u{0372}', '\u{0373}', '\u{0376}',
-    '\u{0377}', '\u{037A}', '\u{037B}', '\u{037C}', '\u{037D}',
-    '\u{037F}', '\u{0384}', '\u{0385}', '\u{0386}', '\u{0387}',
+    '\u{305}', '\u{30D}', '\u{30E}', '\u{310}', '\u{312}',
+    '\u{33D}', '\u{33E}', '\u{33F}', '\u{346}', '\u{34A}',
+    '\u{34B}', '\u{34C}', '\u{350}', '\u{351}', '\u{352}',
+    '\u{357}', '\u{35B}', '\u{363}', '\u{364}', '\u{365}',
+    '\u{366}', '\u{367}', '\u{368}', '\u{369}', '\u{36A}',
+    '\u{36B}', '\u{36C}', '\u{36D}', '\u{36E}', '\u{36F}',
+    '\u{483}', '\u{484}', '\u{485}', '\u{486}', '\u{487}',
+    '\u{592}', '\u{593}', '\u{594}', '\u{595}', '\u{597}',
+    '\u{598}', '\u{599}', '\u{59C}', '\u{59D}', '\u{59E}',
+    '\u{59F}', '\u{5A0}', '\u{5A1}', '\u{5A8}', '\u{5A9}',
+    '\u{5AB}', '\u{5AC}', '\u{5AF}', '\u{5C4}', '\u{610}',
+    '\u{611}', '\u{612}', '\u{613}', '\u{614}', '\u{615}',
+    '\u{616}', '\u{617}', '\u{657}', '\u{658}', '\u{659}',
+    '\u{65A}', '\u{65B}', '\u{65D}', '\u{65E}', '\u{6D6}',
+    '\u{6D7}', '\u{6D8}', '\u{6D9}', '\u{6DA}', '\u{6DB}',
+    '\u{6DC}', '\u{6DF}', '\u{6E0}', '\u{6E1}', '\u{6E2}',
+    '\u{6E4}', '\u{6E7}', '\u{6E8}', '\u{6EB}', '\u{6EC}',
+    '\u{730}', '\u{732}', '\u{733}', '\u{735}', '\u{736}',
+    '\u{73A}', '\u{73D}', '\u{73F}', '\u{740}', '\u{741}',
+    '\u{743}', '\u{745}', '\u{747}', '\u{749}', '\u{74A}',
+    '\u{7EB}', '\u{7EC}', '\u{7ED}', '\u{7EE}', '\u{7EF}',
+    '\u{7F0}', '\u{7F1}', '\u{7F3}', '\u{816}', '\u{817}',
+    '\u{818}', '\u{819}', '\u{81B}', '\u{81C}', '\u{81D}',
+    '\u{81E}', '\u{81F}', '\u{820}', '\u{821}', '\u{822}',
+    '\u{823}', '\u{825}', '\u{826}', '\u{827}', '\u{829}',
+    '\u{82A}', '\u{82B}', '\u{82C}', '\u{82D}', '\u{951}',
+    '\u{953}', '\u{954}', '\u{F82}', '\u{F83}', '\u{F86}',
+    '\u{F87}', '\u{135D}', '\u{135E}', '\u{135F}', '\u{17DD}',
+    '\u{193A}', '\u{1A17}', '\u{1A75}', '\u{1A76}', '\u{1A77}',
+    '\u{1A78}', '\u{1A79}', '\u{1A7A}', '\u{1A7B}', '\u{1A7C}',
+    '\u{1B6B}', '\u{1B6D}', '\u{1B6E}', '\u{1B6F}', '\u{1B70}',
+    '\u{1B71}', '\u{1B72}', '\u{1B73}', '\u{1CD0}', '\u{1CD1}',
+    '\u{1CD2}', '\u{1CDA}', '\u{1CDB}', '\u{1CE0}', '\u{1DC0}',
+    '\u{1DC1}', '\u{1DC3}', '\u{1DC4}', '\u{1DC5}', '\u{1DC6}',
+    '\u{1DC7}', '\u{1DC8}', '\u{1DC9}', '\u{1DCB}', '\u{1DCC}',
+    '\u{1DD1}', '\u{1DD2}', '\u{1DD3}', '\u{1DD4}', '\u{1DD5}',
+    '\u{1DD6}', '\u{1DD7}', '\u{1DD8}', '\u{1DD9}', '\u{1DDA}',
+    '\u{1DDB}', '\u{1DDC}', '\u{1DDD}', '\u{1DDE}', '\u{1DDF}',
+    '\u{1DE0}', '\u{1DE1}', '\u{1DE2}', '\u{1DE3}', '\u{1DE4}',
+    '\u{1DE5}', '\u{1DE6}', '\u{1DFE}', '\u{20D0}', '\u{20D1}',
+    '\u{20D4}', '\u{20D5}', '\u{20D6}', '\u{20D7}', '\u{20DB}',
+    '\u{20DC}', '\u{20E1}', '\u{20E7}', '\u{20E9}', '\u{20F0}',
+    '\u{2CEF}', '\u{2CF0}', '\u{2CF1}', '\u{2DE0}', '\u{2DE1}',
+    '\u{2DE2}', '\u{2DE3}', '\u{2DE4}', '\u{2DE5}', '\u{2DE6}',
+    '\u{2DE7}', '\u{2DE8}', '\u{2DE9}', '\u{2DEA}', '\u{2DEB}',
+    '\u{2DEC}', '\u{2DED}', '\u{2DEE}', '\u{2DEF}', '\u{2DF0}',
+    '\u{2DF1}', '\u{2DF2}', '\u{2DF3}', '\u{2DF4}', '\u{2DF5}',
+    '\u{2DF6}', '\u{2DF7}', '\u{2DF8}', '\u{2DF9}', '\u{2DFA}',
+    '\u{2DFB}', '\u{2DFC}', '\u{2DFD}', '\u{2DFE}', '\u{2DFF}',
+    '\u{A66F}', '\u{A67C}', '\u{A67D}', '\u{A6F0}', '\u{A6F1}',
+    '\u{A8E0}', '\u{A8E1}', '\u{A8E2}', '\u{A8E3}', '\u{A8E4}',
+    '\u{A8E5}', '\u{A8E6}', '\u{A8E7}', '\u{A8E8}', '\u{A8E9}',
+    '\u{A8EA}', '\u{A8EB}', '\u{A8EC}', '\u{A8ED}', '\u{A8EE}',
+    '\u{A8EF}', '\u{A8F0}', '\u{A8F1}', '\u{AAB0}', '\u{AAB2}',
+    '\u{AAB3}', '\u{AAB7}', '\u{AAB8}', '\u{AABE}', '\u{AABF}',
+    '\u{AAC1}', '\u{FE20}', '\u{FE21}', '\u{FE22}', '\u{FE23}',
+    '\u{FE24}', '\u{FE25}', '\u{FE26}', '\u{10A0F}', '\u{10A38}',
+    '\u{1D185}', '\u{1D186}', '\u{1D187}', '\u{1D188}', '\u{1D189}',
+    '\u{1D1AA}', '\u{1D1AB}', '\u{1D1AC}', '\u{1D1AD}', '\u{1D242}',
+    '\u{1D243}', '\u{1D244}',
 ];
 
 /// Decode a diacritic combining mark into a numeric value.
@@ -126,6 +177,11 @@ pub struct Terminal {
     /// Accumulator for multi-chunk Kitty image transmissions.
     #[allow(dead_code)]
     kitty_accumulator: KittyAccumulator,
+    /// Buffered bytes from an APC sequence that spans across `feed()` calls.
+    /// When the APC scanner finds `ESC _ G` but cannot find the ST (`ESC \`)
+    /// within the current batch, the bytes from `ESC _ G` onward are saved
+    /// here and prepended to the next `feed()` call.
+    apc_remainder: Vec<u8>,
     /// Cell pixel dimensions (set by the UI layer).
     pub cell_pixel_width: u32,
     pub cell_pixel_height: u32,
@@ -212,6 +268,7 @@ impl Terminal {
             virtual_placements: HashMap::new(),
             pending_image_deallocations: Vec::new(),
             kitty_accumulator: KittyAccumulator::default(),
+            apc_remainder: Vec::new(),
             cell_pixel_width: 0,
             cell_pixel_height: 0,
             pixel_width: size.pixel_width as u32,
@@ -250,11 +307,24 @@ impl Terminal {
     /// clipboard store) are stored internally and can be retrieved via the
     /// `take_*` methods after this call.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        // Prepend any leftover bytes from an APC that spanned the previous feed() call.
+        let mut combined;
+        let bytes: &[u8] = if self.apc_remainder.is_empty() {
+            bytes
+        } else {
+            log::debug!(
+                "[img] prepending {} APC remainder bytes to new batch",
+                self.apc_remainder.len(),
+            );
+            combined = std::mem::take(&mut self.apc_remainder);
+            combined.extend_from_slice(bytes);
+            combined.as_slice()
+        };
         if bytes.is_empty() {
             return Vec::new();
         }
         let start = std::time::Instant::now();
-        log::debug!("Terminal::feed: {} bytes: {:02x?}", bytes.len(), bytes);
+        log::debug!("Terminal::feed: {} bytes", bytes.len());
 
         // Response bytes collected during processing; written back to PTY.
         let mut replies = Vec::new();
@@ -273,23 +343,29 @@ impl Terminal {
                 continue;
             }
             if esc_pos + 2 >= bytes.len() {
+                // Not enough bytes to check ESC _ G — buffer trailing bytes
+                // (they may be the start of an APC spanning the next batch).
+                self.apc_remainder.clear();
+                self.apc_remainder.extend_from_slice(&bytes[esc_pos..]);
                 break;
             }
             // Check for APC: ESC _ G
             if bytes[esc_pos + 1] == b'_' && bytes[esc_pos + 2] == b'G' {
-                log::debug!(
-                    "[img] APC found at offset={}, remaining={} bytes",
-                    esc_pos, bytes.len() - esc_pos,
-                );
                 let payload_start = esc_pos + 2;
                 // Find the string terminator ST: ESC \
-                if let Some(st_rel) = bytes[payload_start..].windows(2).position(|w| w == [0x1b, b'\\']) {
+                // Use SIMD-optimized memchr instead of windows(2) for ~5x faster search.
+                let st_rel = memchr::memchr(0x1b, &bytes[payload_start..])
+                    .and_then(|rel| {
+                        let abs = payload_start + rel;
+                        if abs + 1 < bytes.len() && bytes[abs + 1] == b'\\' {
+                            Some(rel)
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(st_rel) = st_rel {
                     let payload = &bytes[payload_start..payload_start + st_rel];
                     if let Some(cmd) = KittyImage::parse_apc(payload) {
-                        log::debug!(
-                            "[img] Kitty APC parsed: variant={}, payload_len={}",
-                            kitty_cmd_variant_name(&cmd), payload.len(),
-                        );
                         let reply = self.handle_kitty_command(cmd);
                         if let Some(r) = reply {
                             log::debug!(
@@ -306,6 +382,20 @@ impl Terminal {
                     }
                     apc_count += 1;
                     prev_end = Some(payload_start + st_rel + 2);
+                } else {
+                    // ST not found — the APC may span the batch boundary.
+                    // Save bytes from ESC _ G onward for the next feed() call.
+                    // Break the loop since all remaining bytes belong to this
+                    // incomplete APC (base64 data contains no ESC bytes).
+                    log::warn!(
+                        "[img] APC ST not found at offset={} ({} bytes from ESC _ G), \
+                         buffering for next feed()",
+                        esc_pos,
+                        bytes.len() - esc_pos,
+                    );
+                    self.apc_remainder.clear();
+                    self.apc_remainder.extend_from_slice(&bytes[esc_pos..]);
+                    break;
                 }
             }
             // Check for DCS: ESC P (Sixel)
@@ -317,7 +407,16 @@ impl Terminal {
                 }
                 if j < bytes.len() && bytes[j] == b'q' {
                     let payload_start = j + 1;
-                    if let Some(st_rel) = bytes[payload_start..].windows(2).position(|w| w == [0x1b, b'\\']) {
+                    let st_rel = memchr::memchr(0x1b, &bytes[payload_start..])
+                        .and_then(|rel| {
+                            let abs = payload_start + rel;
+                            if abs + 1 < bytes.len() && bytes[abs + 1] == b'\\' {
+                                Some(rel)
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some(st_rel) = st_rel {
                         let params = sixel::parse_dcs_params(&bytes[param_start..j]);
                         self.handle_sixel(&bytes[payload_start..payload_start + st_rel], &params);
                         prev_end = Some(payload_start + st_rel + 2);
@@ -878,181 +977,226 @@ impl Terminal {
         // (U+10EEEE).  For each one, decode the image ID from the fg color
         // and the row/col from combining diacritics, then create an
         // ImageCell pointing at the correct slice of the image.
+        //
+        // ratatui-image encodes image IDs using TrueColor fg (`38;2;R;G;B`)
+        // → `Color::Spec(Rgb{r,g,b})` and only attaches diacritics to the
+        // FIRST placeholder character per row.  Subsequent characters
+        // inherit row/id_extra and auto-increment col.
+        //
+        // We collect render params in a first pass (while grid is borrowed),
+        // then create ImageCells in a second pass (after grid is released).
         if !self.virtual_placements.is_empty() {
+            // Per-row inheritance state for U+10EEEE without diacritics.
+            let mut inh_image_id: Option<u32> = None;
+            let mut inh_row: Option<u32> = None;
+            let mut inh_id_extra: Option<u32> = None;
+            let mut inh_col: u32 = 0;
+
+            // (row_idx, col_idx, image_id, row_val, col_val, id_extra)
+            let mut placeholders: Vec<(usize, usize, u32, u32, u32, u32)> = Vec::new();
+
             for row_idx in 0..screen_lines.min(self.grid_cache.len()) {
                 let grid_line = Line(row_idx as i32 - grid.display_offset() as i32);
                 for col_idx in 0..cols {
                     let alacell = &grid[grid_line][Column(col_idx)];
                     if alacell.c != PLACEHOLDER_CHAR {
+                        // Reset inheritance when a non-placeholder is encountered.
+                        inh_image_id = None;
+                        inh_row = None;
+                        inh_id_extra = None;
+                        inh_col = 0;
                         continue;
                     }
 
-                    // Extract image_id from the foreground color index.
-                    let image_id = match alacell.fg {
+                    // ── Extract image_id from foreground color ──────────
+                    // ratatui-image uses TrueColor: \x1b[38;2;R;G;Bm
+                    // which alacritty stores as Color::Spec(Rgb{r,g,b}).
+                    let base_id = match alacell.fg {
+                        Color::Spec(rgb) => {
+                            (rgb.r as u32) << 16 | (rgb.g as u32) << 8 | rgb.b as u32
+                        }
                         Color::Indexed(idx) => idx as u32,
-                        _ => continue,
+                        _ => {
+                            // Unknown color format — skip this cell.
+                            continue;
+                        }
                     };
 
-                    // Extract row/col from combining diacritics.
+                    // ── Extract row/col/id_extra from diacritics ───────
                     let zerowidth = alacell.zerowidth().unwrap_or(&[]);
-                    if zerowidth.len() < 2 {
-                        continue;
+
+                    if zerowidth.len() >= 2 {
+                        // First character in a row — has full diacritics.
+                        let row_val = match diacritic_value(zerowidth[0]) {
+                            Some(v) => v,
+                            None => {
+                                log::warn!("[img] unicode placeholder: invalid row diacritic cp={:X}", zerowidth[0] as u32);
+                                continue;
+                            }
+                        };
+                        let col_val = match diacritic_value(zerowidth[1]) {
+                            Some(v) => v,
+                            None => {
+                                log::warn!("[img] unicode placeholder: invalid col diacritic cp={:X}", zerowidth[1] as u32);
+                                continue;
+                            }
+                        };
+                        let high = if zerowidth.len() >= 3 {
+                            diacritic_value(zerowidth[2]).unwrap_or(0)
+                        } else {
+                            0
+                        };
+                        let full_id = (high << 24) | base_id;
+
+                        // Update inheritance state.
+                        inh_image_id = Some(full_id);
+                        inh_row = Some(row_val);
+                        inh_id_extra = Some(high);
+                        inh_col = col_val;
+
+                        placeholders.push((row_idx, col_idx, full_id, row_val, col_val, high));
+                    } else if inh_row.is_some() {
+                        // Subsequent character — no diacritics, use inherited values.
+                        let full_id = inh_image_id.unwrap_or(base_id);
+                        let row_val = inh_row.unwrap();
+                        let col_val = inh_col;
+                        inh_col = inh_col.saturating_add(1);
+
+                        placeholders.push((row_idx, col_idx, full_id, row_val, col_val,
+                            inh_id_extra.unwrap_or(0)));
                     }
-                    let row_diacritic = match diacritic_value(zerowidth[0]) {
-                        Some(v) => v,
-                        None => {
-                            log::warn!("[img] unicode placeholder: invalid row diacritic cp={:X}", zerowidth[0] as u32);
-                            continue;
-                        }
-                    };
-                    let col_diacritic = match diacritic_value(zerowidth[1]) {
-                        Some(v) => v,
-                        None => {
-                            log::warn!("[img] unicode placeholder: invalid col diacritic cp={:X}", zerowidth[1] as u32);
-                            continue;
-                        }
-                    };
-                    // Optional 3rd diacritic: high 8 bits of image_id.
-                    let image_id = if zerowidth.len() >= 3 {
-                        match diacritic_value(zerowidth[2]) {
-                            Some(high) => (high << 8) | image_id,
-                            None => image_id,
-                        }
-                    } else {
-                        image_id
-                    };
-
-                    // Find the virtual placement for this image_id.
-                    // Try with placement_id=None first, then any.
-                    let vp = self.virtual_placements.get(&(image_id, None))
-                        .or_else(|| {
-                            self.virtual_placements.iter()
-                                .find(|((id, _), _)| *id == image_id)
-                                .map(|(_, vp)| vp)
-                        });
-                    let vp = match vp {
-                        Some(vp) => vp,
-                        None => {
-                            log::warn!("[img] unicode placeholder: no virtual placement for image_id={image_id}");
-                            continue;
-                        }
-                    };
-
-                    let data = match self.image_cache.get(vp.image_id) {
-                        Some(d) => d.clone(),
-                        None => continue,
-                    };
-                    let img_w = data.data().width();
-                    let img_h = data.data().height();
-
-                    if self.cell_pixel_width == 0 || self.cell_pixel_height == 0 {
-                        continue;
-                    }
-
-                    // ── Grid size ──────────────────────────────────────
-                    // If columns/rows specified, use them; otherwise
-                    // estimate from image size to fit at native resolution.
-                    let grid_cols = if vp.columns > 0 {
-                        vp.columns
-                    } else {
-                        ((img_w + self.cell_pixel_width - 1) / self.cell_pixel_width).max(1)
-                    };
-                    let grid_rows = if vp.rows > 0 {
-                        vp.rows
-                    } else {
-                        ((img_h + self.cell_pixel_height - 1) / self.cell_pixel_height).max(1)
-                    };
-
-                    // ── Aspect-ratio-preserving scale ─────────────────
-                    // Fit the source image into the placement pixel area
-                    // (grid_cols × cell_width, grid_rows × cell_height)
-                    // while preserving aspect ratio.  Center the image
-                    // within the area if there is leftover space.
-                    let placement_px_w = grid_cols as f64 * self.cell_pixel_width as f64;
-                    let placement_px_h = grid_rows as f64 * self.cell_pixel_height as f64;
-                    let src_x = vp.source_x.unwrap_or(0) as f64;
-                    let src_y = vp.source_y.unwrap_or(0) as f64;
-                    let src_w = vp.source_w.unwrap_or(img_w).min(img_w) as f64;
-                    let src_h = vp.source_h.unwrap_or(img_h).min(img_h) as f64;
-
-                    // Compute scale: uniform scale that fits src into placement area.
-                    let scale = if src_w * placement_px_h > src_h * placement_px_w {
-                        // Source is wider than placement — fit width, center height.
-                        placement_px_w / src_w.max(1.0)
-                    } else {
-                        // Source is taller — fit height, center width.
-                        placement_px_h / src_h.max(1.0)
-                    };
-
-                    // Scaled source dimensions (after aspect-ratio fit).
-                    let scaled_src_w = src_w * scale;
-                    let scaled_src_h = src_h * scale;
-
-                    // Offsets to center the image within the placement area.
-                    let center_offset_x = (placement_px_w - scaled_src_w) / 2.0;
-                    let center_offset_y = (placement_px_h - scaled_src_h) / 2.0;
-
-                    // ── Per-cell UV calculation ────────────────────────
-                    // This cell represents (col_diacritic, row_diacritic)
-                    // within the grid.  Compute the pixel region it covers
-                    // in the placement area, then map to source UV.
-                    let cell_px_x = col_diacritic as f64 * self.cell_pixel_width as f64;
-                    let cell_px_y = row_diacritic as f64 * self.cell_pixel_height as f64;
-
-                    // Source region for this cell (in original image pixels).
-                    // Undo the centering offset and scale back to image space.
-                    let cell_src_x = src_x + (cell_px_x - center_offset_x) / scale;
-                    let cell_src_y = src_y + (cell_px_y - center_offset_y) / scale;
-                    let cell_src_w = self.cell_pixel_width as f64 / scale;
-                    let cell_src_h = self.cell_pixel_height as f64 / scale;
-
-                    // Clamp source region to the source rectangle bounds.
-                    let clamped_x = cell_src_x.max(src_x);
-                    let clamped_y = cell_src_y.max(src_y);
-                    let clamped_w = (cell_src_x + cell_src_w - clamped_x)
-                        .min(src_x + src_w - clamped_x)
-                        .max(0.0);
-                    let clamped_h = (cell_src_y + cell_src_h - clamped_y)
-                        .min(src_y + src_h - clamped_y)
-                        .max(0.0);
-
-                    if clamped_w <= 0.0 || clamped_h <= 0.0 || img_w == 0 || img_h == 0 {
-                        continue;
-                    }
-
-                    let u0 = clamped_x / img_w as f64;
-                    let v0 = clamped_y / img_h as f64;
-                    let u1 = (clamped_x + clamped_w) / img_w as f64;
-                    let v1 = (clamped_y + clamped_h) / img_h as f64;
-
-                    let top_left = zenterm_core::image::TextureCoordinate::new(u0 as f32, v0 as f32);
-                    let bottom_right = zenterm_core::image::TextureCoordinate::new(u1 as f32, v1 as f32);
-
-                    let padding_left = vp.x_offset.unwrap_or(0) as u16;
-                    let padding_top = vp.y_offset.unwrap_or(0) as u16;
-
-                    let img_cell = ImageCell {
-                        top_left,
-                        bottom_right,
-                        data,
-                        z_index: vp.z_index,
-                        padding_left,
-                        padding_top,
-                        padding_right: 0,
-                        padding_bottom: 0,
-                        image_id: Some(vp.image_id),
-                        placement_id: vp.placement_id,
-                    };
-
-                    if row_idx < self.grid_cache.len() && col_idx < self.grid_cache[row_idx].len() {
-                        self.grid_cache[row_idx][col_idx].image = Some(img_cell);
-                    }
+                    // else: no inherited state yet — skip.
                 }
+            }
+
+            // Release grid borrow, then create ImageCells.
+            let _ = grid; // release immutable borrow before mutable access
+            for (row_idx, col_idx, image_id, row_val, col_val, id_extra) in placeholders {
+                self.render_unicode_placeholder_cell(
+                    row_idx, col_idx, image_id, row_val, col_val, id_extra,
+                );
             }
         }
 
         GridView {
             rows: &self.grid_cache[..screen_lines.min(self.grid_cache.len())],
+        }
+    }
+
+    /// Render a single Unicode placeholder cell: look up the virtual
+    /// placement, compute the per-cell UV coordinates, and store an
+    /// `ImageCell` in the grid cache.
+    fn render_unicode_placeholder_cell(
+        &mut self,
+        row_idx: usize,
+        col_idx: usize,
+        image_id: u32,
+        row_val: u32,
+        col_val: u32,
+        _id_extra: u32,
+    ) {
+        // Find the virtual placement for this image_id.
+        let vp = self.virtual_placements.get(&(image_id, None))
+            .or_else(|| {
+                self.virtual_placements.iter()
+                    .find(|((id, _), _)| *id == image_id)
+                    .map(|(_, vp)| vp)
+            });
+        let vp = match vp {
+            Some(vp) => vp,
+            None => {
+                log::warn!("[img] unicode placeholder: no virtual placement for image_id={image_id}");
+                return;
+            }
+        };
+
+        let data = match self.image_cache.get(vp.image_id) {
+            Some(d) => d.clone(),
+            None => return,
+        };
+        let img_w = data.data().width();
+        let img_h = data.data().height();
+
+        if self.cell_pixel_width == 0 || self.cell_pixel_height == 0 {
+            return;
+        }
+
+        // ── Grid size ──────────────────────────────────────────────
+        let grid_cols = if vp.columns > 0 {
+            vp.columns
+        } else {
+            ((img_w + self.cell_pixel_width - 1) / self.cell_pixel_width).max(1)
+        };
+        let grid_rows = if vp.rows > 0 {
+            vp.rows
+        } else {
+            ((img_h + self.cell_pixel_height - 1) / self.cell_pixel_height).max(1)
+        };
+
+        // ── Aspect-ratio-preserving scale ─────────────────────────
+        let placement_px_w = grid_cols as f64 * self.cell_pixel_width as f64;
+        let placement_px_h = grid_rows as f64 * self.cell_pixel_height as f64;
+        let src_x = vp.source_x.unwrap_or(0) as f64;
+        let src_y = vp.source_y.unwrap_or(0) as f64;
+        let src_w = vp.source_w.unwrap_or(img_w).min(img_w) as f64;
+        let src_h = vp.source_h.unwrap_or(img_h).min(img_h) as f64;
+
+        let scale = if src_w * placement_px_h > src_h * placement_px_w {
+            placement_px_w / src_w.max(1.0)
+        } else {
+            placement_px_h / src_h.max(1.0)
+        };
+
+        let scaled_src_w = src_w * scale;
+        let scaled_src_h = src_h * scale;
+        let center_offset_x = (placement_px_w - scaled_src_w) / 2.0;
+        let center_offset_y = (placement_px_h - scaled_src_h) / 2.0;
+
+        // ── Per-cell UV calculation ────────────────────────────────
+        let cell_px_x = col_val as f64 * self.cell_pixel_width as f64;
+        let cell_px_y = row_val as f64 * self.cell_pixel_height as f64;
+
+        let cell_src_x = src_x + (cell_px_x - center_offset_x) / scale;
+        let cell_src_y = src_y + (cell_px_y - center_offset_y) / scale;
+        let cell_src_w = self.cell_pixel_width as f64 / scale;
+        let cell_src_h = self.cell_pixel_height as f64 / scale;
+
+        let clamped_x = cell_src_x.max(src_x);
+        let clamped_y = cell_src_y.max(src_y);
+        let clamped_w = (cell_src_x + cell_src_w - clamped_x)
+            .min(src_x + src_w - clamped_x)
+            .max(0.0);
+        let clamped_h = (cell_src_y + cell_src_h - clamped_y)
+            .min(src_y + src_h - clamped_y)
+            .max(0.0);
+
+        if clamped_w <= 0.0 || clamped_h <= 0.0 || img_w == 0 || img_h == 0 {
+            return;
+        }
+
+        let u0 = clamped_x / img_w as f64;
+        let v0 = clamped_y / img_h as f64;
+        let u1 = (clamped_x + clamped_w) / img_w as f64;
+        let v1 = (clamped_y + clamped_h) / img_h as f64;
+
+        let top_left = zenterm_core::image::TextureCoordinate::new(u0 as f32, v0 as f32);
+        let bottom_right = zenterm_core::image::TextureCoordinate::new(u1 as f32, v1 as f32);
+
+        let img_cell = ImageCell {
+            top_left,
+            bottom_right,
+            data,
+            z_index: vp.z_index,
+            padding_left: vp.x_offset.unwrap_or(0) as u16,
+            padding_top: vp.y_offset.unwrap_or(0) as u16,
+            padding_right: 0,
+            padding_bottom: 0,
+            image_id: Some(vp.image_id),
+            placement_id: vp.placement_id,
+        };
+
+        if row_idx < self.grid_cache.len() && col_idx < self.grid_cache[row_idx].len() {
+            self.grid_cache[row_idx][col_idx].image = Some(img_cell);
         }
     }
 

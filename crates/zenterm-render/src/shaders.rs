@@ -141,13 +141,9 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
     }
 
     if (in.flags == 4u) {
-        // IMAGE — premultiplied linear RGBA in the atlas.
-        // Convert back to sRGB for the display, preserving alpha.
-        let a = texel.a;
-        let r = linear_to_srgb(texel.r);
-        let g = linear_to_srgb(texel.g);
-        let b = linear_to_srgb(texel.b);
-        return vec4<f32>(r, g, b, a);
+        // IMAGE — straight sRGB RGBA in the atlas (no color-space
+        // conversion needed; the atlas stores sRGB data as-is).
+        return texel;
     }
 
     // SUBPIXEL (default, flags == 0).

@@ -8,7 +8,7 @@
 //! with a single unified entry point.  Adding a new OSC handler requires
 //! only a new dispatch arm — no new byte-scanning logic.
 
-use memchr::memchr2;
+use memchr::{memchr, memchr2};
 use std::collections::HashMap;
 use zenterm_core::{
     ITermDimension, ITermFileData, ITermProprietary, ITermUnicodeVersionOp,
@@ -44,11 +44,13 @@ pub(crate) fn scan_oscs(bytes: &[u8]) -> Vec<OscMatch> {
     let mut i = 0;
 
     while i < bytes.len() {
-        // Find the next ESC byte.
-        if bytes[i] != 0x1B {
-            i += 1;
-            continue;
-        }
+        // Use SIMD-accelerated memchr to find the next ESC byte.
+        let esc_offset = match memchr(0x1B, &bytes[i..]) {
+            Some(off) => off,
+            None => break,
+        };
+        i += esc_offset;
+
         // Must be followed by `]` to be an OSC introducer.
         if i + 1 >= bytes.len() || bytes[i + 1] != b']' {
             i += 1;

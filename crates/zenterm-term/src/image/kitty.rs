@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use base64::Engine as _;
 use image::GenericImageView;
 use image::{load_from_memory, RgbImage};
 
@@ -101,7 +102,6 @@ fn read_file_data(path: &str, offset: Option<u32>, size: Option<u32>) -> Result<
 }
 
 fn decode_base64(data: &[u8]) -> Result<Vec<u8>, String> {
-    use base64::Engine;
     base64::engine::general_purpose::STANDARD
         .decode(data)
         .map_err(|e| format!("base64 decode: {e}"))
@@ -109,7 +109,6 @@ fn decode_base64(data: &[u8]) -> Result<Vec<u8>, String> {
 
 #[allow(dead_code)]
 fn encode_base64(data: &[u8]) -> String {
-    use base64::Engine as _;
     base64::engine::general_purpose::STANDARD.encode(data)
 }
 
@@ -653,7 +652,11 @@ pub fn decode_image_data(
                 _ => raw,
             };
             if rgba.len() as u32 != w * h * 4 {
-                return Err("rgba data length mismatch".into());
+                return Err(format!(
+                    "rgba data length mismatch: got {} bytes, expected {w}x{h}*4={} (diff={})",
+                    rgba.len(), w * h * 4,
+                    rgba.len() as i64 - (w * h * 4) as i64,
+                ));
             }
             ImageDataType::new_rgba8(rgba, w, h)
         }
@@ -718,7 +721,10 @@ pub fn decode_image_frame(
             let w = transmit.width.ok_or("missing width")?;
             let h = transmit.height.ok_or("missing height")?;
             if raw.len() as u32 != w * h * 4 {
-                return Err("rgba data length mismatch".into());
+                return Err(format!(
+                    "rgba data length mismatch in frame: got {} bytes, expected {w}x{h}*4={}",
+                    raw.len(), w * h * 4,
+                ));
             }
             (raw, w, h)
         }
@@ -959,10 +965,15 @@ fn apply_blit(
 
 // ── chunk accumulation ─────────────────────────────────────────────────
 
-/// Accumulator for multi-chunk image transmissions.
+/// Accumulator for multi-chunk Kitty image transmissions.
+///
+/// Decodes each chunk's base64 data immediately and appends to a single
+/// buffer.  When the final chunk arrives the buffer is already complete
+/// — no need to iterate over stored chunks again.
 #[derive(Debug, Default)]
 pub struct KittyAccumulator {
-    chunks: Vec<KittyImageData>,
+    /// Decoded image bytes accumulated so far.
+    data_buf: Vec<u8>,
     transmit: Option<KittyImageTransmit>,
     placement: Option<KittyImagePlacement>,
     verbosity: KittyImageVerbosity,
@@ -978,13 +989,6 @@ impl KittyAccumulator {
             _ => return Ok(Some(img)),
         };
         let is_first = self.transmit.is_none();
-
-        log::debug!(
-            "[acc] feed: variant={:?}, more={}, is_first={}, chunks={}, has_tx={}",
-            std::mem::discriminant(&img),
-            more, is_first, self.chunks.len(),
-            self.transmit.is_some(),
-        );
 
         if is_first {
             let (tx, pl, verb) = match img {
@@ -1008,56 +1012,67 @@ impl KittyAccumulator {
             });
             self.placement = pl;
             self.verbosity = verb;
-            self.chunks.push(tx.data);
+            // Decode first chunk immediately.
+            let bytes = tx.data.load_data()?;
+            self.data_buf.extend_from_slice(&bytes);
         } else {
             match img {
                 KittyImage::TransmitData { transmit, .. }
                 | KittyImage::TransmitDataAndDisplay { transmit, .. } => {
-                    self.chunks.push(transmit.data);
+                    // Decode immediately — no intermediate storage.
+                    let bytes = transmit.data.load_data()?;
+                    self.data_buf.extend_from_slice(&bytes);
                 }
                 _ => unreachable!(),
             }
         }
 
-                if !more {
-                    let mut all_data = vec![];
-                    let chunk_count = self.chunks.len();
-                    for chunk in self.chunks.drain(..) {
-                        let bytes = chunk.load_data()?;
-                        all_data.extend(bytes);
-                    }
-                    log::debug!(
-                        "[acc] assemble: {} chunks, data_len={}, expected={:?}",
-                        chunk_count,
-                        all_data.len(),
-                        self.transmit.as_ref().map(|t| {
-                            format!("{}x{} {:?}",
-                                t.width.unwrap_or(0),
-                                t.height.unwrap_or(0),
-                                t.format,
-                            )
-                        }),
-                    );
-                    if let Some(tx) = self.transmit.take() {
-                        let assembled = KittyImageTransmit {
-                            data: KittyImageData::DirectBin(all_data),
-                            ..tx
-                        };
-                        let placement = self.placement.take();
-                        return Ok(Some(match placement {
-                            Some(pl) => KittyImage::TransmitDataAndDisplay {
-                                transmit: assembled,
-                                placement: pl,
-                                verbosity: self.verbosity,
-                            },
-                            None => KittyImage::TransmitData {
-                                transmit: assembled,
-                                verbosity: self.verbosity,
-                            },
-                        }));
+        if !more {
+            let data_len = self.data_buf.len();
+            log::debug!(
+                "[acc] assemble: data_len={}, expected={:?}",
+                data_len,
+                self.transmit.as_ref().map(|t| {
+                    format!("{}x{} {:?}",
+                        t.width.unwrap_or(0),
+                        t.height.unwrap_or(0),
+                        t.format,
+                    )
+                }),
+            );
+            if let Some(tx) = self.transmit.as_ref() {
+                if let (Some(w), Some(h)) = (tx.width, tx.height) {
+                    let expected = w * h * 4;
+                    if data_len as u32 != expected {
+                        log::warn!(
+                            "[acc] DATA LENGTH MISMATCH: assembled {} bytes, \
+                             expected {w}x{h}*4={expected} (diff={})",
+                            data_len,
+                            data_len as i64 - expected as i64,
+                        );
                     }
                 }
-                Ok(None)
+            }
+            if let Some(tx) = self.transmit.take() {
+                let assembled = KittyImageTransmit {
+                    data: KittyImageData::DirectBin(std::mem::take(&mut self.data_buf)),
+                    ..tx
+                };
+                let placement = self.placement.take();
+                return Ok(Some(match placement {
+                    Some(pl) => KittyImage::TransmitDataAndDisplay {
+                        transmit: assembled,
+                        placement: pl,
+                        verbosity: self.verbosity,
+                    },
+                    None => KittyImage::TransmitData {
+                        transmit: assembled,
+                        verbosity: self.verbosity,
+                    },
+                }));
+            }
+        }
+        Ok(None)
     }
 }
 
