@@ -517,6 +517,11 @@ pub fn decode_image_data(
     image_cache: &mut ImageCache,
 ) -> Result<u32, String> {
     let raw = transmit.data.load_data()?;
+    log::debug!(
+        "[img] decode_image_data: raw_len={}, w={:?}, h={:?}, fmt={:?}, comp={:?}",
+        raw.len(), transmit.width, transmit.height,
+        transmit.format, transmit.compression,
+    );
     let raw = match transmit.compression {
         KittyImageCompression::None => raw,
         KittyImageCompression::Deflate => {
@@ -861,6 +866,13 @@ impl KittyAccumulator {
         };
         let is_first = self.transmit.is_none();
 
+        log::debug!(
+            "[acc] feed: variant={:?}, more={}, is_first={}, chunks={}, has_tx={}",
+            std::mem::discriminant(&img),
+            more, is_first, self.chunks.len(),
+            self.transmit.is_some(),
+        );
+
         if is_first {
             let (tx, pl, verb) = match img {
                 KittyImage::TransmitData { transmit, verbosity } => {
@@ -896,10 +908,23 @@ impl KittyAccumulator {
 
                 if !more {
                     let mut all_data = vec![];
+                    let chunk_count = self.chunks.len();
                     for chunk in self.chunks.drain(..) {
                         let bytes = chunk.load_data()?;
                         all_data.extend(bytes);
                     }
+                    log::debug!(
+                        "[acc] assemble: {} chunks, data_len={}, expected={:?}",
+                        chunk_count,
+                        all_data.len(),
+                        self.transmit.as_ref().map(|t| {
+                            format!("{}x{} {:?}",
+                                t.width.unwrap_or(0),
+                                t.height.unwrap_or(0),
+                                t.format,
+                            )
+                        }),
+                    );
                     if let Some(tx) = self.transmit.take() {
                         let assembled = KittyImageTransmit {
                             data: KittyImageData::DirectBin(all_data),

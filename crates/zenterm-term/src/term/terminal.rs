@@ -204,6 +204,7 @@ impl Terminal {
         let t_apc_start = std::time::Instant::now();
         let esc_positions = memchr::memchr_iter(0x1b, bytes);
         let mut prev_end: Option<usize> = None;
+        let mut apc_count: usize = 0;
         for esc_pos in esc_positions {
             // Skip positions we've already consumed as part of a prior match.
             if prev_end.is_some_and(|end| esc_pos < end) {
@@ -241,6 +242,7 @@ impl Terminal {
                             String::from_utf8_lossy(&payload[..payload.len().min(80)]),
                         );
                     }
+                    apc_count += 1;
                     prev_end = Some(payload_start + st_rel + 2);
                 }
             }
@@ -301,6 +303,10 @@ impl Terminal {
                 }
             }
         }
+        log::debug!(
+            "[img] APC scan: batch_len={}, apc_count={}, elapsed={:?}",
+            bytes.len(), apc_count, t_apc_start.elapsed(),
+        );
         let t_apc_elapsed = t_apc_start.elapsed();
 
         // ── Unified OSC scan ─────────────────────────────────────────
