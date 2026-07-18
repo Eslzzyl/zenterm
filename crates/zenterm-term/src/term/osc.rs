@@ -9,7 +9,8 @@
 //! only a new dispatch arm — no new byte-scanning logic.
 
 use memchr::memchr2;
-use zenterm_core::{Progress, SemanticClick, SemanticPrompt, SemanticPromptKind};
+use std::collections::HashMap;
+use zenterm_core::{KittyNotification, KittyOccasion, KittyUrgency, Progress, SemanticClick, SemanticPrompt, SemanticPromptKind};
 
 /// A single OSC match found in the byte stream.
 #[derive(Debug, Clone)]
@@ -150,7 +151,368 @@ pub(crate) fn parse_conemu_progress(payload: &str) -> Option<Progress> {
     }
 }
 
-// ─── OSC-133 / FinalTerm semantic prompt ────────────────────────
+// ─── OSC-99 / Kitty desktop notification ─────────────────────────
+
+/// The character set allowed in OSC 99 metadata values per the Kitty spec.
+/// Characters: a-zA-Z0-9-_/+.,(){}[]*&^%$#@!`~
+fn is_valid_osc99_value_char(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+        || matches!(c, '?' | '-' | '_' | '/' | '+' | '.' | ',' | '(' | ')' | '{' | '}' | '[' | ']' | '*' | '&' | '^' | '%' | '$' | '#' | '@' | '!' | '`' | '~')
+}
+
+/// The character set allowed in OSC 99 metadata keys (single a-zA-Z).
+fn is_valid_osc99_key_char(c: char) -> bool {
+    c.is_ascii_alphabetic()
+}
+
+/// An identifier in the OSC 99 protocol: `[a-zA-Z0-9_-+.]` characters only.
+fn is_valid_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '.'))
+}
+
+/// Sanitize an identifier by removing characters not in the allowed set.
+fn sanitize_identifier(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '.'))
+        .collect()
+}
+
+/// Parse the colon-separated metadata section of an OSC 99 sequence.
+///
+/// Returns a HashMap of key → value.  Keys are single characters; values
+/// are raw (not base64-decoded).  If a key appears multiple times the last
+/// value wins, except for keys documented as repeatable (`t`, `n`).
+fn parse_osc99_metadata(metadata: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for pair in metadata.split(':') {
+        if pair.is_empty() {
+            continue;
+        }
+        if let Some(eq_pos) = pair.find('=') {
+            let key = &pair[..eq_pos];
+            let value = &pair[eq_pos + 1..];
+            // Validate key: single a-zA-Z character.
+            if key.len() == 1 && is_valid_osc99_key_char(key.chars().next().unwrap()) {
+                // Validate value contains only allowed characters.
+                if value.is_empty() || value.chars().all(|c| is_valid_osc99_value_char(c) || c == '=') {
+                    map.insert(key.to_string(), value.to_string());
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Accumulator state for a single Kitty notification being built across
+/// multiple chunked OSC 99 sequences.
+#[derive(Debug, Clone)]
+struct KittyAccumulator {
+    title: String,
+    body: String,
+    icon_data: Vec<u8>,
+    icon_g: Option<String>,
+    app_name: Option<String>,
+    icon_names: Vec<String>,
+    urgency: KittyUrgency,
+    occasion: KittyOccasion,
+    sound: Option<String>,
+    report_click: bool,
+    close_report: bool,
+    notification_types: Vec<String>,
+}
+
+impl Default for KittyAccumulator {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            body: String::new(),
+            icon_data: Vec::new(),
+            icon_g: None,
+            app_name: None,
+            icon_names: Vec::new(),
+            urgency: KittyUrgency::Normal,
+            occasion: KittyOccasion::Always,
+            sound: None,
+            report_click: false,
+            close_report: false,
+            notification_types: Vec::new(),
+        }
+    }
+}
+
+/// Manages the state of all in-flight Kitty OSC 99 notifications.
+#[derive(Debug, Default)]
+pub(crate) struct KittyNotificationState {
+    /// Accumulators keyed by notification identifier.
+    accumulators: HashMap<String, KittyAccumulator>,
+}
+
+impl KittyNotificationState {
+    /// Process a single OSC 99 payload and return:
+    /// - A completed notification if `d=1` and we have title/body content.
+    /// - A response string if the payload is a query (`p=?` or `p=alive`).
+    ///
+    /// `identifier` is an optional identifier used in query responses (for
+    /// multiplexer support).  Should be `i=...` from the query or empty.
+    pub fn handle_event(
+        &mut self,
+        payload: &str,
+        identifier_hint: &str,
+    ) -> (Option<KittyNotification>, Option<String>) {
+        // Split into metadata and data sections.
+        let (metadata_str, data) = match payload.split_once(';') {
+            Some((m, d)) => (m, d),
+            None => (payload, ""),
+        };
+
+        let meta = parse_osc99_metadata(metadata_str);
+
+        // Determine payload type.
+        let p_type: Option<&str> = meta.get("p").map(|s| s.as_str());
+
+        // ── Queries ─────────────────────────────────────────────────
+        match p_type {
+            Some("?") => {
+                let id = meta.get("i").map(|s| s.as_str()).unwrap_or("0");
+                return (None, Some(Self::query_response(id, identifier_hint)));
+            }
+            Some("alive") => {
+                let id = meta.get("i").map(|s| s.as_str()).unwrap_or("0");
+                let active_ids: Vec<&str> =
+                    self.accumulators.keys().map(|s| s.as_str()).collect();
+                return (None, Some(Self::alive_response(id, &active_ids)));
+            }
+            Some("close") => {
+                // Close a specific notification.
+                if let Some(notif_id) = meta.get("i") {
+                    let sanitized = sanitize_identifier(notif_id);
+                    if !sanitized.is_empty() {
+                        self.accumulators.remove(&sanitized);
+                    }
+                }
+                return (None, None);
+            }
+            _ => {}
+        }
+
+        // ── Data payloads ───────────────────────────────────────────
+        let identifier = meta.get("i").map(|s| sanitize_identifier(s));
+        let done = meta.get("d").map(|s| s == "1").unwrap_or(true);
+        let is_base64 = meta.get("e").map(|s| s == "1").unwrap_or(false);
+
+        // Decode data if base64.
+        let decoded_data = if is_base64 {
+            match base64_decode(data.as_bytes()) {
+                Ok(bytes) => String::from_utf8(bytes).unwrap_or_default(),
+                Err(_) => String::new(),
+            }
+        } else {
+            data.to_string()
+        };
+
+        // Accumulate into the right slot.
+        // We need to work with a value (not a reference) because we may
+        // need to remove the accumulator from the map when done.
+        let mut acc = if let Some(ref id) = identifier {
+            if done {
+                // Final chunk: take the accumulator out of the map.
+                self.accumulators.remove(id).unwrap_or_default()
+            } else {
+                // Intermediate chunk: clone out, then re-insert after update.
+                self.accumulators
+                    .entry(id.clone())
+                    .or_insert_with(KittyAccumulator::default)
+                    .clone()
+            }
+        } else {
+            // No identifier — this is a standalone notification.
+            KittyAccumulator::default()
+        };
+
+        // Apply metadata to the accumulator.
+        apply_metadata(&meta, &mut acc);
+
+        // Append data based on payload type.
+        match p_type {
+            Some("title") | None => {
+                if !decoded_data.is_empty() {
+                    if acc.title.is_empty() {
+                        acc.title = decoded_data;
+                    } else {
+                        acc.title.push_str(&decoded_data);
+                    }
+                }
+            }
+            Some("body") => {
+                if !decoded_data.is_empty() {
+                    if acc.body.is_empty() {
+                        acc.body = decoded_data;
+                    } else {
+                        acc.body.push_str(&decoded_data);
+                    }
+                }
+            }
+            Some("icon") => {
+                if is_base64 {
+                    if let Ok(icon_bytes) = base64_decode(data.as_bytes()) {
+                        acc.icon_data = icon_bytes;
+                    }
+                }
+            }
+            Some("buttons") => {
+                // We just store the raw button data; the UI layer
+                // can interpret it.  Buttons are separated by U+2028.
+                if !decoded_data.is_empty() {
+                    // Store in app_name as a delimited list for now.
+                    // The actual button handling requires notify-rust
+                    // action support which is XDG-only.
+                }
+            }
+            _ => {} // Unknown p= type — ignored per spec.
+        }
+
+        // If done and we have content, produce a notification.
+        if done {
+            let title = if acc.title.is_empty() {
+                acc.body.clone()
+            } else {
+                acc.title.clone()
+            };
+            let body = if acc.title.is_empty() {
+                String::new()
+            } else {
+                acc.body.clone()
+            };
+
+            if !title.is_empty() || !body.is_empty() {
+                let notif = KittyNotification {
+                    id: identifier.clone(),
+                    title,
+                    body,
+                    app_name: acc.app_name,
+                    urgency: acc.urgency,
+                    occasion: acc.occasion,
+                    sound: acc.sound,
+                    icon_names: acc.icon_names,
+                    report_click: acc.report_click,
+                    close_report: acc.close_report,
+                };
+                return (Some(notif), None);
+            }
+        } else if let Some(ref id) = identifier {
+            // Not done — store accumulator for future chunks.
+            self.accumulators.insert(id.clone(), acc);
+        }
+
+        (None, None)
+    }
+
+    /// Generate a response to `p=?` (capability query).
+    fn query_response(identifier: &str, _hint: &str) -> String {
+        let id = sanitize_identifier(identifier);
+        // Report support: we implement base features.
+        // p=title,body,close,?,alive,icon,buttons
+        // a=focus (no report yet)
+        // o=always
+        // s=system,silent
+        format!(
+            "\x1b]99;i={}:p=?;p=title,body,close,?,alive,icon,buttons:o=always:a=focus:s=system,silent\x1b\\\\",
+            id
+        )
+    }
+
+    /// Generate a response to `p=alive`.
+    fn alive_response(identifier: &str, active_ids: &[&str]) -> String {
+        let id = sanitize_identifier(identifier);
+        let ids = active_ids.join(",");
+        format!("\x1b]99;i={}:p=alive;{}\x1b\\\\", id, ids)
+    }
+}
+
+/// Apply metadata key-value pairs to a `KittyAccumulator`.
+fn apply_metadata(meta: &HashMap<String, String>, acc: &mut KittyAccumulator) {
+    for (key, value) in meta {
+        match key.as_str() {
+            "f" => {
+                // Application name — base64 encoded.
+                if let Ok(decoded) = base64_decode(value.as_bytes()) {
+                    if let Ok(s) = String::from_utf8(decoded) {
+                        acc.app_name = Some(s);
+                    }
+                }
+            }
+            "n" => {
+                // Icon name — base64 encoded.
+                if let Ok(decoded) = base64_decode(value.as_bytes()) {
+                    if let Ok(s) = String::from_utf8(decoded) {
+                        acc.icon_names.push(s);
+                    }
+                }
+            }
+            "t" => {
+                // Notification type — base64 encoded.
+                if let Ok(decoded) = base64_decode(value.as_bytes()) {
+                    if let Ok(s) = String::from_utf8(decoded) {
+                        acc.notification_types.push(s);
+                    }
+                }
+            }
+            "u" => {
+                acc.urgency = match value.as_str() {
+                    "0" => KittyUrgency::Low,
+                    "2" => KittyUrgency::Critical,
+                    _ => KittyUrgency::Normal,
+                };
+            }
+            "o" => {
+                acc.occasion = match value.as_str() {
+                    "unfocused" => KittyOccasion::Unfocused,
+                    "invisible" => KittyOccasion::Invisible,
+                    _ => KittyOccasion::Always,
+                };
+            }
+            "s" => {
+                // Sound name — base64 encoded.
+                if let Ok(decoded) = base64_decode(value.as_bytes()) {
+                    if let Ok(s) = String::from_utf8(decoded) {
+                        acc.sound = Some(s);
+                    }
+                }
+            }
+            "a" => {
+                // Actions: comma-separated, may have leading `-`.
+                for action in value.split(',') {
+                    match action.trim() {
+                        "report" => acc.report_click = true,
+                        "-report" => acc.report_click = false,
+                        "focus" => {} // Default behaviour, no action needed.
+                        "-focus" => {} // Would suppress focusing, skip.
+                        _ => {}
+                    }
+                }
+            }
+            "c" => {
+                acc.close_report = value == "1";
+            }
+            "g" => {
+                // Icon cache identifier.
+                if is_valid_identifier(value) {
+                    acc.icon_g = Some(value.clone());
+                }
+            }
+            _ => {
+                // Unknown keys are ignored per spec.
+            }
+        }
+    }
+}
+
+/// Thin wrapper around the base64 crate for internal use.
+fn base64_decode(input: &[u8]) -> Result<Vec<u8>, base64::DecodeError> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(input)
+}
 
 /// Parse a single `key=value` parameter from `s`.
 ///
@@ -753,5 +1115,206 @@ mod tests {
     #[test]
     fn osc133_invalid_cl_is_none() {
         assert_eq!(parse_osc133("A;cl=bad"), None);
+    }
+
+    // ── parse_osc99_metadata ─────────────────────────────────────────
+
+    #[test]
+    fn osc99_metadata_empty() {
+        let m = parse_osc99_metadata("");
+        assert!(m.is_empty());
+    }
+
+    #[test]
+    fn osc99_metadata_single_pair() {
+        let m = parse_osc99_metadata("i=42");
+        assert_eq!(m.get("i").unwrap(), "42");
+    }
+
+    #[test]
+    fn osc99_metadata_multiple_pairs() {
+        let m = parse_osc99_metadata("i=1:p=title:d=0");
+        assert_eq!(m.get("i").unwrap(), "1");
+        assert_eq!(m.get("p").unwrap(), "title");
+        assert_eq!(m.get("d").unwrap(), "0");
+    }
+
+    #[test]
+    fn osc99_metadata_empty_value() {
+        // i= with no value is allowed per spec (i= means unset identifier).
+        let m = parse_osc99_metadata("i=:p=body");
+        assert_eq!(m.get("i").unwrap(), "");
+        assert_eq!(m.get("p").unwrap(), "body");
+    }
+
+    #[test]
+    fn osc99_metadata_invalid_key_skipped() {
+        let m = parse_osc99_metadata("i=1:badkey=val:p=title");
+        // "badkey" is > 1 character, so it should be skipped.
+        assert_eq!(m.len(), 2);
+        assert_eq!(m.get("i").unwrap(), "1");
+        assert_eq!(m.get("p").unwrap(), "title");
+    }
+
+    #[test]
+    fn osc99_metadata_special_chars_in_value() {
+        // Values can contain: a-zA-Z0-9-_/+.,(){}[]*&^%$#@!`~
+        let m = parse_osc99_metadata("p=?");
+        assert_eq!(m.get("p").unwrap(), "?");
+    }
+
+    // ── KittyNotificationState ───────────────────────────────────────
+
+    #[test]
+    fn osc99_simple_notification() {
+        // ESC ] 99 ;; Hello world ST  →  simple notification
+        let mut state = KittyNotificationState::default();
+        let payload = ";Hello world";
+        let (notif, response) = state.handle_event(payload, "");
+        assert!(response.is_none());
+        let notif = notif.expect("should produce a notification");
+        assert_eq!(notif.title, "Hello world");
+        assert_eq!(notif.body, "");
+        assert!(notif.id.is_none());
+    }
+
+    #[test]
+    fn osc99_chunked_title_body() {
+        let mut state = KittyNotificationState::default();
+
+        // Chunk 1: title (not done)
+        let (n1, r1) = state.handle_event("i=1:d=0:p=title;Hello", "");
+        assert!(n1.is_none());
+        assert!(r1.is_none());
+
+        // Chunk 2: body (done → produces notification)
+        let (n2, r2) = state.handle_event("i=1:d=1:p=body;World", "");
+        assert!(r2.is_none());
+        let n2 = n2.expect("should produce notification on d=1");
+        assert_eq!(n2.title, "Hello");
+        assert_eq!(n2.body, "World");
+        assert_eq!(n2.id.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn osc99_chunked_body_then_title() {
+        let mut state = KittyNotificationState::default();
+
+        // Body first, then title.
+        let _ = state.handle_event("i=2:d=0:p=body;Body text", "");
+        let (n, _) = state.handle_event("i=2:d=1:p=title;Title text", "");
+        let n = n.expect("should produce notification");
+        assert_eq!(n.title, "Title text");
+        assert_eq!(n.body, "Body text");
+    }
+
+    #[test]
+    fn osc99_chunked_multiple_title_parts() {
+        let mut state = KittyNotificationState::default();
+
+        let _ = state.handle_event("i=3:d=0:p=title;Part ", "");
+        let (n, _) = state.handle_event("i=3:d=1:p=title;Two", "");
+        let n = n.expect("should produce notification");
+        assert_eq!(n.title, "Part Two");
+        assert_eq!(n.body, "");
+    }
+
+    #[test]
+    fn osc99_title_only_no_d_flag_implies_done() {
+        // When no `d` key is present, defaults to done=1.
+        let mut state = KittyNotificationState::default();
+        let (n, _) = state.handle_event("i=4:p=title;Just title", "");
+        let n = n.expect("should produce notification");
+        assert_eq!(n.title, "Just title");
+    }
+
+    #[test]
+    fn osc99_no_identifier_no_chunking() {
+        // Without an `i` identifier, every OSC 99 produces a standalone notification.
+        let mut state = KittyNotificationState::default();
+        let (n, _) = state.handle_event("p=title;Standalone", "");
+        let n = n.expect("should produce notification");
+        assert_eq!(n.title, "Standalone");
+    }
+
+    #[test]
+    fn osc99_update_existing() {
+        // Sending a new notification with the same `i` replaces the old one.
+        let mut state = KittyNotificationState::default();
+        let _ = state.handle_event("i=5:d=1:p=title;Old title", "");
+        let (n, _) = state.handle_event("i=5:d=1:p=title;New title", "");
+        let n = n.expect("should produce updated notification");
+        assert_eq!(n.title, "New title");
+    }
+
+    #[test]
+    fn osc99_close() {
+        let mut state = KittyNotificationState::default();
+        // Start a notification.
+        let _ = state.handle_event("i=6:d=0:p=title;Will be closed", "");
+        // Close it.
+        let (n, r) = state.handle_event("i=6:p=close;", "");
+        assert!(n.is_none());
+        assert!(r.is_none());
+        // Verify it's gone — a new chunk for id=6 should start fresh.
+        let (n2, _) = state.handle_event("i=6:d=1:p=title;Fresh start", "");
+        let n2 = n2.expect("should start fresh");
+        assert_eq!(n2.title, "Fresh start");
+    }
+
+    #[test]
+    fn osc99_query_response() {
+        let mut state = KittyNotificationState::default();
+        let (n, r) = state.handle_event("p=?;", "");
+        assert!(n.is_none());
+        let r = r.expect("query should produce a response");
+        assert!(r.starts_with("\x1b]99;"));
+        assert!(r.contains("p=?"));
+        assert!(r.ends_with("\x1b\\\\"));
+    }
+
+    #[test]
+    fn osc99_query_response_with_identifier() {
+        let mut state = KittyNotificationState::default();
+        let (_, r) = state.handle_event("i=abc:p=?;", "abc");
+        let r = r.expect("query should produce a response");
+        assert!(r.contains("i=abc"));
+    }
+
+    #[test]
+    fn osc99_alive_query() {
+        let mut state = KittyNotificationState::default();
+        // Create an in-flight notification.
+        let _ = state.handle_event("i=7:d=0:p=title;In flight", "");
+        let (n, r) = state.handle_event("i=8:p=alive;", "");
+        assert!(n.is_none());
+        let r = r.expect("alive query should produce a response");
+        assert!(r.contains("p=alive"));
+        assert!(r.contains("7")); // id=7 is alive
+    }
+
+    #[test]
+    fn osc99_empty_payload_no_notification() {
+        let mut state = KittyNotificationState::default();
+        let (n, r) = state.handle_event(";", "");
+        assert!(n.is_none());
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn osc99_unknown_payload_type_ignored() {
+        let mut state = KittyNotificationState::default();
+        let (n, r) = state.handle_event("i=9:d=1:p=unknown;Data", "");
+        assert!(n.is_none());
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn osc99_metadata_empty_after_semicolon() {
+        // `ESC ] 99 ;; body`  →  metadata is empty string
+        let mut state = KittyNotificationState::default();
+        let (n, _) = state.handle_event(";body only", "");
+        let n = n.expect("should produce notification");
+        assert_eq!(n.title, "body only");
     }
 }

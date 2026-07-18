@@ -39,6 +39,58 @@ pub enum Progress {
     Indeterminate,
 }
 
+/// Urgency level for Kitty OSC 99 desktop notifications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KittyUrgency {
+    /// Low urgency (`u=0`).
+    Low,
+    /// Normal urgency (`u=1`, default).
+    #[default]
+    Normal,
+    /// Critical urgency (`u=2`).
+    Critical,
+}
+
+/// When to show a Kitty OSC 99 notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KittyOccasion {
+    /// Always show the notification (default).
+    #[default]
+    Always,
+    /// Only show when the terminal window does not have keyboard focus.
+    Unfocused,
+    /// Only show when the terminal window is not visible to the user
+    /// (e.g. in an inactive tab or background OS window).
+    Invisible,
+}
+
+/// A fully assembled Kitty desktop notification (OSC 99).
+///
+/// Produced by the parser once a notification is complete (d=1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KittyNotification {
+    /// The notification identifier (`i=`), if any.
+    pub id: Option<String>,
+    /// Notification title (`p=title` payloads, concatenated).
+    pub title: String,
+    /// Notification body (`p=body` payloads, concatenated).
+    pub body: String,
+    /// Application name (`f=`, base64-decoded), if set.
+    pub app_name: Option<String>,
+    /// Urgency level (`u=`).
+    pub urgency: KittyUrgency,
+    /// When to show the notification (`o=`).
+    pub occasion: KittyOccasion,
+    /// System sound name (`s=`, base64-decoded), if set.
+    pub sound: Option<String>,
+    /// Icon names (`n=`, base64-decoded), in order.
+    pub icon_names: Vec<String>,
+    /// If non-empty, report click events (`a=report`).
+    pub report_click: bool,
+    /// If true, send an escape code when the notification is closed (`c=1`).
+    pub close_report: bool,
+}
+
 /// The kind of a prompt in the FinalTerm semantic prompt protocol (OSC 133 P).
 ///
 /// Corresponds to the `k` parameter in `ESC ] 133 ; P ; k=X ST`.

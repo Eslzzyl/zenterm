@@ -95,12 +95,49 @@ impl TerminalSession {
             self.notification = super::types::NotificationState::Bell;
         }
 
-        // ── Desktop notification (OSC 9 / OSC 777) ──────────────────────
-        if let Some((title, body)) = self.terminal.take_notification() {
-            log::info!("desktop notification: title={title:?} body={body:?}");
-            // Spawn on a background thread to avoid conflicts with the
-            // main thread's winit event loop (macOS UserNotifications
-            // framework can trigger unexpected Cocoa dialog callbacks).
+        // ── Desktop notification ────────────────────────────────────────
+        // Three protocols feed into desktop notifications:
+        //   OSC 99 (Kitty)     → richest metadata (urgency, icon, sound, …)
+        //   OSC 9 (iTerm2)     → title + body only
+        //   OSC 777 (rxvt)     → title + body only
+        // Prefer the Kitty notification when available.
+        let kitty_notif = self.terminal.take_kitty_notification();
+        let basic_notif = self.terminal.take_notification();
+        if let Some(kitty) = kitty_notif {
+            log::info!("desktop notification (Kitty OSC 99): {:?}", kitty);
+            let title = if kitty.title.is_empty() {
+                kitty.body.clone()
+            } else {
+                kitty.title.clone()
+            };
+            let body = if kitty.title.is_empty() {
+                String::new()
+            } else {
+                kitty.body.clone()
+            };
+            let app_name = kitty
+                .app_name
+                .clone()
+                .unwrap_or_else(|| "Zenterm".to_string());
+            let icon_names = kitty.icon_names.clone();
+            std::thread::Builder::new()
+                .name("notify".into())
+                .spawn(move || {
+                    let mut n = notify_rust::Notification::new();
+                    n.summary(&title);
+                    n.body(&body);
+                    n.appname(&app_name);
+                    // Set first icon name if provided (XDG only; no-op on other platforms).
+                    if let Some(icon) = icon_names.first() {
+                        n.icon(icon);
+                    }
+                    if let Err(e) = n.show() {
+                        log::error!("failed to show desktop notification: {e}");
+                    }
+                })
+                .ok();
+        } else if let Some((title, body)) = basic_notif {
+            log::info!("desktop notification (OSC 9/777): title={title:?} body={body:?}");
             std::thread::Builder::new()
                 .name("notify".into())
                 .spawn(move || {

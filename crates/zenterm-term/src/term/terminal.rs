@@ -28,11 +28,12 @@ use zenterm_core::position::TermPos;
 use zenterm_core::size::TermSize;
 use zenterm_core::Progress;
 use zenterm_core::SemanticPrompt;
+use zenterm_core::KittyNotification;
 
 use super::color_scheme::{named_color_default_rgb, ColorScheme};
 use super::grid_view::{CursorInfo, GridView};
 use super::listener::Listener;
-use super::osc::{parse_conemu_progress, parse_osc133, scan_oscs};
+use super::osc::{parse_conemu_progress, parse_osc133, scan_oscs, KittyNotificationState};
 use super::TermDimensions;
 
 /// The terminal state machine.
@@ -93,6 +94,12 @@ pub struct Terminal {
     /// Flag indicating a fresh-line (\r\n) should be injected before the
     /// next batch of PTY bytes.  Set by OSC 133 commands L, A, N.
     pending_fresh_line: bool,
+    /// Kitty OSC 99 notification state — manages chunked notification
+    /// accumulation and query responses.
+    kitty_state: KittyNotificationState,
+    /// Most recent completed Kitty OSC 99 notification.
+    /// Populated by [`Self::feed`]; consumed via [`Self::take_kitty_notification`].
+    pending_kitty_notification: Option<KittyNotification>,
 }
 
 impl Terminal {
@@ -137,6 +144,8 @@ impl Terminal {
             pending_progress: None,
             pending_semantic_prompt: None,
             pending_fresh_line: false,
+            kitty_state: KittyNotificationState::default(),
+            pending_kitty_notification: None,
         }
     }
 
@@ -294,6 +303,30 @@ impl Terminal {
                     let title = parts.next().unwrap_or("").to_string();
                     let body = parts.next().unwrap_or("").to_string();
                     self.pending_notification = Some((title, body));
+                }
+                99 => {
+                    // OSC 99 — Kitty desktop notification.
+                    let (notification, response) = self.kitty_state
+                        .handle_event(&osc.payload, "");
+                    if let Some(notif) = notification {
+                        // Reuse the existing notification channel for display.
+                        let title = if notif.title.is_empty() {
+                            notif.body.clone()
+                        } else {
+                            notif.title.clone()
+                        };
+                        let body = if notif.title.is_empty() {
+                            String::new()
+                        } else {
+                            notif.body.clone()
+                        };
+                        self.pending_notification = Some((title, body));
+                        self.pending_kitty_notification = Some(notif);
+                    }
+                    if let Some(resp) = response {
+                        log::debug!("Terminal::feed: OSC 99 response: {resp}");
+                        replies.extend_from_slice(resp.as_bytes());
+                    }
                 }
                 133 => {
                     // OSC 133 — FinalTerm semantic prompt.
@@ -674,6 +707,14 @@ impl Terminal {
     /// Returns `None` if no new OSC 133 was seen since the last call.
     pub fn take_semantic_prompt(&mut self) -> Option<SemanticPrompt> {
         self.pending_semantic_prompt.take()
+    }
+
+    /// Take the most recent completed Kitty OSC 99 notification.
+    ///
+    /// Returns `None` if no new OSC 99 notification was completed since
+    /// the last call.
+    pub fn take_kitty_notification(&mut self) -> Option<KittyNotification> {
+        self.pending_kitty_notification.take()
     }
 
     /// Take the most recent OSC 7 working-directory URL (if any).
