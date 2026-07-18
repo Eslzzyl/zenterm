@@ -9,7 +9,7 @@
 //! only a new dispatch arm — no new byte-scanning logic.
 
 use memchr::memchr2;
-use zenterm_core::Progress;
+use zenterm_core::{Progress, SemanticClick, SemanticPrompt, SemanticPromptKind};
 
 /// A single OSC match found in the byte stream.
 #[derive(Debug, Clone)]
@@ -147,6 +147,167 @@ pub(crate) fn parse_conemu_progress(payload: &str) -> Option<Progress> {
         "3" => Some(Progress::Indeterminate),
         "4" => Some(Progress::None), // "Paused" — treated as no progress
         _ => None,
+    }
+}
+
+// ─── OSC-133 / FinalTerm semantic prompt ────────────────────────
+
+/// Parse a single `key=value` parameter from `s`.
+///
+/// Returns `(key, value)` if `s` contains `=`, otherwise `None`.
+fn split_key_value(s: &str) -> Option<(&str, &str)> {
+    let mut parts = s.splitn(2, '=');
+    let key = parts.next()?;
+    let val = parts.next()?;
+    Some((key, val))
+}
+
+/// Parse an OSC 133 payload into a [`SemanticPrompt`].
+///
+/// The payload is the text between the OSC number (`133;`) and the
+/// terminator.  For example, `ESC ] 133 ; A ; aid=123 ST` yields
+/// payload `"A;aid=123"`.
+pub(crate) fn parse_osc133(payload: &str) -> Option<SemanticPrompt> {
+    let parts: Vec<&str> = payload.split(';').collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let command = parts[0];
+
+    match command {
+        "L" => {
+            // FreshLine — no params allowed.
+            if parts.len() == 1 {
+                Some(SemanticPrompt::FreshLine)
+            } else {
+                None
+            }
+        }
+        "B" => {
+            // Mark end of prompt, start of input until next marker.
+            if parts.len() == 1 {
+                Some(SemanticPrompt::MarkEndOfPromptAndStartOfInputUntilNextMarker)
+            } else {
+                None
+            }
+        }
+        "I" => {
+            // Mark end of prompt, start of input until end of line.
+            if parts.len() == 1 {
+                Some(SemanticPrompt::MarkEndOfPromptAndStartOfInputUntilEndOfLine)
+            } else {
+                None
+            }
+        }
+        "A" => {
+            // Fresh line and start prompt.
+            let mut aid = None;
+            let mut cl = None;
+            for p in &parts[1..] {
+                if let Some((k, v)) = split_key_value(p) {
+                    match k {
+                        "aid" => aid = Some(v.to_string()),
+                        "cl" => {
+                            cl = Some(match v {
+                                "line" => SemanticClick::Line,
+                                "m" => SemanticClick::MultipleLine,
+                                "v" => SemanticClick::ConservativeVertical,
+                                "w" => SemanticClick::SmartVertical,
+                                _ => return None,
+                            });
+                        }
+                        _ => {} // Unknown keys are ignored per spec.
+                    }
+                } else {
+                    return None; // Malformed param (not key=value).
+                }
+            }
+            Some(SemanticPrompt::FreshLineAndStartPrompt { aid, cl })
+        }
+        "C" => {
+            // Mark end of input, start of output.
+            let mut aid = None;
+            for p in &parts[1..] {
+                if let Some((k, v)) = split_key_value(p) {
+                    match k {
+                        "aid" => aid = Some(v.to_string()),
+                        _ => {} // Unknown keys are ignored per spec.
+                    }
+                } else {
+                    return None;
+                }
+            }
+            Some(SemanticPrompt::MarkEndOfInputAndStartOfOutput { aid })
+        }
+        "D" => {
+            // Command finished with exit status.
+            let status: i32 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+            let mut aid = None;
+            if parts.len() >= 2 {
+                for p in &parts[2..] {
+                    if let Some((k, v)) = split_key_value(p) {
+                        match k {
+                            "aid" => aid = Some(v.to_string()),
+                            _ => {} // Unknown keys are ignored per spec.
+                        }
+                    }
+                    // Non-key=value segments (e.g. bare "err=0") are ignored.
+                }
+            }
+            Some(SemanticPrompt::CommandStatus { status, aid })
+        }
+        "N" => {
+            // End of command output + fresh line + start prompt.
+            let mut aid = None;
+            let mut cl = None;
+            for p in &parts[1..] {
+                if let Some((k, v)) = split_key_value(p) {
+                    match k {
+                        "aid" => aid = Some(v.to_string()),
+                        "cl" => {
+                            cl = Some(match v {
+                                "line" => SemanticClick::Line,
+                                "m" => SemanticClick::MultipleLine,
+                                "v" => SemanticClick::ConservativeVertical,
+                                "w" => SemanticClick::SmartVertical,
+                                _ => return None,
+                            });
+                        }
+                        _ => {} // Unknown keys are ignored per spec.
+                    }
+                } else {
+                    return None;
+                }
+            }
+            Some(SemanticPrompt::MarkEndOfCommandWithFreshLine { aid, cl })
+        }
+        "P" => {
+            // Start prompt with kind.
+            let kind = parts
+                .get(1)
+                .and_then(|p| {
+                    if let Some((_k, v)) = split_key_value(p) {
+                        Some(v)
+                    } else {
+                        None
+                    }
+                })
+                .and_then(|k| match k {
+                    "i" => Some(SemanticPromptKind::Initial),
+                    "r" => Some(SemanticPromptKind::RightSide),
+                    "c" => Some(SemanticPromptKind::Continuation),
+                    "s" => Some(SemanticPromptKind::Secondary),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            // Extra params (if any) are ignored per spec.
+            Some(SemanticPrompt::StartPrompt(kind))
+        }
+        _ => {
+            // Unknown command — ignore silently.
+            None
+        }
     }
 }
 
@@ -298,5 +459,299 @@ mod tests {
     #[test]
     fn conemu_unknown_state() {
         assert_eq!(parse_conemu_progress("4;9"), None);
+    }
+
+    // ── parse_osc133 ────────────────────────────────────────────────
+
+    #[test]
+    fn osc133_fresh_line() {
+        assert_eq!(parse_osc133("L"), Some(SemanticPrompt::FreshLine));
+    }
+
+    #[test]
+    fn osc133_fresh_line_with_params_is_error() {
+        assert_eq!(parse_osc133("L;extra"), None);
+    }
+
+    #[test]
+    fn osc133_prompt_start_a() {
+        assert_eq!(
+            parse_osc133("A"),
+            Some(SemanticPrompt::FreshLineAndStartPrompt {
+                aid: None,
+                cl: None,
+            })
+        );
+    }
+
+    #[test]
+    fn osc133_prompt_start_a_with_aid() {
+        assert_eq!(
+            parse_osc133("A;aid=42"),
+            Some(SemanticPrompt::FreshLineAndStartPrompt {
+                aid: Some("42".into()),
+                cl: None,
+            })
+        );
+    }
+
+    #[test]
+    fn osc133_prompt_start_a_with_cl() {
+        assert_eq!(
+            parse_osc133("A;cl=w"),
+            Some(SemanticPrompt::FreshLineAndStartPrompt {
+                aid: None,
+                cl: Some(SemanticClick::SmartVertical),
+            })
+        );
+    }
+
+    #[test]
+    fn osc133_prompt_start_a_with_aid_and_cl() {
+        assert_eq!(
+            parse_osc133("A;aid=99;cl=line"),
+            Some(SemanticPrompt::FreshLineAndStartPrompt {
+                aid: Some("99".into()),
+                cl: Some(SemanticClick::Line),
+            })
+        );
+    }
+
+    #[test]
+    fn osc133_prompt_start_a_unknown_key_ignored() {
+        assert_eq!(
+            parse_osc133("A;aid=1;foo=bar"),
+            Some(SemanticPrompt::FreshLineAndStartPrompt {
+                aid: Some("1".into()),
+                cl: None,
+            })
+        );
+    }
+
+    #[test]
+    fn osc133_prompt_start_b() {
+        assert_eq!(
+            parse_osc133("B"),
+            Some(SemanticPrompt::MarkEndOfPromptAndStartOfInputUntilNextMarker)
+        );
+    }
+
+    #[test]
+    fn osc133_prompt_start_b_with_params_is_error() {
+        assert_eq!(parse_osc133("B;aid=1"), None);
+    }
+
+    #[test]
+    fn osc133_input_start_c() {
+        assert_eq!(
+            parse_osc133("C"),
+            Some(SemanticPrompt::MarkEndOfInputAndStartOfOutput { aid: None })
+        );
+    }
+
+    #[test]
+    fn osc133_input_start_c_with_aid() {
+        assert_eq!(
+            parse_osc133("C;aid=7"),
+            Some(SemanticPrompt::MarkEndOfInputAndStartOfOutput {
+                aid: Some("7".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn osc133_command_status_d() {
+        assert_eq!(
+            parse_osc133("D;0"),
+            Some(SemanticPrompt::CommandStatus {
+                status: 0,
+                aid: None,
+            })
+        );
+    }
+
+    #[test]
+    fn osc133_command_status_d_nonzero() {
+        assert_eq!(
+            parse_osc133("D;1"),
+            Some(SemanticPrompt::CommandStatus {
+                status: 1,
+                aid: None,
+            })
+        );
+    }
+
+    #[test]
+    fn osc133_command_status_d_with_aid() {
+        assert_eq!(
+            parse_osc133("D;0;aid=23"),
+            Some(SemanticPrompt::CommandStatus {
+                status: 0,
+                aid: Some("23".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn osc133_command_status_d_with_aid_and_extra() {
+        // The spec allows extra key=value pairs (like err=...) which
+        // should be silently ignored.
+        assert_eq!(
+            parse_osc133("D;1;err=1;aid=23"),
+            Some(SemanticPrompt::CommandStatus {
+                status: 1,
+                aid: Some("23".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn osc133_command_status_d_no_status_defaults_zero() {
+        assert_eq!(
+            parse_osc133("D"),
+            Some(SemanticPrompt::CommandStatus {
+                status: 0,
+                aid: None,
+            })
+        );
+    }
+
+    #[test]
+    fn osc133_continue_prompt_i() {
+        assert_eq!(
+            parse_osc133("I"),
+            Some(SemanticPrompt::MarkEndOfPromptAndStartOfInputUntilEndOfLine)
+        );
+    }
+
+    #[test]
+    fn osc133_continue_prompt_i_with_params_is_error() {
+        assert_eq!(parse_osc133("I;extra"), None);
+    }
+
+    #[test]
+    fn osc133_end_of_command_n() {
+        assert_eq!(
+            parse_osc133("N"),
+            Some(SemanticPrompt::MarkEndOfCommandWithFreshLine {
+                aid: None,
+                cl: None,
+            })
+        );
+    }
+
+    #[test]
+    fn osc133_end_of_command_n_with_aid() {
+        assert_eq!(
+            parse_osc133("N;aid=5"),
+            Some(SemanticPrompt::MarkEndOfCommandWithFreshLine {
+                aid: Some("5".into()),
+                cl: None,
+            })
+        );
+    }
+
+    #[test]
+    fn osc133_end_of_command_n_with_cl() {
+        assert_eq!(
+            parse_osc133("N;cl=m"),
+            Some(SemanticPrompt::MarkEndOfCommandWithFreshLine {
+                aid: None,
+                cl: Some(SemanticClick::MultipleLine),
+            })
+        );
+    }
+
+    #[test]
+    fn osc133_start_prompt_p_initial() {
+        assert_eq!(
+            parse_osc133("P;k=i"),
+            Some(SemanticPrompt::StartPrompt(SemanticPromptKind::Initial))
+        );
+    }
+
+    #[test]
+    fn osc133_start_prompt_p_right_side() {
+        assert_eq!(
+            parse_osc133("P;k=r"),
+            Some(SemanticPrompt::StartPrompt(SemanticPromptKind::RightSide))
+        );
+    }
+
+    #[test]
+    fn osc133_start_prompt_p_continuation() {
+        assert_eq!(
+            parse_osc133("P;k=c"),
+            Some(SemanticPrompt::StartPrompt(SemanticPromptKind::Continuation))
+        );
+    }
+
+    #[test]
+    fn osc133_start_prompt_p_secondary() {
+        assert_eq!(
+            parse_osc133("P;k=s"),
+            Some(SemanticPrompt::StartPrompt(SemanticPromptKind::Secondary))
+        );
+    }
+
+    #[test]
+    fn osc133_start_prompt_p_default_initial() {
+        // P without k= defaults to Initial.
+        assert_eq!(
+            parse_osc133("P"),
+            Some(SemanticPrompt::StartPrompt(SemanticPromptKind::Initial))
+        );
+    }
+
+    #[test]
+    fn osc133_start_prompt_p_unknown_kind_defaults_initial() {
+        assert_eq!(
+            parse_osc133("P;k=z"),
+            Some(SemanticPrompt::StartPrompt(SemanticPromptKind::Initial))
+        );
+    }
+
+    #[test]
+    fn osc133_unknown_command_is_none() {
+        assert_eq!(parse_osc133("Z"), None);
+        assert_eq!(parse_osc133("Q"), None);
+        assert_eq!(parse_osc133(""), None);
+    }
+
+    #[test]
+    fn osc133_all_cl_variants() {
+        assert_eq!(
+            parse_osc133("A;cl=line").unwrap(),
+            SemanticPrompt::FreshLineAndStartPrompt {
+                aid: None,
+                cl: Some(SemanticClick::Line),
+            }
+        );
+        assert_eq!(
+            parse_osc133("A;cl=m").unwrap(),
+            SemanticPrompt::FreshLineAndStartPrompt {
+                aid: None,
+                cl: Some(SemanticClick::MultipleLine),
+            }
+        );
+        assert_eq!(
+            parse_osc133("A;cl=v").unwrap(),
+            SemanticPrompt::FreshLineAndStartPrompt {
+                aid: None,
+                cl: Some(SemanticClick::ConservativeVertical),
+            }
+        );
+        assert_eq!(
+            parse_osc133("A;cl=w").unwrap(),
+            SemanticPrompt::FreshLineAndStartPrompt {
+                aid: None,
+                cl: Some(SemanticClick::SmartVertical),
+            }
+        );
+    }
+
+    #[test]
+    fn osc133_invalid_cl_is_none() {
+        assert_eq!(parse_osc133("A;cl=bad"), None);
     }
 }

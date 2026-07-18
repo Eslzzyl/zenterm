@@ -121,6 +121,12 @@ impl TerminalSession {
             self.progress = prog;
         }
 
+        // ── FinalTerm semantic prompt (OSC 133) ──────────────────────────
+        if let Some(prompt) = self.terminal.take_semantic_prompt() {
+            log::trace!("session: OSC 133 semantic prompt: {prompt:?}");
+            self.latest_semantic_prompt = Some(prompt);
+        }
+
         if !self.exit_effect_sent {
             if self.terminal.take_exit() || self.terminal.take_child_exit().is_some() {
                 log::info!("update: terminal requested exit, closing");

@@ -66,6 +66,8 @@ pub struct TerminalSession {
     pub notification: NotificationState,
     /// ConEmu OSC 9;4 progress-bar state reported by the shell.
     pub progress: zenterm_core::Progress,
+    /// Most recent FinalTerm OSC 133 semantic prompt marker.
+    pub latest_semantic_prompt: Option<zenterm_core::SemanticPrompt>,
 
     // ── Per-session state ───────────────────────────────────────────
     pub terminal: Terminal,

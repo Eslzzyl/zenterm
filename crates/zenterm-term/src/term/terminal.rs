@@ -27,11 +27,12 @@ use zenterm_core::damage::DamageSet;
 use zenterm_core::position::TermPos;
 use zenterm_core::size::TermSize;
 use zenterm_core::Progress;
+use zenterm_core::SemanticPrompt;
 
 use super::color_scheme::{named_color_default_rgb, ColorScheme};
 use super::grid_view::{CursorInfo, GridView};
 use super::listener::Listener;
-use super::osc::{parse_conemu_progress, scan_oscs};
+use super::osc::{parse_conemu_progress, parse_osc133, scan_oscs};
 use super::TermDimensions;
 
 /// The terminal state machine.
@@ -86,6 +87,12 @@ pub struct Terminal {
     /// Most recent ConEmu OSC 9;4 progress-bar state.
     /// Populated by [`Self::feed`]; consumed via [`Self::take_progress`].
     pending_progress: Option<Progress>,
+    /// Most recent FinalTerm OSC 133 semantic prompt marker.
+    /// Populated by [`Self::feed`]; consumed via [`Self::take_semantic_prompt`].
+    pending_semantic_prompt: Option<SemanticPrompt>,
+    /// Flag indicating a fresh-line (\r\n) should be injected before the
+    /// next batch of PTY bytes.  Set by OSC 133 commands L, A, N.
+    pending_fresh_line: bool,
 }
 
 impl Terminal {
@@ -128,6 +135,8 @@ impl Terminal {
             pending_current_directory: None,
             pending_notification: None,
             pending_progress: None,
+            pending_semantic_prompt: None,
+            pending_fresh_line: false,
         }
     }
 
@@ -286,6 +295,21 @@ impl Terminal {
                     let body = parts.next().unwrap_or("").to_string();
                     self.pending_notification = Some((title, body));
                 }
+                133 => {
+                    // OSC 133 — FinalTerm semantic prompt.
+                    if let Some(prompt) = parse_osc133(&osc.payload) {
+                        // Commands L, A, N imply a fresh line.
+                        match &prompt {
+                            SemanticPrompt::FreshLine
+                            | SemanticPrompt::FreshLineAndStartPrompt { .. }
+                            | SemanticPrompt::MarkEndOfCommandWithFreshLine { .. } => {
+                                self.pending_fresh_line = true;
+                            }
+                            _ => {}
+                        }
+                        self.pending_semantic_prompt = Some(prompt);
+                    }
+                }
                 _ => {
                     // Unknown OSC — ignored.
                 }
@@ -293,9 +317,27 @@ impl Terminal {
         }
         let t_osc_elapsed = t_osc_start.elapsed();
 
+        // ── Fresh-line injection ─────────────────────────────────────────
+        // OSC 133 commands L, A, and N signal that the terminal should
+        // perform a fresh line (\r\n) before processing subsequent output.
+        let injected_vec;
+        let vt_bytes: &[u8] = if self.pending_fresh_line {
+            self.pending_fresh_line = false;
+            injected_vec = {
+                let mut v = Vec::with_capacity(2 + bytes.len());
+                v.push(b'\r');
+                v.push(b'\n');
+                v.extend_from_slice(bytes);
+                v
+            };
+            &injected_vec
+        } else {
+            bytes
+        };
+
         // ── VT parser ───────────────────────────────────────────────────
         let t_vt_start = std::time::Instant::now();
-        self.processor.advance(&mut self.term, bytes);
+        self.processor.advance(&mut self.term, vt_bytes);
         let t_vt_elapsed = t_vt_start.elapsed();
 
         // Propagate damage from alacritty_terminal's internal tracker.
@@ -625,6 +667,13 @@ impl Terminal {
     /// Take the most recent ConEmu progress-bar state (OSC 9;4).
     pub fn take_progress(&mut self) -> Option<Progress> {
         self.pending_progress.take()
+    }
+
+    /// Take the most recent FinalTerm OSC 133 semantic prompt marker.
+    ///
+    /// Returns `None` if no new OSC 133 was seen since the last call.
+    pub fn take_semantic_prompt(&mut self) -> Option<SemanticPrompt> {
+        self.pending_semantic_prompt.take()
     }
 
     /// Take the most recent OSC 7 working-directory URL (if any).

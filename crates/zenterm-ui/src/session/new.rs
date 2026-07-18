@@ -53,6 +53,7 @@ impl TerminalSession {
             git_branch: None,
             notification: NotificationState::None,
             progress: zenterm_core::Progress::None,
+            latest_semantic_prompt: None,
             terminal,
             pty,
             gpu,

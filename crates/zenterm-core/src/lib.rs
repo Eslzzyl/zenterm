@@ -39,6 +39,83 @@ pub enum Progress {
     Indeterminate,
 }
 
+/// The kind of a prompt in the FinalTerm semantic prompt protocol (OSC 133 P).
+///
+/// Corresponds to the `k` parameter in `ESC ] 133 ; P ; k=X ST`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticPromptKind {
+    /// Normal left-side primary prompt (`k=i`).
+    Initial,
+    /// Right-aligned prompt (`k=r`).
+    RightSide,
+    /// Continuation prompt for editable input (`k=c`).
+    Continuation,
+    /// Continuation prompt where the input cannot be edited (`k=s`).
+    Secondary,
+}
+
+impl Default for SemanticPromptKind {
+    fn default() -> Self {
+        Self::Initial
+    }
+}
+
+/// Click behaviour for semantic prompt regions (OSC 133 `cl` parameter).
+///
+/// Controls how cursor keys navigate within a multi-line prompt or input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticClick {
+    /// Allow motion only within the single input line.
+    Line,
+    /// Allow moving between multiple lines of input.
+    MultipleLine,
+    /// Allow left/right and conservative up/down motion.
+    ConservativeVertical,
+    /// Allow full arrow-key motion with smart horizontal placement.
+    SmartVertical,
+}
+
+/// A parsed FinalTerm semantic prompt (OSC 133).
+///
+/// See <https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md>
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticPrompt {
+    /// `L` — Do a fresh line (cursor to column 0, new line if not already there).
+    FreshLine,
+    /// `A` — Fresh line and then start prompt mode.
+    FreshLineAndStartPrompt {
+        /// Optional action identifier for response matching.
+        aid: Option<String>,
+        /// Optional click-behaviour hint.
+        cl: Option<SemanticClick>,
+    },
+    /// `N` — End of command output, fresh line, then start prompt mode.
+    MarkEndOfCommandWithFreshLine {
+        /// Optional action identifier.
+        aid: Option<String>,
+        /// Optional click-behaviour hint.
+        cl: Option<SemanticClick>,
+    },
+    /// `P` — Start a prompt of the given kind.
+    StartPrompt(SemanticPromptKind),
+    /// `B` — End of prompt, start of user input (until next marker).
+    MarkEndOfPromptAndStartOfInputUntilNextMarker,
+    /// `I` — End of prompt, start of user input (until end of line).
+    MarkEndOfPromptAndStartOfInputUntilEndOfLine,
+    /// `C` — End of input, start of command output.
+    MarkEndOfInputAndStartOfOutput {
+        /// Optional action identifier.
+        aid: Option<String>,
+    },
+    /// `D` — Command finished with the given exit status.
+    CommandStatus {
+        /// Exit status (0 = success, non-zero = failure).
+        status: i32,
+        /// Optional action identifier.
+        aid: Option<String>,
+    },
+}
+
 /// Convenience alias for [`Error`] results.
 pub type Result<T> = std::result::Result<T, Error>;
 
