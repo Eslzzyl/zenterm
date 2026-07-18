@@ -93,6 +93,11 @@ impl ImageCache {
         self.id_to_data.values().map(|d| d.hash).collect()
     }
 
+    /// Return all image IDs currently in the cache.
+    pub fn all_image_ids(&self) -> Vec<u32> {
+        self.id_to_data.keys().copied().collect()
+    }
+
     /// Remove all images and placements.
     pub fn clear(&mut self) {
         self.id_to_data.clear();

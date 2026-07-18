@@ -157,6 +157,18 @@ pub struct KittyImagePlacement {
     pub do_not_move_cursor: bool,
     pub placement_id: Option<u32>,
     pub z_index: Option<i32>,
+    /// `U=1` — create a virtual placement for Unicode placeholders.
+    /// When true, no direct image is rendered; instead the application writes
+    /// `U+10EEEE` placeholder characters whose fg color encodes the image ID.
+    pub virtual_placement: bool,
+    /// `P` — parent image ID (for relative placements).
+    pub parent_id: Option<u32>,
+    /// `Q` — parent placement ID (for relative placements).
+    pub parent_placement_id: Option<u32>,
+    /// `H` — signed horizontal offset within the cell (may be negative).
+    pub horizontal_offset: Option<i32>,
+    /// `V` — signed vertical offset within the cell (may be negative).
+    pub vertical_offset: Option<i32>,
 }
 
 // ── delete ─────────────────────────────────────────────────────────────
@@ -171,6 +183,12 @@ pub enum KittyImageDelete {
     DeleteColumn { x: u32, delete: bool },
     DeleteRow { y: u32, delete: bool },
     DeleteZ { z: i32, delete: bool },
+    /// `d=f/F` — delete animation frames.
+    DeleteAnimationFrames { delete: bool },
+    /// `d=q/Q` — delete by cell position + z-index intersection.
+    DeleteAtCellZ { x: u32, y: u32, z: i32, delete: bool },
+    /// `d=r/R` — delete by image ID range (x=first, y=last).
+    DeleteRange { first: u32, last: u32, delete: bool },
 }
 
 // ── verbosity ──────────────────────────────────────────────────────────
@@ -200,6 +218,50 @@ pub struct KittyImageFrame {
     pub base_frame: Option<u32>,
     pub composition_mode: KittyFrameCompositionMode,
     pub background_pixel: Option<u32>,
+}
+
+// ── animation control (a=a) ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KittyAnimationAction {
+    Stop,        // s=1
+    RunWait,     // s=2
+    Run,         // s=3
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KittyAnimationControl {
+    pub action: KittyAnimationAction,
+    pub frame: Option<u32>,
+    pub gap_ms: Option<u32>,
+    pub current_frame: Option<u32>,
+    pub loops: Option<u32>,
+}
+
+impl KittyAnimationControl {
+    fn from_keys(keys: &BTreeMap<&str, &str>) -> Option<Self> {
+        Some(Self {
+            action: match get(keys, "s") {
+                Some("1") => KittyAnimationAction::Stop,
+                Some("2") => KittyAnimationAction::RunWait,
+                Some("3") => KittyAnimationAction::Run,
+                _ => return None,
+            },
+            frame: match geti(keys, "r") {
+                None | Some(0) => None,
+                n => n,
+            },
+            gap_ms: geti(keys, "z"),
+            current_frame: match geti(keys, "c") {
+                None | Some(0) => None,
+                n => n,
+            },
+            loops: match geti(keys, "v") {
+                None | Some(0) => None,
+                n => n,
+            },
+        })
+    }
 }
 
 // ── top-level command ──────────────────────────────────────────────────
@@ -280,6 +342,10 @@ pub enum KittyImage {
         frame: KittyImageFrameCompose,
         verbosity: KittyImageVerbosity,
     },
+    AnimationControl {
+        control: KittyAnimationControl,
+        verbosity: KittyImageVerbosity,
+    },
 }
 
 impl KittyImage {
@@ -336,6 +402,10 @@ impl KittyImage {
                 frame: KittyImageFrameCompose::from_keys(&keys)?,
                 verbosity,
             }),
+            "a" => Some(Self::AnimationControl {
+                control: KittyAnimationControl::from_keys(&keys)?,
+                verbosity,
+            }),
             _ => None,
         }
     }
@@ -378,6 +448,17 @@ impl KittyImageCompression {
 
 impl KittyImageTransmit {
     fn from_keys(keys: &BTreeMap<&str, &str>, payload: &[u8]) -> Option<Self> {
+        // The "m" key (more chunks) is only valid for direct medium (t=d).
+        let medium = get(keys, "t").unwrap_or("d");
+        let more_data_follows = if medium == "d" {
+            match get(keys, "m") {
+                None | Some("0") => false,
+                Some("1") => true,
+                _ => return None,
+            }
+        } else {
+            false
+        };
         Some(Self {
             format: KittyImageFormat::from_keys(keys)?,
             data: KittyImageData::from_keys(keys, payload)?,
@@ -386,11 +467,7 @@ impl KittyImageTransmit {
             height: geti(keys, "v"),
             image_id: geti(keys, "i"),
             image_number: geti(keys, "I"),
-            more_data_follows: match get(keys, "m") {
-                None | Some("0") => false,
-                Some("1") => true,
-                _ => return None,
-            },
+            more_data_follows,
         })
     }
 }
@@ -413,6 +490,15 @@ impl KittyImagePlacement {
                 _ => return None,
             },
             z_index: geti(keys, "z"),
+            virtual_placement: match get(keys, "U") {
+                None | Some("0") => false,
+                Some("1") => true,
+                _ => return None,
+            },
+            parent_id: geti(keys, "P"),
+            parent_placement_id: geti(keys, "Q"),
+            horizontal_offset: geti(keys, "H"),
+            vertical_offset: geti(keys, "V"),
         })
     }
 }
@@ -450,6 +536,18 @@ impl KittyImageDelete {
             }),
             'z' => Some(Self::DeleteZ {
                 z: geti(keys, "z")?,
+                delete,
+            }),
+            'f' => Some(Self::DeleteAnimationFrames { delete }),
+            'q' => Some(Self::DeleteAtCellZ {
+                x: geti(keys, "x")?,
+                y: geti(keys, "y")?,
+                z: geti(keys, "z")?,
+                delete,
+            }),
+            'r' => Some(Self::DeleteRange {
+                first: geti(keys, "x")?,
+                last: geti(keys, "y")?,
                 delete,
             }),
             _ => None,
@@ -516,6 +614,11 @@ pub fn decode_image_data(
     transmit: KittyImageTransmit,
     image_cache: &mut ImageCache,
 ) -> Result<u32, String> {
+    // EINVAL: i= and I= are mutually exclusive.
+    if transmit.image_id.is_some() && transmit.image_number.is_some() {
+        return Err("EINVAL: image ID and number are mutually exclusive".into());
+    }
+
     let raw = transmit.data.load_data()?;
     log::debug!(
         "[img] decode_image_data: raw_len={}, w={:?}, h={:?}, fmt={:?}, comp={:?}",
@@ -561,6 +664,16 @@ pub fn decode_image_data(
             ImageDataType::new_rgba8(rgba, w, h)
         }
     };
+
+    // Safety: reject images whose decoded pixel buffer exceeds 100 MB.
+    const MAX_IMAGE_PIXELS: u32 = 100_000_000;
+    let pixel_count = img.width() as u64 * img.height() as u64;
+    if pixel_count > MAX_IMAGE_PIXELS as u64 {
+        return Err(format!(
+            "image too large: {}x{} ({} pixels) exceeds limit of {}",
+            img.width(), img.height(), pixel_count, MAX_IMAGE_PIXELS,
+        ));
+    }
 
     let data = Arc::new(ImageData::new(img));
     let image_id = image_cache.assign_id(transmit.image_id, transmit.image_number);

@@ -41,6 +41,62 @@ use super::osc::{
 };
 use super::TermDimensions;
 
+// ── Unicode placeholder support (Kitty U=1) ────────────────────────────
+
+/// Codepoint used as the Unicode placeholder character.
+const PLACEHOLDER_CHAR: char = '\u{10EEEE}';
+
+/// Row/column diacritics for encoding position in Unicode placeholders.
+/// Derived from: https://sw.kovidgoyal.net/kitty/_downloads/f0a0de9ec8d9ff4456206db8e0814937/rowcolumn-diacritics.txt
+/// The index into the array determines the value.
+const DIACRITICS: &[char] = &[
+    '\u{0305}', '\u{030D}', '\u{030E}', '\u{0310}', '\u{0312}',
+    '\u{033D}', '\u{033E}', '\u{033F}', '\u{0346}', '\u{034A}',
+    '\u{034B}', '\u{034C}', '\u{0350}', '\u{0351}', '\u{0352}',
+    '\u{0357}', '\u{035B}', '\u{0363}', '\u{0364}', '\u{0365}',
+    '\u{0366}', '\u{0367}', '\u{0368}', '\u{0369}', '\u{036A}',
+    '\u{036B}', '\u{036C}', '\u{036D}', '\u{036E}', '\u{036F}',
+    '\u{0370}', '\u{0371}', '\u{0372}', '\u{0373}', '\u{0376}',
+    '\u{0377}', '\u{037A}', '\u{037B}', '\u{037C}', '\u{037D}',
+    '\u{037F}', '\u{0384}', '\u{0385}', '\u{0386}', '\u{0387}',
+];
+
+/// Decode a diacritic combining mark into a numeric value.
+/// Returns `None` if the character is not in the diacritics table.
+fn diacritic_value(c: char) -> Option<u32> {
+    DIACRITICS.iter().position(|&d| d == c).map(|i| i as u32)
+}
+
+/// A virtual placement created by `U=1`.
+///
+/// Stores the metadata needed to render image slices when the application
+/// writes `U+10EEEE` placeholder characters to the grid.
+#[derive(Debug, Clone)]
+pub struct VirtualPlacement {
+    /// The image ID this placement refers to.
+    pub image_id: u32,
+    /// The placement ID (optional).
+    pub placement_id: Option<u32>,
+    /// Number of columns this placement spans.
+    pub columns: u32,
+    /// Number of rows this placement spans.
+    pub rows: u32,
+    /// Source x in pixels (Kitty `x=`).
+    pub source_x: Option<u32>,
+    /// Source y in pixels (Kitty `y=`).
+    pub source_y: Option<u32>,
+    /// Source width in pixels (Kitty `w=`).
+    pub source_w: Option<u32>,
+    /// Source height in pixels (Kitty `h=`).
+    pub source_h: Option<u32>,
+    /// Cell x-offset (Kitty `X=`).
+    pub x_offset: Option<u32>,
+    /// Cell y-offset (Kitty `Y=`).
+    pub y_offset: Option<u32>,
+    /// Z-index for compositing.
+    pub z_index: i32,
+}
+
 /// The terminal state machine.
 ///
 /// Owns `alacritty_terminal::Term` for grid state and `vte::ansi::Processor`
@@ -62,6 +118,11 @@ pub struct Terminal {
     /// during scroll.  `line` is a grid-relative `Line.0` (may be negative
     /// when viewport is at bottom).
     pub(crate) image_placements: HashMap<(i32, usize), ImageCell>,
+    /// Virtual placements created by `U=1` (Unicode placeholder mode).
+    /// Keyed by `(image_id, placement_id)`.  At render time, cells containing
+    /// `U+10EEEE` are matched against these entries to determine which image
+    /// slice to display.
+    pub(crate) virtual_placements: HashMap<(u32, Option<u32>), VirtualPlacement>,
     /// Accumulator for multi-chunk Kitty image transmissions.
     #[allow(dead_code)]
     kitty_accumulator: KittyAccumulator,
@@ -148,6 +209,7 @@ impl Terminal {
             grid_cache: vec![vec![Cell::blank(); cols]; rows],
             image_cache: ImageCache::new(),
             image_placements: HashMap::new(),
+            virtual_placements: HashMap::new(),
             pending_image_deallocations: Vec::new(),
             kitty_accumulator: KittyAccumulator::default(),
             cell_pixel_width: 0,
@@ -271,12 +333,14 @@ impl Terminal {
                     && bytes[esc_pos + 2] == b'2'
                     && bytes[esc_pos + 3] == b'J'
                 {
-                    if !self.image_placements.is_empty() {
+                    if !self.image_placements.is_empty() || !self.virtual_placements.is_empty() {
                         log::debug!(
-                            "[img] CSI 2J (Erase Display): clearing {} image placements",
+                            "[img] CSI 2J (Erase Display): clearing {} image placements, {} virtual placements",
                             self.image_placements.len(),
+                            self.virtual_placements.len(),
                         );
                         self.image_placements.clear();
+                        self.virtual_placements.clear();
                     }
                 }
 
@@ -695,6 +759,7 @@ impl Terminal {
             row.resize(cols, Cell::blank());
         }
         self.image_placements.clear();
+        self.virtual_placements.clear();
         self.damage.mark_all();
         self.pixel_width = size.pixel_width as u32;
         self.pixel_height = size.pixel_height as u32;
@@ -768,7 +833,7 @@ impl Terminal {
 
     /// Return the number of active image placements (for diagnostics).
     pub fn image_placements_count(&self) -> usize {
-        self.image_placements.len()
+        self.image_placements.len() + self.virtual_placements.len()
     }
 
     /// Get a view of the visible grid with resolved colours.
@@ -804,6 +869,184 @@ impl Terminal {
                 let row = viewport_row as usize;
                 if col < self.grid_cache[row].len() {
                     self.grid_cache[row][col].image = Some(img_cell.clone());
+                }
+            }
+        }
+
+        // ── Unicode placeholder rendering (Kitty U=1) ──────────────────
+        // Scan the visible grid for cells containing PLACEHOLDER_CHAR
+        // (U+10EEEE).  For each one, decode the image ID from the fg color
+        // and the row/col from combining diacritics, then create an
+        // ImageCell pointing at the correct slice of the image.
+        if !self.virtual_placements.is_empty() {
+            for row_idx in 0..screen_lines.min(self.grid_cache.len()) {
+                let grid_line = Line(row_idx as i32 - grid.display_offset() as i32);
+                for col_idx in 0..cols {
+                    let alacell = &grid[grid_line][Column(col_idx)];
+                    if alacell.c != PLACEHOLDER_CHAR {
+                        continue;
+                    }
+
+                    // Extract image_id from the foreground color index.
+                    let image_id = match alacell.fg {
+                        Color::Indexed(idx) => idx as u32,
+                        _ => continue,
+                    };
+
+                    // Extract row/col from combining diacritics.
+                    let zerowidth = alacell.zerowidth().unwrap_or(&[]);
+                    if zerowidth.len() < 2 {
+                        continue;
+                    }
+                    let row_diacritic = match diacritic_value(zerowidth[0]) {
+                        Some(v) => v,
+                        None => {
+                            log::warn!("[img] unicode placeholder: invalid row diacritic cp={:X}", zerowidth[0] as u32);
+                            continue;
+                        }
+                    };
+                    let col_diacritic = match diacritic_value(zerowidth[1]) {
+                        Some(v) => v,
+                        None => {
+                            log::warn!("[img] unicode placeholder: invalid col diacritic cp={:X}", zerowidth[1] as u32);
+                            continue;
+                        }
+                    };
+                    // Optional 3rd diacritic: high 8 bits of image_id.
+                    let image_id = if zerowidth.len() >= 3 {
+                        match diacritic_value(zerowidth[2]) {
+                            Some(high) => (high << 8) | image_id,
+                            None => image_id,
+                        }
+                    } else {
+                        image_id
+                    };
+
+                    // Find the virtual placement for this image_id.
+                    // Try with placement_id=None first, then any.
+                    let vp = self.virtual_placements.get(&(image_id, None))
+                        .or_else(|| {
+                            self.virtual_placements.iter()
+                                .find(|((id, _), _)| *id == image_id)
+                                .map(|(_, vp)| vp)
+                        });
+                    let vp = match vp {
+                        Some(vp) => vp,
+                        None => {
+                            log::warn!("[img] unicode placeholder: no virtual placement for image_id={image_id}");
+                            continue;
+                        }
+                    };
+
+                    let data = match self.image_cache.get(vp.image_id) {
+                        Some(d) => d.clone(),
+                        None => continue,
+                    };
+                    let img_w = data.data().width();
+                    let img_h = data.data().height();
+
+                    if self.cell_pixel_width == 0 || self.cell_pixel_height == 0 {
+                        continue;
+                    }
+
+                    // ── Grid size ──────────────────────────────────────
+                    // If columns/rows specified, use them; otherwise
+                    // estimate from image size to fit at native resolution.
+                    let grid_cols = if vp.columns > 0 {
+                        vp.columns
+                    } else {
+                        ((img_w + self.cell_pixel_width - 1) / self.cell_pixel_width).max(1)
+                    };
+                    let grid_rows = if vp.rows > 0 {
+                        vp.rows
+                    } else {
+                        ((img_h + self.cell_pixel_height - 1) / self.cell_pixel_height).max(1)
+                    };
+
+                    // ── Aspect-ratio-preserving scale ─────────────────
+                    // Fit the source image into the placement pixel area
+                    // (grid_cols × cell_width, grid_rows × cell_height)
+                    // while preserving aspect ratio.  Center the image
+                    // within the area if there is leftover space.
+                    let placement_px_w = grid_cols as f64 * self.cell_pixel_width as f64;
+                    let placement_px_h = grid_rows as f64 * self.cell_pixel_height as f64;
+                    let src_x = vp.source_x.unwrap_or(0) as f64;
+                    let src_y = vp.source_y.unwrap_or(0) as f64;
+                    let src_w = vp.source_w.unwrap_or(img_w).min(img_w) as f64;
+                    let src_h = vp.source_h.unwrap_or(img_h).min(img_h) as f64;
+
+                    // Compute scale: uniform scale that fits src into placement area.
+                    let scale = if src_w * placement_px_h > src_h * placement_px_w {
+                        // Source is wider than placement — fit width, center height.
+                        placement_px_w / src_w.max(1.0)
+                    } else {
+                        // Source is taller — fit height, center width.
+                        placement_px_h / src_h.max(1.0)
+                    };
+
+                    // Scaled source dimensions (after aspect-ratio fit).
+                    let scaled_src_w = src_w * scale;
+                    let scaled_src_h = src_h * scale;
+
+                    // Offsets to center the image within the placement area.
+                    let center_offset_x = (placement_px_w - scaled_src_w) / 2.0;
+                    let center_offset_y = (placement_px_h - scaled_src_h) / 2.0;
+
+                    // ── Per-cell UV calculation ────────────────────────
+                    // This cell represents (col_diacritic, row_diacritic)
+                    // within the grid.  Compute the pixel region it covers
+                    // in the placement area, then map to source UV.
+                    let cell_px_x = col_diacritic as f64 * self.cell_pixel_width as f64;
+                    let cell_px_y = row_diacritic as f64 * self.cell_pixel_height as f64;
+
+                    // Source region for this cell (in original image pixels).
+                    // Undo the centering offset and scale back to image space.
+                    let cell_src_x = src_x + (cell_px_x - center_offset_x) / scale;
+                    let cell_src_y = src_y + (cell_px_y - center_offset_y) / scale;
+                    let cell_src_w = self.cell_pixel_width as f64 / scale;
+                    let cell_src_h = self.cell_pixel_height as f64 / scale;
+
+                    // Clamp source region to the source rectangle bounds.
+                    let clamped_x = cell_src_x.max(src_x);
+                    let clamped_y = cell_src_y.max(src_y);
+                    let clamped_w = (cell_src_x + cell_src_w - clamped_x)
+                        .min(src_x + src_w - clamped_x)
+                        .max(0.0);
+                    let clamped_h = (cell_src_y + cell_src_h - clamped_y)
+                        .min(src_y + src_h - clamped_y)
+                        .max(0.0);
+
+                    if clamped_w <= 0.0 || clamped_h <= 0.0 || img_w == 0 || img_h == 0 {
+                        continue;
+                    }
+
+                    let u0 = clamped_x / img_w as f64;
+                    let v0 = clamped_y / img_h as f64;
+                    let u1 = (clamped_x + clamped_w) / img_w as f64;
+                    let v1 = (clamped_y + clamped_h) / img_h as f64;
+
+                    let top_left = zenterm_core::image::TextureCoordinate::new(u0 as f32, v0 as f32);
+                    let bottom_right = zenterm_core::image::TextureCoordinate::new(u1 as f32, v1 as f32);
+
+                    let padding_left = vp.x_offset.unwrap_or(0) as u16;
+                    let padding_top = vp.y_offset.unwrap_or(0) as u16;
+
+                    let img_cell = ImageCell {
+                        top_left,
+                        bottom_right,
+                        data,
+                        z_index: vp.z_index,
+                        padding_left,
+                        padding_top,
+                        padding_right: 0,
+                        padding_bottom: 0,
+                        image_id: Some(vp.image_id),
+                        placement_id: vp.placement_id,
+                    };
+
+                    if row_idx < self.grid_cache.len() && col_idx < self.grid_cache[row_idx].len() {
+                        self.grid_cache[row_idx][col_idx].image = Some(img_cell);
+                    }
                 }
             }
         }
@@ -1135,20 +1378,39 @@ impl Terminal {
                     transmit.format, transmit.width, transmit.height,
                     transmit.image_id, transmit.image_number,
                 );
+                // Implicit ID (i=0, I=0): do not respond.
+                let implicit = transmit.image_id == Some(0) && transmit.image_number == Some(0);
+                let resp_id = transmit.image_id;
+                let resp_num = transmit.image_number;
                 if verbosity != kitty::KittyImageVerbosity::Quiet {
                     match kitty::decode_image_data(transmit, &mut self.image_cache) {
-                        Ok(id) => log::debug!("[img] TransmitData decode OK, image_id={id}"),
-                        Err(e) => log::error!("[img] TransmitData decode FAILED: {e}"),
+                        Ok(id) => {
+                            log::debug!("[img] TransmitData decode OK, image_id={id}");
+                            if implicit { return None; }
+                            return Some(kitty::kitty_response(
+                                Some(id), None, "OK",
+                            ));
+                        }
+                        Err(e) => {
+                            log::error!("[img] TransmitData decode FAILED: {e}");
+                            if implicit { return None; }
+                            return Some(kitty::kitty_response(
+                                resp_id, resp_num,
+                                &format!("ERROR:{e}"),
+                            ));
+                        }
                     }
                 } else {
                     let _ = kitty::decode_image_data(transmit, &mut self.image_cache);
                 }
+                None
             }
             KittyImage::TransmitDataAndDisplay { transmit, placement, .. } => {
                 log::debug!(
-                    "[img] TransmitDataAndDisplay: fmt={:?}, w={:?}, h={:?}, id={:?}, num={:?}",
+                    "[img] TransmitDataAndDisplay: fmt={:?}, w={:?}, h={:?}, id={:?}, num={:?}, virtual={}",
                     transmit.format, transmit.width, transmit.height,
                     transmit.image_id, transmit.image_number,
+                    placement.virtual_placement,
                 );
                 match kitty::decode_image_data(transmit, &mut self.image_cache) {
                     Ok(image_id) => {
@@ -1157,41 +1419,95 @@ impl Terminal {
                     }
                     Err(e) => log::error!("[img] decode FAILED: {e}"),
                 }
+                None
             }
             KittyImage::Display { image_id, image_number, placement, .. } => {
-                log::debug!("[img] Display: image_id={image_id:?}, num={image_number:?}");
+                log::debug!(
+                    "[img] Display: image_id={image_id:?}, num={image_number:?}, virtual={}",
+                    placement.virtual_placement,
+                );
                 self.kitty_place_image(image_id, image_number, placement);
+                None
             }
             KittyImage::Delete { what, .. } => {
                 log::debug!("[img] Delete");
                 self.handle_kitty_delete(what);
+                None
             }
             KittyImage::Query { transmit } => {
                 log::debug!(
                     "[img] Query: id={:?}, num={:?}",
                     transmit.image_id, transmit.image_number,
                 );
-                // Respond with OK (we support the protocol).
-                return Some(kitty::kitty_response(
+                // EINVAL: image ID required for query.
+                if transmit.image_id == Some(0) && transmit.image_number == Some(0) {
+                    return Some(kitty::kitty_response(
+                        transmit.image_id, transmit.image_number,
+                        "EINVAL: image ID required",
+                    ));
+                }
+                Some(kitty::kitty_response(
                     transmit.image_id,
                     transmit.image_number,
                     "OK",
-                ));
+                ))
             }
-            KittyImage::TransmitFrame { transmit, frame, .. } => {
+            KittyImage::TransmitFrame { transmit, frame, verbosity } => {
                 log::debug!("[img] TransmitFrame");
-                if let Err(e) = kitty::decode_image_frame(transmit, frame, &mut self.image_cache) {
-                    log::error!("[img] frame transmit FAILED: {e}");
+                let result = kitty::decode_image_frame(transmit, frame, &mut self.image_cache);
+                match &result {
+                    Ok(()) => {
+                        if verbosity != kitty::KittyImageVerbosity::Quiet {
+                            // No image_id readily available from frame result; respond generically.
+                            return Some(kitty::kitty_response(None, None, "OK"));
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("[img] frame transmit FAILED: {e}");
+                        if verbosity != kitty::KittyImageVerbosity::OnlyErrors {
+                            return Some(kitty::kitty_response(None, None, &format!("ERROR:{e}")));
+                        }
+                    }
                 }
+                None
             }
-            KittyImage::ComposeFrame { frame, .. } => {
+            KittyImage::ComposeFrame { frame, verbosity } => {
                 log::debug!("[img] ComposeFrame");
-                if let Err(e) = kitty::handle_compose_frame(frame, &mut self.image_cache) {
-                    log::error!("[img] compose frame FAILED: {e}");
+                let resp_id = frame.image_id;
+                let resp_num = frame.image_number;
+                let result = kitty::handle_compose_frame(frame, &mut self.image_cache);
+                match &result {
+                    Ok(()) => {
+                        if verbosity != kitty::KittyImageVerbosity::Quiet {
+                            return Some(kitty::kitty_response(
+                                resp_id, resp_num, "OK",
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("[img] compose frame FAILED: {e}");
+                        if verbosity != kitty::KittyImageVerbosity::OnlyErrors {
+                            return Some(kitty::kitty_response(
+                                resp_id, resp_num,
+                                &format!("ERROR:{e}"),
+                            ));
+                        }
+                    }
                 }
+                None
+            }
+            KittyImage::AnimationControl { control, verbosity } => {
+                log::debug!(
+                    "[img] AnimationControl: action={:?}, frame={:?}, gap={:?}",
+                    control.action, control.frame, control.gap_ms,
+                );
+                // Animation playback control is not yet supported; return error.
+                if verbosity != kitty::KittyImageVerbosity::OnlyErrors {
+                    return Some(kitty::kitty_response(None, None, "ERROR: animation control not implemented"));
+                }
+                None
             }
         }
-        None
     }
 
     fn kitty_place_image(
@@ -1203,10 +1519,49 @@ impl Terminal {
         let id = self.image_cache.assign_id(image_id, image_number);
         log::debug!(
             "[img] kitty_place_image: resolved_id={id}, image_id={image_id:?}, \
-             num={image_number:?}, cell_pixel={}x{}, do_not_move={}",
+             num={image_number:?}, virtual={}, cell_pixel={}x{}, do_not_move={}",
+            placement.virtual_placement,
             self.cell_pixel_width, self.cell_pixel_height,
             placement.do_not_move_cursor,
         );
+
+        // U=1 — virtual placement: store metadata for later rendering via
+        // Unicode placeholder characters.  No direct image is placed.
+        if placement.virtual_placement {
+            // EINVAL: virtual placement cannot refer to a parent.
+            if placement.parent_id.is_some_and(|p| p > 0) {
+                log::error!(
+                    "[img] EINVAL: virtual placement cannot refer to a parent (parent_id={})",
+                    placement.parent_id.unwrap(),
+                );
+                return;
+            }
+            let vp = VirtualPlacement {
+                image_id: id,
+                placement_id: placement.placement_id,
+                columns: placement.columns.unwrap_or(0),
+                rows: placement.rows.unwrap_or(0),
+                source_x: placement.x,
+                source_y: placement.y,
+                source_w: placement.w,
+                source_h: placement.h,
+                x_offset: placement.x_offset,
+                y_offset: placement.y_offset,
+                z_index: placement.z_index.unwrap_or(0),
+            };
+            log::debug!(
+                "[img] virtual placement stored: id={}, p={:?}, grid={}x{}",
+                vp.image_id, vp.placement_id, vp.columns, vp.rows,
+            );
+            self.virtual_placements.insert(
+                (vp.image_id, vp.placement_id),
+                vp,
+            );
+            // Virtual placements do not move the cursor.
+            return;
+        }
+
+        // Direct placement path (U=0 or absent).
         let data = match self.image_cache.get(id) {
             Some(d) => d.clone(),
             None => {
@@ -1230,6 +1585,10 @@ impl Terminal {
         let cols = self.term.columns();
         let rows = self.term.screen_lines();
 
+        // X/Y (unsigned) are the primary cell padding offsets.
+        // H/V (signed) are for relative placements (P/Q parent);
+        // since parent placement is not yet supported, H/V are stored
+        // but do not affect the placement coordinates.
         let params = PlacementParams {
             columns: placement.columns.map(|c| c as usize),
             rows: placement.rows.map(|r| r as usize),
@@ -1524,6 +1883,7 @@ impl Terminal {
         match what {
             kitty::KittyImageDelete::All { delete } => {
                 self.image_placements.clear();
+                self.virtual_placements.clear();
                 if delete {
                     // Collect all hashes before clearing for atlas cleanup.
                     let hashes: Vec<[u8; 32]> = self.image_cache.all_hashes();
@@ -1536,6 +1896,9 @@ impl Terminal {
                     if v.image_id != Some(image_id) { return true; }
                     placement_id.map_or(false, |p| v.placement_id != Some(p))
                 });
+                self.virtual_placements.retain(|(id, pid), _| {
+                    *id != image_id || placement_id.is_some_and(|p| *pid != Some(p))
+                });
                 if delete {
                     if let Some(hash) = self.image_cache.remove(image_id) {
                         self.pending_image_deallocations.push(hash);
@@ -1544,9 +1907,6 @@ impl Terminal {
             }
             kitty::KittyImageDelete::ByImageNumber { image_number: _, placement_id, delete } => {
                 // Look up the image_id from the number mapping.
-                // We don't store number_to_id in ImageCache publicly, so for now
-                // scan placements by image data hash (approximate).
-                // TODO: store number_to_id mapping publicly.
                 let ids: Vec<u32> = self.image_placements.iter()
                     .filter(|(_, v)| v.placement_id == placement_id)
                     .map(|(_, v)| v.image_id)
@@ -1554,6 +1914,9 @@ impl Terminal {
                     .collect();
                 for id in ids {
                     self.image_placements.retain(|_, v| v.image_id != Some(id));
+                    self.virtual_placements.retain(|(vid, pid), _| {
+                        *vid != id || placement_id.is_some_and(|p| *pid != Some(p))
+                    });
                     if delete {
                         self.image_cache.remove(id);
                     }
@@ -1592,6 +1955,72 @@ impl Terminal {
             }
             kitty::KittyImageDelete::DeleteZ { z, delete: _ } => {
                 self.image_placements.retain(|_, v| v.z_index != z);
+            }
+            kitty::KittyImageDelete::DeleteAnimationFrames { delete } => {
+                // For each image in the cache, if it is animated (AnimRgba8),
+                // convert it to single-frame Rgba8 (keep first frame only).
+                // Then remove all placements for that image.
+                let all_ids: Vec<u32> = self.image_cache.all_image_ids();
+                for id in all_ids {
+                    let dominated = self.image_cache.get(id).map(|d| {
+                        let guard = d.data();
+                        matches!(&*guard, zenterm_core::image::ImageDataType::AnimRgba8 { .. })
+                    }).unwrap_or(false);
+
+                    if dominated {
+                        // Convert AnimRgba8 → Rgba8 (keep first frame).
+                        if let Some(d) = self.image_cache.get(id) {
+                            let mut guard = d.data();
+                            if let zenterm_core::image::ImageDataType::AnimRgba8 {
+                                ref width, ref height, ref frames, ..
+                            } = *guard {
+                                if let Some(first_frame) = frames.first() {
+                                    let new_data = zenterm_core::image::ImageDataType::new_rgba8(
+                                        first_frame.clone(), *width, *height,
+                                    );
+                                    *guard = new_data;
+                                }
+                            }
+                        }
+                        // Remove all placements for this image since animation changed.
+                        self.image_placements.retain(|_, v| v.image_id != Some(id));
+                        self.virtual_placements.retain(|(vid, _), _| *vid != id);
+                    }
+                    if delete {
+                        if let Some(hash) = self.image_cache.remove(id) {
+                            self.pending_image_deallocations.push(hash);
+                        }
+                        self.image_placements.retain(|_, v| v.image_id != Some(id));
+                        self.virtual_placements.retain(|(vid, _), _| *vid != id);
+                    }
+                }
+            }
+            kitty::KittyImageDelete::DeleteAtCellZ { x, y, z, delete } => {
+                let display_offset = self.term.grid().display_offset() as i32;
+                let del_grid_line = y as i32 - display_offset;
+                self.image_placements.retain(|&(line, col), v| {
+                    !(line == del_grid_line && col == x as usize && v.z_index == z)
+                });
+                if delete {
+                    log::warn!("kitty delete DeleteAtCellZ with delete=true: image_id unknown");
+                }
+            }
+            kitty::KittyImageDelete::DeleteRange { first, last, delete } => {
+                // Delete all placements whose image_id is in [first, last].
+                let ids_to_delete: Vec<u32> = self.image_placements.iter()
+                    .filter(|(_, v)| {
+                        v.image_id.map_or(false, |id| id >= first && id <= last)
+                    })
+                    .map(|(_, v)| v.image_id.unwrap())
+                    .collect();
+                for id in ids_to_delete {
+                    self.image_placements.retain(|_, v| v.image_id != Some(id));
+                    if delete {
+                        if let Some(hash) = self.image_cache.remove(id) {
+                            self.pending_image_deallocations.push(hash);
+                        }
+                    }
+                }
             }
         }
         self.damage.mark_all();
@@ -1670,5 +2099,6 @@ fn kitty_cmd_variant_name(cmd: &KittyImage) -> &'static str {
         KittyImage::Query { .. } => "Query",
         KittyImage::TransmitFrame { .. } => "TransmitFrame",
         KittyImage::ComposeFrame { .. } => "ComposeFrame",
+        KittyImage::AnimationControl { .. } => "AnimationControl",
     }
 }
