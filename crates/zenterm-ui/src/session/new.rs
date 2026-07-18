@@ -74,6 +74,8 @@ impl TerminalSession {
             blink_interval,
             pty_exited: false,
             exit_effect_sent: false,
+            highlight_cursor_line: false,
+            badge_format: None,
             default_bg,
             cached_bg: Vec::new(),
             cached_glyph_per_atlas: Vec::new(),

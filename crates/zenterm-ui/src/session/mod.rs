@@ -19,6 +19,7 @@
 //! * [`shaping`] — ligature run detection and text extraction
 //! * [`osc7`] — OSC 7 working-directory URL parsing
 //! * [`effects`] — `SessionEffect` enum
+//! * [`badge`] — iTerm2-style badge template renderer
 //!
 //! # Rendering contract
 //!
@@ -44,6 +45,7 @@
 //! [`TerminalSession::cwd`]; OSC 0/2 update the title used by the
 //! dock tab and (legacy path) the window title.
 
+mod badge;
 mod effects;
 mod mouse;
 mod new;
@@ -53,6 +55,8 @@ mod reinit;
 mod render;
 mod shaping;
 mod types;
+
+pub use badge::render_badge;
 
 pub use effects::SessionEffect;
 pub use types::{SessionId, TerminalSession};

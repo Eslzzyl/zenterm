@@ -10,7 +10,11 @@
 
 use memchr::memchr2;
 use std::collections::HashMap;
-use zenterm_core::{KittyNotification, KittyOccasion, KittyUrgency, Progress, SemanticClick, SemanticPrompt, SemanticPromptKind};
+use zenterm_core::{
+    ITermDimension, ITermFileData, ITermProprietary, ITermUnicodeVersionOp,
+    KittyNotification, KittyOccasion, KittyUrgency, Progress, SemanticClick,
+    SemanticPrompt, SemanticPromptKind,
+};
 
 /// A single OSC match found in the byte stream.
 #[derive(Debug, Clone)]
@@ -544,6 +548,12 @@ fn base64_decode(input: &[u8]) -> Result<Vec<u8>, base64::DecodeError> {
     base64::engine::general_purpose::STANDARD.decode(input)
 }
 
+/// Public base64 encode for use by terminal.rs responses.
+pub(crate) fn base64_encode_for_response(input: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(input)
+}
+
 #[cfg(test)]
 fn base64_encode(input: &[u8]) -> String {
     use base64::Engine;
@@ -707,6 +717,257 @@ pub(crate) fn parse_osc133(payload: &str) -> Option<SemanticPrompt> {
             None
         }
     }
+}
+
+// ─── OSC-1337 / iTerm2 proprietary ────────────────────────────────
+
+/// Parse an OSC 1337 (iTerm2 proprietary) payload.
+///
+/// The payload is the text between `1337;` and the terminator.
+///
+/// Reference: wezterm/wezterm-escape-parser/src/osc.rs `ITermProprietary::parse`
+/// Spec: <https://iterm2.com/documentation-escape-codes.html>
+pub(crate) fn parse_iterm_proprietary(payload: &str) -> Option<ITermProprietary> {
+    let parts: Vec<&str> = payload.split(';').collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let param = parts[0];
+    let mut iter = param.splitn(2, '=');
+    let keyword = iter.next()?;
+    let p1 = iter.next();
+
+    // ── Macros matching WezTerm's single!/one_str!/const_arg! ──────
+    macro_rules! single {
+        ($variant:ident, $text:expr) => {
+            if parts.len() == 1 && keyword == $text && p1.is_none() {
+                return Some(ITermProprietary::$variant);
+            }
+        };
+    }
+    macro_rules! one_str {
+        ($variant:ident, $text:expr) => {
+            if parts.len() == 1 && keyword == $text {
+                if let Some(v) = p1 {
+                    return Some(ITermProprietary::$variant(v.to_string()));
+                }
+            }
+        };
+    }
+    macro_rules! const_arg {
+        ($variant:ident, $text:expr, $value:expr, $res:expr) => {
+            if parts.len() == 1 && keyword == $text {
+                if let Some(v) = p1 {
+                    if v == $value {
+                        return Some(ITermProprietary::$variant($res));
+                    }
+                }
+            }
+        };
+    }
+
+    // ── Simple keyword-only commands ───────────────────────────────
+    single!(SetMark, "SetMark");
+    single!(StealFocus, "StealFocus");
+    single!(ClearScrollback, "ClearScrollback");
+    // CopyToClipboard / EndCopy: explicitly skipped per user agreement.
+
+    // ── Boolean toggle ─────────────────────────────────────────────
+    const_arg!(HighlightCursorLine, "HighlightCursorLine", "yes", true);
+    const_arg!(HighlightCursorLine, "HighlightCursorLine", "no", false);
+
+    // ── Single-string-value commands ───────────────────────────────
+    one_str!(CurrentDir, "CurrentDir");
+    one_str!(SetProfile, "SetProfile");
+
+    // ── ReportCellSize: no `=` → RequestCellSize ───────────────────
+    if parts.len() == 1 && keyword == "ReportCellSize" && p1.is_none() {
+        return Some(ITermProprietary::RequestCellSize);
+    }
+
+    // ── ReportCellSize=<h>;<w>[;<scale>] (response) ────────────
+    if keyword == "ReportCellSize" && p1.is_some() && parts.len() >= 2 {
+        let h = p1?.parse::<f32>().ok()?;
+        let w = parts[1].parse::<f32>().ok()?;
+        let scale = parts.get(2).and_then(|s| s.parse::<f32>().ok());
+        return Some(ITermProprietary::ReportCellSize {
+            height_pixels: h,
+            width_pixels: w,
+            scale,
+        });
+    }
+
+    let p1_empty = match p1 {
+        Some(v) if v.is_empty() => true,
+        None => true,
+        _ => false,
+    };
+
+    // ── Copy=;base64data ───────────────────────────────────────────
+    if parts.len() >= 2 && keyword == "Copy" && p1_empty {
+        let raw = base64_decode(parts[1].as_bytes()).ok()?;
+        let text = String::from_utf8(raw).ok()?;
+        return Some(ITermProprietary::Copy(text));
+    }
+
+    // ── SetBadgeFormat=;base64data ─────────────────────────────────
+    if parts.len() >= 2 && keyword == "SetBadgeFormat" && p1_empty {
+        let raw = base64_decode(parts[1].as_bytes()).ok()?;
+        let text = String::from_utf8(raw).ok()?;
+        return Some(ITermProprietary::SetBadgeFormat(text));
+    }
+
+    // ── ReportVariable=base64name ──────────────────────────────────
+    if parts.len() == 1 && keyword == "ReportVariable" {
+        if let Some(v) = p1 {
+            let name = String::from_utf8(base64_decode(v.as_bytes()).ok()?).ok()?;
+            return Some(ITermProprietary::ReportVariable(name));
+        }
+    }
+
+    // ── SetUserVar=name=base64value ────────────────────────────────
+    if parts.len() == 1 && keyword == "SetUserVar" {
+        if let Some(v) = p1 {
+            let mut inner = v.splitn(2, '=');
+            let name = inner.next()?;
+            let b64_value = inner.next()?;
+            let value = String::from_utf8(base64_decode(b64_value.as_bytes()).ok()?).ok()?;
+            return Some(ITermProprietary::SetUserVar {
+                name: name.to_string(),
+                value,
+            });
+        }
+    }
+
+    // ── UnicodeVersion=N / push [label] / pop [label] ─────────────
+    if parts.len() == 1 && keyword == "UnicodeVersion" {
+        if let Some(v) = p1 {
+            let mut inner = v.splitn(2, ' ');
+            let op = inner.next();
+            let label = inner.next().map(String::from);
+            match op {
+                Some("push") => {
+                    return Some(ITermProprietary::UnicodeVersion(
+                        ITermUnicodeVersionOp::Push(label),
+                    ));
+                }
+                Some("pop") => {
+                    return Some(ITermProprietary::UnicodeVersion(
+                        ITermUnicodeVersionOp::Pop(label),
+                    ));
+                }
+                _ => {
+                    if let Ok(n) = v.parse::<u8>() {
+                        return Some(ITermProprietary::UnicodeVersion(
+                            ITermUnicodeVersionOp::Set(n),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // ── File=...:base64data ────────────────────────────────────────
+    if keyword == "File" {
+        return parse_iterm_file(&parts);
+    }
+
+    None
+}
+
+/// Parse the `File` sub-protocol payload parts into `ITermProprietary::File`.
+///
+/// `parts` is the payload split by `;`.  The first part begins with `File=…`.
+/// Subsequent parts contain key=value metadata.  The final part includes a
+/// `:` that separates the trailing argument from the base64-encoded data.
+///
+/// Reference: wezterm `ITermFileData::parse`
+fn parse_iterm_file(parts: &[&str]) -> Option<ITermProprietary> {
+    use std::collections::HashMap;
+    let mut params = HashMap::new();
+    let mut data = None;
+    let last = parts.len() - 1;
+
+    for (idx, s) in parts.iter().enumerate() {
+        let param = if idx == 0 {
+            // First element: strip "File=" prefix.
+            if s.len() >= 5 { &s[5..] } else { return None; }
+        } else {
+            s
+        };
+
+        if idx == last {
+            // Last element: split on `:` to extract base64 data.
+            let colon = param.find(':')?;
+            data = Some(base64_decode(param[colon + 1..].as_bytes()).ok()?);
+            let args = &param[..colon];
+            if !args.is_empty() {
+                insert_file_param(args, &mut params);
+            }
+        } else {
+            insert_file_param(param, &mut params);
+        }
+    }
+
+    let name = params
+        .get("name")
+        .and_then(|s| base64_decode(s.as_bytes()).ok())
+        .and_then(|b| String::from_utf8(b).ok());
+    let size = params.get("size").and_then(|s| s.parse().ok());
+    let width = params
+        .get("width")
+        .and_then(|s| parse_iterm_dimension(s))
+        .unwrap_or(ITermDimension::Automatic);
+    let height = params
+        .get("height")
+        .and_then(|s| parse_iterm_dimension(s))
+        .unwrap_or(ITermDimension::Automatic);
+    let preserve_aspect_ratio = params
+        .get("preserveAspectRatio")
+        .map(|s| s != "0")
+        .unwrap_or(true);
+    let inline_val = params.get("inline").map(|s| s != "0").unwrap_or(false);
+    let do_not_move_cursor = params
+        .get("doNotMoveCursor")
+        .map(|s| s != "0")
+        .unwrap_or(false);
+
+    Some(ITermProprietary::File(ITermFileData {
+        name,
+        size,
+        width,
+        height,
+        preserve_aspect_ratio,
+        inline: inline_val,
+        do_not_move_cursor,
+        data: data?,
+    }))
+}
+
+/// Insert a `key=value` pair from a file parameter string into `params`.
+fn insert_file_param(s: &str, params: &mut std::collections::HashMap<String, String>) {
+    if let Some(eq) = s.find('=') {
+        params.insert(s[..eq].to_string(), s[eq + 1..].to_string());
+    }
+}
+
+/// Parse an iTerm2 dimension string (e.g. `"auto"`, `"10"`, `"100px"`, `"50%"`, `"8c"`).
+fn parse_iterm_dimension(s: &str) -> Option<ITermDimension> {
+    if s == "auto" {
+        return Some(ITermDimension::Automatic);
+    }
+    if let Some(rest) = s.strip_suffix("px") {
+        return rest.parse::<isize>().ok().map(ITermDimension::Pixels);
+    }
+    if let Some(rest) = s.strip_suffix('%') {
+        return rest.parse::<isize>().ok().map(ITermDimension::Percent);
+    }
+    if let Some(rest) = s.strip_suffix('c') {
+        return rest.parse::<isize>().ok().map(ITermDimension::Cells);
+    }
+    // Plain number → cells (WezTerm behaviour).
+    s.parse::<isize>().ok().map(ITermDimension::Cells)
 }
 
 #[cfg(test)]
@@ -1498,5 +1759,404 @@ mod tests {
         assert_eq!(n.app_name.as_deref(), Some("myapp"));
         assert_eq!(n.sound.as_deref(), Some("silent"));
         assert!(n.icon_names.contains(&"dialog-warning".to_string()));
+    }
+
+    // ── OSC 1337 / iTerm2 proprietary ─────────────────────────────────
+
+    #[test]
+    fn iterm_set_mark() {
+        let result = parse_iterm_proprietary("SetMark");
+        assert_eq!(result, Some(ITermProprietary::SetMark));
+    }
+
+    #[test]
+    fn iterm_steal_focus() {
+        let result = parse_iterm_proprietary("StealFocus");
+        assert_eq!(result, Some(ITermProprietary::StealFocus));
+    }
+
+    #[test]
+    fn iterm_clear_scrollback() {
+        let result = parse_iterm_proprietary("ClearScrollback");
+        assert_eq!(result, Some(ITermProprietary::ClearScrollback));
+    }
+
+    #[test]
+    fn iterm_current_dir() {
+        let result = parse_iterm_proprietary("CurrentDir=/Users/me/code");
+        assert_eq!(
+            result,
+            Some(ITermProprietary::CurrentDir("/Users/me/code".into()))
+        );
+    }
+
+    #[test]
+    fn iterm_current_dir_with_equals() {
+        // Paths may contain = (unlikely but possible).
+        let result = parse_iterm_proprietary("CurrentDir=/path/with=char");
+        assert_eq!(
+            result,
+            Some(ITermProprietary::CurrentDir("/path/with=char".into()))
+        );
+    }
+
+    #[test]
+    fn iterm_set_profile() {
+        let result = parse_iterm_proprietary("SetProfile=myprofile");
+        assert_eq!(
+            result,
+            Some(ITermProprietary::SetProfile("myprofile".into()))
+        );
+    }
+
+    #[test]
+    fn iterm_highlight_cursor_line_yes() {
+        let result = parse_iterm_proprietary("HighlightCursorLine=yes");
+        assert_eq!(
+            result,
+            Some(ITermProprietary::HighlightCursorLine(true))
+        );
+    }
+
+    #[test]
+    fn iterm_highlight_cursor_line_no() {
+        let result = parse_iterm_proprietary("HighlightCursorLine=no");
+        assert_eq!(
+            result,
+            Some(ITermProprietary::HighlightCursorLine(false))
+        );
+    }
+
+    #[test]
+    fn iterm_request_cell_size() {
+        let result = parse_iterm_proprietary("ReportCellSize");
+        assert_eq!(result, Some(ITermProprietary::RequestCellSize));
+    }
+
+    #[test]
+    fn iterm_report_cell_size_response() {
+        let result = parse_iterm_proprietary("ReportCellSize=12.0;15.5");
+        assert_eq!(
+            result,
+            Some(ITermProprietary::ReportCellSize {
+                height_pixels: 12.0,
+                width_pixels: 15.5,
+                scale: None,
+            })
+        );
+    }
+
+    #[test]
+    fn iterm_report_cell_size_response_with_scale() {
+        let result = parse_iterm_proprietary("ReportCellSize=12.0;15.5;2.0");
+        assert_eq!(
+            result,
+            Some(ITermProprietary::ReportCellSize {
+                height_pixels: 12.0,
+                width_pixels: 15.5,
+                scale: Some(2.0),
+            })
+        );
+    }
+
+    #[test]
+    fn iterm_copy_base64() {
+        let result = parse_iterm_proprietary("Copy=;aGVsbG8=");
+        assert_eq!(result, Some(ITermProprietary::Copy("hello".into())));
+    }
+
+    #[test]
+    fn iterm_set_badge_format() {
+        let result = parse_iterm_proprietary("SetBadgeFormat=;aGVsbG8=");
+        assert_eq!(
+            result,
+            Some(ITermProprietary::SetBadgeFormat("hello".into()))
+        );
+    }
+
+    #[test]
+    fn iterm_report_variable() {
+        let name_b64 = base64_encode(b"session.name");
+        let result = parse_iterm_proprietary(&format!("ReportVariable={name_b64}"));
+        assert_eq!(
+            result,
+            Some(ITermProprietary::ReportVariable("session.name".into()))
+        );
+    }
+
+    #[test]
+    fn iterm_set_user_var() {
+        let val_b64 = base64_encode(b"hello");
+        let result = parse_iterm_proprietary(&format!("SetUserVar=foo={val_b64}"));
+        assert_eq!(
+            result,
+            Some(ITermProprietary::SetUserVar {
+                name: "foo".into(),
+                value: "hello".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn iterm_unicode_version_set() {
+        let result = parse_iterm_proprietary("UnicodeVersion=9");
+        assert_eq!(
+            result,
+            Some(ITermProprietary::UnicodeVersion(
+                ITermUnicodeVersionOp::Set(9)
+            ))
+        );
+    }
+
+    #[test]
+    fn iterm_unicode_version_push() {
+        let result = parse_iterm_proprietary("UnicodeVersion=push");
+        assert_eq!(
+            result,
+            Some(ITermProprietary::UnicodeVersion(
+                ITermUnicodeVersionOp::Push(None)
+            ))
+        );
+    }
+
+    #[test]
+    fn iterm_unicode_version_push_with_label() {
+        let result = parse_iterm_proprietary("UnicodeVersion=push mylabel");
+        assert_eq!(
+            result,
+            Some(ITermProprietary::UnicodeVersion(
+                ITermUnicodeVersionOp::Push(Some("mylabel".into()))
+            ))
+        );
+    }
+
+    #[test]
+    fn iterm_unicode_version_pop() {
+        let result = parse_iterm_proprietary("UnicodeVersion=pop");
+        assert_eq!(
+            result,
+            Some(ITermProprietary::UnicodeVersion(
+                ITermUnicodeVersionOp::Pop(None)
+            ))
+        );
+    }
+
+    #[test]
+    fn iterm_file_no_args() {
+        // ESC ] 1337 ; File = : aGVsbG8 = ST
+        let result = parse_iterm_proprietary("File=:aGVsbG8=");
+        let expected = ITermProprietary::File(ITermFileData {
+            name: None,
+            size: None,
+            width: ITermDimension::Automatic,
+            height: ITermDimension::Automatic,
+            preserve_aspect_ratio: true,
+            inline: false,
+            do_not_move_cursor: false,
+            data: b"hello".to_vec(),
+        });
+        assert_eq!(result, Some(expected));
+    }
+
+    #[test]
+    fn iterm_file_with_name() {
+        // ESC ] 1337 ; File = name = bXluYW1l : aGVsbG8 = ST
+        let result = parse_iterm_proprietary("File=name=bXluYW1l:aGVsbG8=");
+        let expected = ITermProprietary::File(ITermFileData {
+            name: Some("myname".into()),
+            size: None,
+            width: ITermDimension::Automatic,
+            height: ITermDimension::Automatic,
+            preserve_aspect_ratio: true,
+            inline: false,
+            do_not_move_cursor: false,
+            data: b"hello".to_vec(),
+        });
+        assert_eq!(result, Some(expected));
+    }
+
+    #[test]
+    fn iterm_file_with_size_and_name() {
+        // ESC ] 1337 ; File = size = 123 ; name = bXluYW1l : aGVsbG8 = ST
+        let result = parse_iterm_proprietary("File=size=123;name=bXluYW1l:aGVsbG8=");
+        let expected = ITermProprietary::File(ITermFileData {
+            name: Some("myname".into()),
+            size: Some(123),
+            width: ITermDimension::Automatic,
+            height: ITermDimension::Automatic,
+            preserve_aspect_ratio: true,
+            inline: false,
+            do_not_move_cursor: false,
+            data: b"hello".to_vec(),
+        });
+        assert_eq!(result, Some(expected));
+    }
+
+    #[test]
+    fn iterm_file_inline() {
+        // ESC ] 1337 ; File = inline = 1 : aGVsbG8 = ST
+        let result = parse_iterm_proprietary("File=inline=1:aGVsbG8=");
+        let expected = ITermProprietary::File(ITermFileData {
+            name: None,
+            size: None,
+            width: ITermDimension::Automatic,
+            height: ITermDimension::Automatic,
+            preserve_aspect_ratio: true,
+            inline: true,
+            do_not_move_cursor: false,
+            data: b"hello".to_vec(),
+        });
+        assert_eq!(result, Some(expected));
+    }
+
+    #[test]
+    fn iterm_file_inline_with_dimensions() {
+        // ESC ] 1337 ; File = inline = 1 ; width = 100 px ; height = 50% : aGVsbG8 = ST
+        let result = parse_iterm_proprietary(
+            "File=inline=1;width=100px;height=50%:aGVsbG8=",
+        );
+        let expected = ITermProprietary::File(ITermFileData {
+            name: None,
+            size: None,
+            width: ITermDimension::Pixels(100),
+            height: ITermDimension::Percent(50),
+            preserve_aspect_ratio: true,
+            inline: true,
+            do_not_move_cursor: false,
+            data: b"hello".to_vec(),
+        });
+        assert_eq!(result, Some(expected));
+    }
+
+    #[test]
+    fn iterm_file_inline_with_preserve_aspect_ratio_disabled() {
+        let result = parse_iterm_proprietary("File=inline=1;preserveAspectRatio=0:aGVsbG8=");
+        let expected = ITermProprietary::File(ITermFileData {
+            name: None,
+            size: None,
+            width: ITermDimension::Automatic,
+            height: ITermDimension::Automatic,
+            preserve_aspect_ratio: false,
+            inline: true,
+            do_not_move_cursor: false,
+            data: b"hello".to_vec(),
+        });
+        assert_eq!(result, Some(expected));
+    }
+
+    #[test]
+    fn iterm_file_do_not_move_cursor() {
+        let result = parse_iterm_proprietary("File=inline=1;doNotMoveCursor=1:aGVsbG8=");
+        let expected = ITermProprietary::File(ITermFileData {
+            name: None,
+            size: None,
+            width: ITermDimension::Automatic,
+            height: ITermDimension::Automatic,
+            preserve_aspect_ratio: true,
+            inline: true,
+            do_not_move_cursor: true,
+            data: b"hello".to_vec(),
+        });
+        assert_eq!(result, Some(expected));
+    }
+
+    #[test]
+    fn iterm_copy_to_clipboard_skipped() {
+        // CopyToClipboard and EndCopy are explicitly skipped per user agreement.
+        let result = parse_iterm_proprietary("CopyToClipboard=rule");
+        assert_eq!(result, None);
+        let result = parse_iterm_proprietary("EndCopy");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn iterm_unknown_command_returns_none() {
+        let result = parse_iterm_proprietary("NonExistentCommand");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn iterm_file_missing_data_returns_none() {
+        // Without any `:`, the data part is missing → None.
+        let result = parse_iterm_proprietary("File=name=test");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn iterm_dimension_auto() {
+        assert_eq!(parse_iterm_dimension("auto"), Some(ITermDimension::Automatic));
+    }
+
+    #[test]
+    fn iterm_dimension_pixels() {
+        assert_eq!(parse_iterm_dimension("100px"), Some(ITermDimension::Pixels(100)));
+    }
+
+    #[test]
+    fn iterm_dimension_percent() {
+        assert_eq!(parse_iterm_dimension("50%"), Some(ITermDimension::Percent(50)));
+    }
+
+    #[test]
+    fn iterm_dimension_cells() {
+        assert_eq!(parse_iterm_dimension("8c"), Some(ITermDimension::Cells(8)));
+    }
+
+    #[test]
+    fn iterm_dimension_plain_number() {
+        assert_eq!(parse_iterm_dimension("10"), Some(ITermDimension::Cells(10)));
+    }
+
+    #[test]
+    fn iterm_dimension_invalid() {
+        assert_eq!(parse_iterm_dimension("invalid"), None);
+    }
+
+    #[test]
+    fn iterm_scan_oscs_dispatches_1337() {
+        // Verify that scan_oscs correctly captures OSC 1337 sequences.
+        let bytes = b"\x1b]1337;SetMark\x07";
+        let oscs = scan_oscs(bytes);
+        assert_eq!(oscs.len(), 1);
+        assert_eq!(oscs[0].number, 1337);
+        assert_eq!(oscs[0].payload, "SetMark");
+    }
+
+    #[test]
+    fn iterm_scan_oscs_1337_with_payload() {
+        let bytes = b"\x1b]1337;CurrentDir=/home/user\x07";
+        let oscs = scan_oscs(bytes);
+        assert_eq!(oscs.len(), 1);
+        assert_eq!(oscs[0].number, 1337);
+        assert_eq!(oscs[0].payload, "CurrentDir=/home/user");
+    }
+
+    #[test]
+    fn iterm_scan_oscs_1337_file() {
+        let bytes = b"\x1b]1337;File=name=bXluYW1l:aGVsbG8=\x07";
+        let oscs = scan_oscs(bytes);
+        assert_eq!(oscs.len(), 1);
+        assert_eq!(oscs[0].number, 1337);
+        assert_eq!(oscs[0].payload, "File=name=bXluYW1l:aGVsbG8=");
+    }
+
+    #[test]
+    fn iterm_scan_oscs_1337_with_st_terminator() {
+        let bytes = b"\x1b]1337;ClearScrollback\x1b\\";
+        let oscs = scan_oscs(bytes);
+        assert_eq!(oscs.len(), 1);
+        assert_eq!(oscs[0].number, 1337);
+        assert_eq!(oscs[0].payload, "ClearScrollback");
+    }
+
+    #[test]
+    fn iterm_scan_oscs_1337_among_other_oscs() {
+        let bytes = b"\x1b]7;file:///home\x07\x1b]1337;StealFocus\x07\x1b]9;hello\x07";
+        let oscs = scan_oscs(bytes);
+        assert_eq!(oscs.len(), 3);
+        assert_eq!(oscs[0].number, 7);
+        assert_eq!(oscs[1].number, 1337);
+        assert_eq!(oscs[1].payload, "StealFocus");
+        assert_eq!(oscs[2].number, 9);
     }
 }

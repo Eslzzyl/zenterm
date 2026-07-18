@@ -102,6 +102,12 @@ pub struct TerminalSession {
     /// this session.  Guards against repeated emissions across frames.
     pub exit_effect_sent: bool,
 
+    /// Cursor line highlight (OSC 1337 HighlightCursorLine).
+    pub highlight_cursor_line: bool,
+    /// Badge format template (OSC 1337 SetBadgeFormat).
+    /// `None` = no badge; `Some(template)` = renders the badge.
+    pub badge_format: Option<String>,
+
     // ── IME preedit (composition) text ────────────────────────────
     //
     // When the user is composing text with an IME (e.g. Chinese pinyin),

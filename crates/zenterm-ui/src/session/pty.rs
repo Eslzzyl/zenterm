@@ -321,6 +321,63 @@ impl TerminalSession {
             }
         }
 
+        // ── OSC 1337 (iTerm2 proprietary) actions ───────────────────
+        // Consume navigation marks first (stored directly in terminal layer).
+        let marks = self.terminal.take_marks();
+        for (col, line) in &marks {
+            log::info!("session: mark placed at ({col}, {line})");
+        }
+
+        if let Some(action) = self.terminal.take_iterm_action() {
+            log::debug!("session: OSC 1337 action: {action:?}");
+            match action {
+                zenterm_core::ITermProprietary::StealFocus => {
+                    effects.push(SessionEffect::StealFocus);
+                }
+                zenterm_core::ITermProprietary::SetProfile(name) => {
+                    // zenterm does not have a named-profile system yet.
+                    log::info!("session: profile change requested: {name}");
+                }
+                zenterm_core::ITermProprietary::HighlightCursorLine(enabled) => {
+                    self.highlight_cursor_line = enabled;
+                }
+                zenterm_core::ITermProprietary::SetBadgeFormat(fmt) => {
+                    self.badge_format = Some(fmt);
+                }
+                zenterm_core::ITermProprietary::ReportVariable(name) => {
+                    // The terminal layer already handles lookup and response.
+                    log::debug!("session: report variable: {name}");
+                }
+                zenterm_core::ITermProprietary::File(file) => {
+                    // File download: sanitise the filename to prevent path traversal.
+                    let raw_name = file
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| "iterm2_download".to_string());
+                    // Strip any directory components — keep only the filename.
+                    let fname = std::path::Path::new(&raw_name)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("iterm2_download")
+                        .to_string();
+                    let path = std::path::PathBuf::from(&fname);
+                    log::info!(
+                        "session: saving {} byte file from OSC 1337 File to {}",
+                        file.data.len(),
+                        path.display(),
+                    );
+                    if let Err(e) = std::fs::write(&path, &file.data) {
+                        log::error!("session: failed to save downloaded file: {e}");
+                    }
+                }
+                _ => {
+                    // All other variants are handled directly in the
+                    // terminal layer (ClearScrollback, CurrentDir, Copy,
+                    // SetUserVar, RequestCellSize, UnicodeVersion).
+                }
+            }
+        }
+
         let _ = egui_ctx; // kept for future per-session inputs
         effects
     }

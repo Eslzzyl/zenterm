@@ -275,6 +275,41 @@ impl ZentermApp {
                         session.render_resize_overlay(ui, rect);
                     }
                 }
+
+                // ── Badge overlay (OSC 1337 SetBadgeFormat) ────────────
+                // Renders a large text label in the top-right corner of
+                // each session's viewport.
+                for (_, session) in self.sessions.iter() {
+                    if let Some(ref template) = session.badge_format {
+                        let text = crate::session::render_badge(
+                            template, session,
+                        );
+                        if !text.is_empty() {
+                            let ppp = ui.ctx().pixels_per_point();
+                            let vp_rect = egui::Rect::from_min_size(
+                                egui::pos2(
+                                    session.last_vp_origin_px[0] / ppp,
+                                    session.last_vp_origin_px[1] / ppp,
+                                ),
+                                egui::vec2(
+                                    session.last_vp_size_px[0] / ppp,
+                                    session.last_vp_size_px[1] / ppp,
+                                ),
+                            );
+                            let font_size = (session.cell_height * 2.0).max(14.0);
+                            ui.painter().text(
+                                egui::pos2(
+                                    vp_rect.right() - 8.0,
+                                    vp_rect.top() + 8.0,
+                                ),
+                                egui::Align2::RIGHT_TOP,
+                                &text,
+                                egui::FontId::proportional(font_size),
+                                egui::Color32::from_gray(180),
+                            );
+                        }
+                    }
+                }
             });
 
         // ── Apply pending actions collected by the viewer ─────────

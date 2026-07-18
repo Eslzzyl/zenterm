@@ -7,4 +7,6 @@ pub enum SessionEffect {
     WindowTitle(String),
     /// The session requested the application close (terminal escape).
     CloseWindow,
+    /// The session requested window focus (OSC 1337 StealFocus).
+    StealFocus,
 }

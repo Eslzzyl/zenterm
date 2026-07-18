@@ -109,6 +109,10 @@ impl ZentermApp {
                     SessionEffect::CloseWindow => {
                         exit_ids.push(id);
                     }
+                    SessionEffect::StealFocus => {
+                        log::debug!("app: StealFocus requested by session {id:?}");
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
                 }
             }
         }

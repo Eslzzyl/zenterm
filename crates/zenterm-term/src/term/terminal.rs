@@ -11,6 +11,7 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Direction, Line, Point};
 
 use zenterm_core::image::ImageCell;
+use zenterm_core::image::{ImageData, ImageDataType};
 
 use crate::image::kitty::{self, KittyAccumulator, KittyImage};
 use crate::image::sixel::{self, SixelBuilder};
@@ -26,14 +27,18 @@ use zenterm_core::color::Rgba;
 use zenterm_core::damage::DamageSet;
 use zenterm_core::position::TermPos;
 use zenterm_core::size::TermSize;
-use zenterm_core::Progress;
-use zenterm_core::SemanticPrompt;
-use zenterm_core::KittyNotification;
+use zenterm_core::{
+    ITermDimension, ITermFileData, ITermProprietary, ITermUnicodeVersionOp,
+    KittyNotification, Progress, SemanticPrompt,
+};
 
 use super::color_scheme::{named_color_default_rgb, ColorScheme};
 use super::grid_view::{CursorInfo, GridView};
 use super::listener::Listener;
-use super::osc::{parse_conemu_progress, parse_osc133, scan_oscs, KittyNotificationState};
+use super::osc::{
+    parse_conemu_progress, parse_osc133, parse_iterm_proprietary, scan_oscs,
+    KittyNotificationState,
+};
 use super::TermDimensions;
 
 /// The terminal state machine.
@@ -100,6 +105,22 @@ pub struct Terminal {
     /// Most recent completed Kitty OSC 99 notification.
     /// Populated by [`Self::feed`]; consumed via [`Self::take_kitty_notification`].
     pending_kitty_notification: Option<KittyNotification>,
+
+    // ── OSC 1337 (iTerm2 proprietary) state ─────────────────────────
+    /// Pending iTerm2 proprietary action for the UI layer.
+    /// Populated by [`Self::feed`]; consumed via [`Self::take_iterm_action`].
+    pending_iterm_action: Option<ITermProprietary>,
+    /// User-defined variables set via `OSC 1337;SetUserVar=…`.
+    pub(crate) user_vars: HashMap<String, String>,
+    /// Current Unicode version.
+    unicode_version: u8,
+    /// Stack of (version, optional_label) for `UnicodeVersion=push/pop`.
+    unicode_version_stack: Vec<(u8, Option<String>)>,
+    /// Navigation marks recorded via `OSC 1337;SetMark`.
+    /// Each entry is `(column, viewport_line)`.
+    marks: Vec<(usize, usize)>,
+    /// Auto-incrementing number for iTerm2 inline image cache entries.
+    next_iterm_image_number: u32,
 }
 
 impl Terminal {
@@ -146,6 +167,12 @@ impl Terminal {
             pending_fresh_line: false,
             kitty_state: KittyNotificationState::default(),
             pending_kitty_notification: None,
+            pending_iterm_action: None,
+            user_vars: HashMap::new(),
+            unicode_version: 0,
+            unicode_version_stack: Vec::new(),
+            marks: Vec::new(),
+            next_iterm_image_number: 1,
         }
     }
 
@@ -341,6 +368,158 @@ impl Terminal {
                             _ => {}
                         }
                         self.pending_semantic_prompt = Some(prompt);
+                    }
+                }
+                1337 => {
+                    // OSC 1337 — iTerm2 proprietary.
+                    // Parse the sub-command and handle each variant.
+                    if let Some(cmd) = parse_iterm_proprietary(&osc.payload) {
+                        match cmd {
+                            ITermProprietary::SetMark => {
+                                // Record a navigation mark at the current cursor position.
+                                let cursor = self.cursor();
+                                self.marks.push((cursor.pos.column, cursor.pos.line));
+                                log::debug!(
+                                    "SetMark: mark recorded at ({}, {})",
+                                    cursor.pos.column,
+                                    cursor.pos.line,
+                                );
+                            }
+                            ITermProprietary::StealFocus => {
+                                // Store for UI layer (window focus request).
+                                self.pending_iterm_action =
+                                    Some(ITermProprietary::StealFocus);
+                            }
+                            ITermProprietary::ClearScrollback => {
+                                // Immediate terminal action: clear scrollback history.
+                                self.term.grid_mut().clear_history();
+                                self.damage.mark_all();
+                            }
+                            ITermProprietary::CurrentDir(path) => {
+                                // Reuse existing OSC 7 current-directory pending slot.
+                                self.pending_current_directory = Some(path);
+                            }
+                            ITermProprietary::SetProfile(name) => {
+                                // Store for UI layer (profile switching).
+                                self.pending_iterm_action =
+                                    Some(ITermProprietary::SetProfile(name));
+                            }
+                            ITermProprietary::HighlightCursorLine(enabled) => {
+                                // Store for UI layer (renderer cursor guide).
+                                self.pending_iterm_action =
+                                    Some(ITermProprietary::HighlightCursorLine(enabled));
+                            }
+                            ITermProprietary::RequestCellSize => {
+                                // Respond with cell pixel dimensions.
+                                if self.cell_pixel_width > 0
+                                    && self.cell_pixel_height > 0
+                                {
+                                    let w = self.cell_pixel_width as f32;
+                                    let h = self.cell_pixel_height as f32;
+                                    let response = format!(
+                                        "\x1b]1337;ReportCellSize={h};{w}\x1b\\"
+                                    );
+                                    log::debug!(
+                                        "Terminal::feed: OSC 1337 RequestCellSize \
+                                         response: {response}"
+                                    );
+                                    replies.extend_from_slice(response.as_bytes());
+                                }
+                            }
+                            ITermProprietary::ReportCellSize { .. } => {
+                                // This is a response we (or another terminal)
+                                // wrote to the PTY — ignore when read back.
+                            }
+                            ITermProprietary::Copy(text) => {
+                                // Base64-decoded text → clipboard store.
+                                self.pending_clipboard_store = Some(text);
+                            }
+                            ITermProprietary::ReportVariable(name) => {
+                                // Look up the variable — check built-in
+                                // session variables first, then user_vars.
+                                let value = self
+                                    .iterm_builtin_var(&name)
+                                    .or_else(|| self.user_vars.get(&name).cloned());
+                                let response = if let Some(val) = value {
+                                    let b64_val =
+                                        crate::term::osc::base64_encode_for_response(
+                                            val.as_bytes(),
+                                        );
+                                    let b64_name =
+                                        crate::term::osc::base64_encode_for_response(
+                                            name.as_bytes(),
+                                        );
+                                    format!(
+                                        "\x1b]1337;ReportVariable={b64_name}={b64_val}\x1b\\"
+                                    )
+                                } else {
+                                    // Variable not found — respond with empty value.
+                                    let b64_name =
+                                        crate::term::osc::base64_encode_for_response(
+                                            name.as_bytes(),
+                                        );
+                                    format!(
+                                        "\x1b]1337;ReportVariable={b64_name}=\x1b\\"
+                                    )
+                                };
+                                log::debug!(
+                                    "Terminal::feed: OSC 1337 ReportVariable({name}) \
+                                     response: {response}"
+                                );
+                                replies.extend_from_slice(response.as_bytes());
+                            }
+                            ITermProprietary::SetUserVar { name, value } => {
+                                self.user_vars.insert(name, value);
+                            }
+                            ITermProprietary::SetBadgeFormat(format) => {
+                                // Store for UI layer.
+                                self.pending_iterm_action =
+                                    Some(ITermProprietary::SetBadgeFormat(format));
+                            }
+                            ITermProprietary::File(file_data) => {
+                                if file_data.inline {
+                                    // Display as inline image.
+                                    self.handle_iterm_inline_image(file_data);
+                                } else {
+                                    // Store for UI layer (file download).
+                                    self.pending_iterm_action =
+                                        Some(ITermProprietary::File(file_data));
+                                }
+                            }
+                            ITermProprietary::UnicodeVersion(op) => {
+                                match op {
+                                    ITermUnicodeVersionOp::Set(n) => {
+                                        self.unicode_version = n;
+                                    }
+                                    ITermUnicodeVersionOp::Push(label) => {
+                                        self.unicode_version_stack.push((
+                                            self.unicode_version,
+                                            label,
+                                        ));
+                                    }
+                                    ITermUnicodeVersionOp::Pop(label) => {
+                                        if let Some(l) = label {
+                                            // Pop until matching label.
+                                            while let Some((ver, ol)) =
+                                                self.unicode_version_stack.pop()
+                                            {
+                                                self.unicode_version = ver;
+                                                if ol == Some(l.clone()) {
+                                                    break;
+                                                }
+                                            }
+                                        } else {
+                                            // Pop one level.
+                                            if let Some((ver, _)) =
+                                                self.unicode_version_stack.pop()
+                                            {
+                                                self.unicode_version = ver;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 _ => {
@@ -717,6 +896,25 @@ impl Terminal {
         self.pending_kitty_notification.take()
     }
 
+    /// Take the most recent pending iTerm2 proprietary action (OSC 1337).
+    ///
+    /// Returns `None` if no new OSC 1337 action is pending since the last call.
+    pub fn take_iterm_action(&mut self) -> Option<ITermProprietary> {
+        self.pending_iterm_action.take()
+    }
+
+    /// Get a reference to the user-defined variables map.
+    pub fn user_vars(&self) -> &HashMap<String, String> {
+        &self.user_vars
+    }
+
+    /// Take accumulated navigation marks from `OSC 1337;SetMark`.
+    ///
+    /// Each mark is `(column, viewport_line)`.
+    pub fn take_marks(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.marks)
+    }
+
     /// Take the most recent OSC 7 working-directory URL (if any).
     ///
     /// The value is the raw URL as emitted by the application
@@ -1079,6 +1277,230 @@ impl Terminal {
         }
 
         self.damage.mark_all();
+    }
+
+    /// Look up a built-in iTerm2 session variable by name.
+    ///
+    /// Returns `Some(value)` for recognised variables, `None` otherwise.
+    /// The caller falls back to `user_vars` if this returns `None`.
+    fn iterm_builtin_var(&self, name: &str) -> Option<String> {
+        match name {
+            "session.terminalName" => Some("Zenterm".into()),
+            "session.name" => {
+                // Use the tab title if available, otherwise "zenterm".
+                Some(
+                    self.pending_title
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_else(|| "zenterm".into()),
+                )
+            }
+            "session.hostname" => {
+                // Try environment variables, fall back to hostname command.
+                let from_env = std::env::var("HOSTNAME")
+                    .or_else(|_| std::env::var("HOST"))
+                    .ok();
+                if let Some(host) = from_env {
+                    Some(host)
+                } else {
+                    std::process::Command::new("hostname")
+                        .output()
+                        .ok()
+                        .and_then(|o| {
+                            if o.status.success() {
+                                String::from_utf8(o.stdout)
+                                    .ok()
+                                    .map(|s| s.trim().to_string())
+                            } else {
+                                None
+                            }
+                        })
+                }
+            }
+            "session.path" => {
+                // Current working directory from OSC 7 if available.
+                self.pending_current_directory.clone()
+            }
+            "session.tty" => {
+                // Return the terminal device if we have it.
+                None // Not tracked in current architecture.
+            }
+            _ => None,
+        }
+    }
+
+    /// Handle iTerm2 inline image (`OSC 1337;File=…` with `inline=1`).
+    ///
+    /// Decodes the image data, stores it in the image cache, and places it
+    /// on the terminal grid at the current cursor position.
+    fn handle_iterm_inline_image(&mut self, file: ITermFileData) {
+        log::debug!(
+            "[iterm-img] inline image: name={:?}, size={:?}, data_len={}, \
+             cell_pixel={}x{}, cursor={:?}",
+            file.name,
+            file.size,
+            file.data.len(),
+            self.cell_pixel_width,
+            self.cell_pixel_height,
+            self.cursor(),
+        );
+
+        if self.cell_pixel_width == 0 || self.cell_pixel_height == 0 {
+            log::warn!(
+                "[iterm-img] cell_pixel is 0 ({}x{}), SKIPPING placement",
+                self.cell_pixel_width,
+                self.cell_pixel_height,
+            );
+            return;
+        }
+
+        // Decode the image data using the `image` crate (PNG, JPEG, GIF, …).
+        let decoded = match image::load_from_memory(&file.data) {
+            Ok(img) => img.into_rgba8(),
+            Err(e) => {
+                log::error!("[iterm-img] failed to decode image: {e}");
+                return;
+            }
+        };
+        let (img_w, img_h) = decoded.dimensions();
+        let rgba = decoded.into_vec();
+
+        // Store in image cache with a unique id.
+        let image_data = Arc::new(ImageData::new(ImageDataType::new_rgba8(
+            rgba, img_w, img_h,
+        )));
+        // Use a unique auto-incrementing number so each image gets its own
+        // cache slot, even when the application sends multiple `File=` sequences.
+        let number = self.next_iterm_image_number;
+        self.next_iterm_image_number += 1;
+        let image_id = self.image_cache.assign_id(None, Some(number));
+        self.image_cache.insert(image_id, image_data.clone());
+
+        // Convert iTerm2 dimensions to columns/rows for PlacementParams.
+        let cols = self.term.columns();
+        let rows = self.term.screen_lines();
+
+        let (columns, rows_opt) = self.iterm_dimensions_to_grid(
+            file.width,
+            file.height,
+            img_w,
+            img_h,
+            cols,
+            rows,
+        );
+
+        let cursor = self.cursor();
+        let cursor_col = cursor.pos.column;
+        let cursor_row = cursor.pos.line.min(rows.saturating_sub(1));
+
+        let params = PlacementParams {
+            columns: Some(columns),
+            rows: rows_opt,
+            source_x: None,
+            source_y: None,
+            source_w: None,
+            source_h: None,
+            cell_padding_left: 0,
+            cell_padding_top: 0,
+            z_index: 0,
+            do_not_move_cursor: file.do_not_move_cursor,
+            image_id: Some(image_id),
+            placement_id: None,
+            style: PlacementStyle::Iterm,
+        };
+
+        let result = assign_image_to_cells(
+            image_data,
+            img_w,
+            img_h,
+            &params,
+            self.cell_pixel_width,
+            self.cell_pixel_height,
+            cursor_col,
+            cursor_row,
+            cols,
+            rows,
+        );
+
+        // Store placements.
+        let display_offset = self.term.grid().display_offset() as i32;
+        for (col, viewport_row, cell) in &result.cells {
+            let grid_line = *viewport_row as i32 - display_offset;
+            self.image_placements.insert((grid_line, *col), cell.clone());
+        }
+
+        // Move cursor if needed.
+        if result.move_cursor {
+            let new_col = (cursor_col + result.width_in_cells).min(cols.saturating_sub(1));
+            let new_row = (cursor_row + result.height_in_cells)
+                .saturating_sub(1)
+                .min(rows.saturating_sub(1));
+            self.term.grid_mut().cursor.point.column =
+                alacritty_terminal::index::Column(new_col);
+            self.term.grid_mut().cursor.point.line =
+                alacritty_terminal::index::Line(new_row as i32);
+        }
+
+        log::debug!(
+            "[iterm-img] placed {} cells ({}x{}), img={}x{}px",
+            result.cells.len(),
+            result.width_in_cells,
+            result.height_in_cells,
+            img_w,
+            img_h,
+        );
+
+        self.damage.mark_all();
+    }
+
+    /// Convert iTerm2 `ITermDimension` width/height to grid columns/rows.
+    fn iterm_dimensions_to_grid(
+        &self,
+        width: ITermDimension,
+        height: ITermDimension,
+        img_w: u32,
+        img_h: u32,
+        max_cols: usize,
+        max_rows: usize,
+    ) -> (usize, Option<usize>) {
+        let cell_w = self.cell_pixel_width.max(1);
+        let cell_h = self.cell_pixel_height.max(1);
+
+        let calc_cols = |dim: ITermDimension| -> Option<usize> {
+            match dim {
+                ITermDimension::Automatic => None,
+                ITermDimension::Cells(n) => Some(n.max(1) as usize),
+                ITermDimension::Pixels(n) => {
+                    Some((n.max(1) as u32 / cell_w).max(1) as usize)
+                }
+                ITermDimension::Percent(n) => {
+                    let pct = n.max(1).min(100) as usize;
+                    Some((max_cols * pct / 100).max(1))
+                }
+            }
+        };
+        let calc_rows = |dim: ITermDimension| -> Option<usize> {
+            match dim {
+                ITermDimension::Automatic => None,
+                ITermDimension::Cells(n) => Some(n.max(1) as usize),
+                ITermDimension::Pixels(n) => {
+                    Some((n.max(1) as u32 / cell_h).max(1) as usize)
+                }
+                ITermDimension::Percent(n) => {
+                    let pct = n.max(1).min(100) as usize;
+                    Some((max_rows * pct / 100).max(1))
+                }
+            }
+        };
+
+        let columns = calc_cols(width).unwrap_or_else(|| {
+            ((img_w + cell_w - 1) / cell_w).max(1) as usize
+        });
+        let rows_out = calc_rows(height).unwrap_or_else(|| {
+            ((img_h + cell_h - 1) / cell_h).max(1) as usize
+        });
+
+        (columns.min(max_cols), Some(rows_out.min(max_rows)))
     }
 
     fn handle_kitty_delete(&mut self, what: kitty::KittyImageDelete) {

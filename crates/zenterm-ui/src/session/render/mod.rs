@@ -13,6 +13,7 @@ mod pass3;
 use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::vte::ansi::CursorShape;
 
+use zenterm_core::Rgba;
 use zenterm_core::image::ImageCell;
 use zenterm_core::image::ImageDataType;
 use zenterm_glyph::GlyphContentType;
@@ -266,6 +267,39 @@ impl TerminalSession {
         } else {
             None
         };
+
+        // ── Cursor line highlight (OSC 1337 HighlightCursorLine) ─────
+        // Emit a full-width background quad at the cursor row.
+        if self.highlight_cursor_line && cursor_visible {
+            // Pick a subtle highlight colour based on background luminance.
+            let bg = default_bg;
+            let luminance = 0.299 * bg.r() + 0.587 * bg.g() + 0.114 * bg.b();
+            let highlight = if luminance > 0.5 {
+                // Light background → dark highlight with low alpha.
+                Rgba::new(0.0, 0.0, 0.0, 0.08)
+            } else {
+                // Dark background → light highlight with low alpha.
+                Rgba::new(1.0, 1.0, 1.0, 0.08)
+            };
+            // Only emit when the colour is different from default_bg
+            // (always true here due to alpha, but force=false so the
+            // emit_background_quad function can skip if they match).
+            emit_background_quad(
+                &mut self.cached_bg,
+                0,             // col
+                cursor_row,    // row
+                self.cell_width,
+                self.cell_height,
+                cols as f32,   // span full width
+                highlight,
+                default_bg,
+                true,          // force (always emit, don't skip same-colour)
+                x_off,
+                y_off,
+                x_scale,
+                y_scale,
+            );
+        }
 
         for row in 0..rows {
             let mut col = 0;
