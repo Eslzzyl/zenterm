@@ -6,6 +6,14 @@ fn main() -> eframe::Result<()> {
     // Initialise logging.
     env_logger::init();
 
+    // On macOS, bind the notification system to our bundle identifier early.
+    // Without this, mac-notification-sys falls back to a hardcoded "use_default"
+    // app name, which triggers a "Choose Application" dialog on Sequoia 15+.
+    #[cfg(target_os = "macos")]
+    if let Err(e) = notify_rust::set_application("org.eu.eslzzyl.zenterm") {
+        log::warn!("failed to set macOS notification bundle: {e}");
+    }
+
     // Load configuration from TOML file.
     // If the file is missing or invalid we log a warning and use defaults.
     let config = match Config::load() {

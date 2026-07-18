@@ -5766,6 +5766,7 @@ dependencies = [
  "egui",
  "env_logger",
  "log",
+ "notify-rust",
  "wgpu",
  "zenterm-config",
  "zenterm-ui",
