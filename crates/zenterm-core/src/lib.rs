@@ -21,6 +21,24 @@ pub use position::TermPos;
 pub use size::TermSize;
 pub use theme::{Theme, ThemePreference, THEME_DARK, THEME_LIGHT};
 
+/// Terminal-side progress state reported via the ConEmu OSC 9;4 protocol.
+///
+/// Applications emit `ESC ] 9 ; 4 ; <state> ; <pct> ST` to convey task
+/// progress to the terminal.  Terminals that support this protocol render
+/// it as a tab-bar or taskbar indicator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Progress {
+    /// No progress (state 0).
+    #[default]
+    None,
+    /// Normal progress percentage (state 1), 0–100.
+    Percentage(u8),
+    /// Error-state progress (state 2), 0–100.
+    Error(u8),
+    /// Indeterminate / busy (state 3).
+    Indeterminate,
+}
+
 /// Convenience alias for [`Error`] results.
 pub type Result<T> = std::result::Result<T, Error>;
 

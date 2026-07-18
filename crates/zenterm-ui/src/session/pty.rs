@@ -116,6 +116,11 @@ impl TerminalSession {
                 .ok();
         }
 
+        // ── ConEmu progress bar (OSC 9;4) ─────────────────────────────
+        if let Some(prog) = self.terminal.take_progress() {
+            self.progress = prog;
+        }
+
         if !self.exit_effect_sent {
             if self.terminal.take_exit() || self.terminal.take_child_exit().is_some() {
                 log::info!("update: terminal requested exit, closing");

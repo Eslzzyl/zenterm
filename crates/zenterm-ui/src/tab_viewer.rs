@@ -38,11 +38,20 @@ impl<'a> TabViewer for TabViewerContext<'a> {
     type Tab = SessionId;
 
     fn title(&mut self, tab: &mut Self::Tab) -> WidgetText {
-        self.sessions
+        let base = self
+            .sessions
             .get(tab)
             .map(|s| s.title.clone())
-            .unwrap_or_else(|| format!("(missing #{})", tab.0))
-            .into()
+            .unwrap_or_else(|| format!("(missing #{})", tab.0));
+
+        // Append ConEmu progress indicator if non-default.
+        match self.sessions.get(tab).map(|s| s.progress) {
+            Some(zenterm_core::Progress::Percentage(p)) => format!("{base} {p}%"),
+            Some(zenterm_core::Progress::Error(p)) => format!("{base} !{p}%"),
+            Some(zenterm_core::Progress::Indeterminate) => format!("{base} ~"),
+            _ => base,
+        }
+        .into()
     }
 
     fn id(&mut self, tab: &mut Self::Tab) -> egui::Id {

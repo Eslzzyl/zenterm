@@ -64,6 +64,8 @@ pub struct TerminalSession {
     pub cwd: Option<PathBuf>,
     pub git_branch: Option<String>,
     pub notification: NotificationState,
+    /// ConEmu OSC 9;4 progress-bar state reported by the shell.
+    pub progress: zenterm_core::Progress,
 
     // ── Per-session state ───────────────────────────────────────────
     pub terminal: Terminal,

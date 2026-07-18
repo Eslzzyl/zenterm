@@ -26,11 +26,12 @@ use zenterm_core::color::Rgba;
 use zenterm_core::damage::DamageSet;
 use zenterm_core::position::TermPos;
 use zenterm_core::size::TermSize;
+use zenterm_core::Progress;
 
 use super::color_scheme::{named_color_default_rgb, ColorScheme};
 use super::grid_view::{CursorInfo, GridView};
 use super::listener::Listener;
-use super::osc7::scan_osc7;
+use super::osc::{parse_conemu_progress, scan_oscs};
 use super::TermDimensions;
 
 /// The terminal state machine.
@@ -82,6 +83,9 @@ pub struct Terminal {
     /// Most recent OSC 9 / OSC 777 desktop notification.
     /// Populated by [`Self::feed`]; consumed via [`Self::take_notification`].
     pending_notification: Option<(String, String)>,
+    /// Most recent ConEmu OSC 9;4 progress-bar state.
+    /// Populated by [`Self::feed`]; consumed via [`Self::take_progress`].
+    pending_progress: Option<Progress>,
 }
 
 impl Terminal {
@@ -123,6 +127,7 @@ impl Terminal {
             pending_clipboard_load: None,
             pending_current_directory: None,
             pending_notification: None,
+            pending_progress: None,
         }
     }
 
@@ -253,20 +258,38 @@ impl Terminal {
         }
         let t_apc_elapsed = t_apc_start.elapsed();
 
-        // ── OSC 9 / OSC 777 (desktop notification) scan ─────────────────
+        // ── Unified OSC scan ─────────────────────────────────────────
+        // Scan for all `ESC ] <number> ; <payload> (BEL|ST)` sequences
+        // and dispatch by number.
         let t_osc_start = std::time::Instant::now();
-        if let Some(notif) = scan_osc9_or_777(bytes) {
-            self.pending_notification = Some(notif);
-        }
-
-        // ── OSC 7 (current working directory) scan ──────────────────────
-        // alacritty_terminal does not emit an `Event` for OSC 7, so we
-        // scan the input stream ourselves.  Many shells (fish, zsh with
-        // `set_term_title` patches, bash-preexec, etc.) emit
-        //     ESC ] 7 ; file://host/path BEL   (or ESC \)
-        // whenever the CWD changes.  We store the *most recent* one.
-        if let Some(url) = scan_osc7(bytes) {
-            self.pending_current_directory = Some(url);
+        for osc in scan_oscs(bytes) {
+            match osc.number {
+                7 => {
+                    // OSC 7 — current working directory.
+                    self.pending_current_directory = Some(osc.payload);
+                }
+                9 => {
+                    // OSC 9 — iTerm2 notification OR ConEmu progress bar.
+                    if let Some(prog) = parse_conemu_progress(&osc.payload) {
+                        self.pending_progress = Some(prog);
+                    } else {
+                        // iTerm2-style notification.
+                        self.pending_notification =
+                            Some(("Zenterm".into(), osc.payload));
+                    }
+                }
+                777 => {
+                    // OSC 777 — rxvt notification (format: notify;title;body).
+                    let mut parts = osc.payload.splitn(3, ';');
+                    let _maybe_notify = parts.next(); // "notify"
+                    let title = parts.next().unwrap_or("").to_string();
+                    let body = parts.next().unwrap_or("").to_string();
+                    self.pending_notification = Some((title, body));
+                }
+                _ => {
+                    // Unknown OSC — ignored.
+                }
+            }
         }
         let t_osc_elapsed = t_osc_start.elapsed();
 
@@ -599,6 +622,11 @@ impl Terminal {
         self.pending_notification.take()
     }
 
+    /// Take the most recent ConEmu progress-bar state (OSC 9;4).
+    pub fn take_progress(&mut self) -> Option<Progress> {
+        self.pending_progress.take()
+    }
+
     /// Take the most recent OSC 7 working-directory URL (if any).
     ///
     /// The value is the raw URL as emitted by the application
@@ -763,61 +791,6 @@ impl Terminal {
                 .unwrap_or(Rgba::WHITE),
         }
     }
-}
-
-/// Scan for OSC 9 (iTerm2) or OSC 777 (urxvt) desktop notification sequences.
-///
-/// Recognised forms:
-///
-/// ```text
-/// ESC ] 9 ; body BEL                 (OSC 9 — title = app name, body = text)
-/// ESC ] 777 ; notify ; title ; body BEL   (OSC 777 — title + body)
-/// ```
-///
-/// Returns `Some((title, body))` or `None`.
-fn scan_osc9_or_777(bytes: &[u8]) -> Option<(String, String)> {
-    // Find `ESC ]` introducer (0x1B 0x5D).
-    let mut i = 0;
-    while i + 1 < bytes.len() {
-        if bytes[i] == 0x1B && bytes[i + 1] == b']' {
-            let rest = &bytes[i + 2..];
-            if rest.starts_with(b"9;") {
-                // OSC 9 — body only
-                let body = read_osc_string(&rest[2..])?;
-                if body.is_empty() {
-                    return None;
-                }
-                return Some(("Zenterm".into(), body));
-            }
-            if rest.starts_with(b"777;") {
-                // OSC 777 — semicolon-separated args
-                let payload = read_osc_string(&rest[4..])?;
-                let mut parts = payload.splitn(3, ';');
-                let _maybe_notify = parts.next(); // "notify"
-                let title = parts.next().unwrap_or("").to_string();
-                let body = parts.next().unwrap_or("").to_string();
-                return Some((title, body));
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Read bytes from `start` until a BEL (0x07) or ST (ESC \) terminator.
-/// Returns `None` if unterminated.
-fn read_osc_string(start: &[u8]) -> Option<String> {
-    let mut end = 0;
-    while end < start.len() {
-        if start[end] == 0x07 {
-            return std::str::from_utf8(&start[..end]).ok().map(|s| s.to_string());
-        }
-        if start[end] == 0x1B && end + 1 < start.len() && start[end + 1] == b'\\' {
-            return std::str::from_utf8(&start[..end]).ok().map(|s| s.to_string());
-        }
-        end += 1;
-    }
-    None
 }
 
 // ── APC / DCS scan helpers ─────────────────────────────────────────────

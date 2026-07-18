@@ -11,7 +11,7 @@ use zenterm_core::size::TermSize;
 mod color_scheme;
 mod grid_view;
 mod listener;
-mod osc7;
+mod osc;
 mod terminal;
 
 pub use color_scheme::ColorScheme;
