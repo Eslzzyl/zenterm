@@ -1,5 +1,6 @@
 //! Terminal session construction.
 
+use std::sync::mpsc;
 use std::sync::Arc;
 
 use zenterm_core::size::TermSize;
@@ -46,6 +47,7 @@ impl TerminalSession {
         // Initialise `last_vp_size_px` so the first render picks up the
         // resize correctly.  Starting at [0, 0] is fine; the first
         // `update_cell_instances` call will overwrite it.
+        let (notification_resp_tx, notification_resp_rx) = mpsc::channel();
         Self {
             id,
             title: format!("shell-{}", id.0),
@@ -91,6 +93,9 @@ impl TerminalSession {
             scroll_accumulator_y: 0.0,
             sgr_mouse_buttons: Vec::new(),
             last_sgr_motion_pos: None,
+            notification_resp_tx,
+            notification_resp_rx,
+            tab_active: false,
         }
     }
 }

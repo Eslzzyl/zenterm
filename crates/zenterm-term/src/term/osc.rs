@@ -220,6 +220,8 @@ struct KittyAccumulator {
     report_click: bool,
     close_report: bool,
     notification_types: Vec<String>,
+    buttons: Vec<String>,
+    timeout_ms: i32,
 }
 
 impl Default for KittyAccumulator {
@@ -237,15 +239,20 @@ impl Default for KittyAccumulator {
             report_click: false,
             close_report: false,
             notification_types: Vec::new(),
+            buttons: Vec::new(),
+            timeout_ms: -1,
         }
     }
 }
 
-/// Manages the state of all in-flight Kitty OSC 99 notifications.
+/// Manages the state of all in-flight Kitty OSC 99 notifications
+/// and the icon data cache.
 #[derive(Debug, Default)]
 pub(crate) struct KittyNotificationState {
     /// Accumulators keyed by notification identifier.
     accumulators: HashMap<String, KittyAccumulator>,
+    /// Cached icon data keyed by `g` identifier.
+    icon_cache: HashMap<String, Vec<u8>>,
 }
 
 impl KittyNotificationState {
@@ -357,16 +364,23 @@ impl KittyNotificationState {
                 if is_base64 {
                     if let Ok(icon_bytes) = base64_decode(data.as_bytes()) {
                         acc.icon_data = icon_bytes;
+                        // Cache under `g` key if provided.
+                        if let Some(ref g) = acc.icon_g {
+                            if !g.is_empty() {
+                                self.icon_cache.insert(g.clone(), acc.icon_data.clone());
+                            }
+                        }
                     }
                 }
             }
             Some("buttons") => {
-                // We just store the raw button data; the UI layer
-                // can interpret it.  Buttons are separated by U+2028.
+                // Buttons are separated by U+2028 (LINE SEPARATOR).
                 if !decoded_data.is_empty() {
-                    // Store in app_name as a delimited list for now.
-                    // The actual button handling requires notify-rust
-                    // action support which is XDG-only.
+                    acc.buttons = decoded_data
+                        .split('\u{2028}')
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
                 }
             }
             _ => {} // Unknown p= type — ignored per spec.
@@ -386,6 +400,17 @@ impl KittyNotificationState {
             };
 
             if !title.is_empty() || !body.is_empty() {
+                // Look up cached icon data if the notification references
+                // a cache key but has no direct icon_data.
+                let icon_data = if acc.icon_data.is_empty() {
+                    acc.icon_g
+                        .as_ref()
+                        .and_then(|g| self.icon_cache.get(g).cloned())
+                        .unwrap_or_default()
+                } else {
+                    acc.icon_data.clone()
+                };
+
                 let notif = KittyNotification {
                     id: identifier.clone(),
                     title,
@@ -395,6 +420,11 @@ impl KittyNotificationState {
                     occasion: acc.occasion,
                     sound: acc.sound,
                     icon_names: acc.icon_names,
+                    icon_data,
+                    icon_cache_key: acc.icon_g,
+                    notification_types: acc.notification_types,
+                    buttons: acc.buttons,
+                    timeout_ms: acc.timeout_ms,
                     report_click: acc.report_click,
                     close_report: acc.close_report,
                 };
@@ -411,11 +441,7 @@ impl KittyNotificationState {
     /// Generate a response to `p=?` (capability query).
     fn query_response(identifier: &str, _hint: &str) -> String {
         let id = sanitize_identifier(identifier);
-        // Report support: we implement base features.
-        // p=title,body,close,?,alive,icon,buttons
-        // a=focus (no report yet)
-        // o=always
-        // s=system,silent
+        // Report the features we actually implement.
         format!(
             "\x1b]99;i={}:p=?;p=title,body,close,?,alive,icon,buttons:o=always:a=focus:s=system,silent\x1b\\\\",
             id
@@ -495,6 +521,10 @@ fn apply_metadata(meta: &HashMap<String, String>, acc: &mut KittyAccumulator) {
             "c" => {
                 acc.close_report = value == "1";
             }
+            "w" => {
+                // Auto-close timeout: -1 = default, 0 = never, >0 = ms.
+                acc.timeout_ms = value.parse::<i32>().unwrap_or(-1);
+            }
             "g" => {
                 // Icon cache identifier.
                 if is_valid_identifier(value) {
@@ -512,6 +542,12 @@ fn apply_metadata(meta: &HashMap<String, String>, acc: &mut KittyAccumulator) {
 fn base64_decode(input: &[u8]) -> Result<Vec<u8>, base64::DecodeError> {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.decode(input)
+}
+
+#[cfg(test)]
+fn base64_encode(input: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(input)
 }
 
 /// Parse a single `key=value` parameter from `s`.
@@ -1316,5 +1352,151 @@ mod tests {
         let (n, _) = state.handle_event(";body only", "");
         let n = n.expect("should produce notification");
         assert_eq!(n.title, "body only");
+    }
+
+    #[test]
+    fn osc99_buttons_single() {
+        let mut state = KittyNotificationState::default();
+        let _ = state.handle_event("i=b1:d=0:p=title;Notification", "");
+        let (n, _) = state.handle_event("i=b1:d=1:p=buttons;OK", "");
+        let n = n.expect("should produce notification");
+        assert_eq!(n.buttons, vec!["OK"]);
+    }
+
+    #[test]
+    fn osc99_buttons_multiple() {
+        let mut state = KittyNotificationState::default();
+        // U+2028 is the LINE SEPARATOR character.
+        let buttons = "Yes\u{2028}No\u{2028}Maybe";
+        let _ = state.handle_event("i=b2:d=0:p=title;Choose", "");
+        let (n, _) = state.handle_event(
+            &format!("i=b2:d=1:p=buttons;{}", buttons), ""
+        );
+        let n = n.expect("should produce notification");
+        assert_eq!(n.buttons, vec!["Yes", "No", "Maybe"]);
+    }
+
+    #[test]
+    fn osc99_buttons_with_title_and_body() {
+        let mut state = KittyNotificationState::default();
+        let _ = state.handle_event("i=b3:d=0:p=title;Confirm", "");
+        let _ = state.handle_event("i=b3:d=0:p=buttons;Yes\u{2028}No", "");
+        let (n, _) = state.handle_event("i=b3:d=1:p=body;Do you want to continue?", "");
+        let n = n.expect("should produce notification");
+        assert_eq!(n.title, "Confirm");
+        assert_eq!(n.body, "Do you want to continue?");
+        assert_eq!(n.buttons, vec!["Yes", "No"]);
+    }
+
+    #[test]
+    fn osc99_timeout_w() {
+        let mut state = KittyNotificationState::default();
+        let (n, _) = state.handle_event("i=t1:d=1:p=title:w=5000;Timed", "");
+        let n = n.expect("should produce notification");
+        assert_eq!(n.timeout_ms, 5000);
+        assert_eq!(n.title, "Timed");
+    }
+
+    #[test]
+    fn osc99_timeout_default() {
+        let mut state = KittyNotificationState::default();
+        let (n, _) = state.handle_event("i=t2:d=1:p=title;No timeout", "");
+        let n = n.expect("should produce notification");
+        assert_eq!(n.timeout_ms, -1);
+    }
+
+    #[test]
+    fn osc99_timeout_never() {
+        let mut state = KittyNotificationState::default();
+        let (n, _) = state.handle_event("i=t3:d=1:p=title:w=0;Persistent", "");
+        let n = n.expect("should produce notification");
+        assert_eq!(n.timeout_ms, 0);
+    }
+
+    #[test]
+    fn osc99_icon_data_and_cache_key() {
+        let mut state = KittyNotificationState::default();
+        // Send icon data with g= and e=1.
+        let icon_b64 = base64_encode(b"fake-png-bytes");
+        let _ = state.handle_event(
+            &format!("i=ic1:d=0:p=icon:g=abc123:e=1;{}", icon_b64), ""
+        );
+        // Now send the title with d=1 to trigger the notification.
+        let (n, _) = state.handle_event("i=ic1:d=1:p=title;With icon", "");
+        let n = n.expect("should produce notification");
+        assert_eq!(n.icon_cache_key.as_deref(), Some("abc123"));
+        assert_eq!(n.icon_data, b"fake-png-bytes");
+    }
+
+    #[test]
+    fn osc99_icon_cache_reuse() {
+        let mut state = KittyNotificationState::default();
+        // First: cache icon data under g=uuid1.
+        let icon_b64 = base64_encode(b"icon-data-for-uuid1");
+        let _ = state.handle_event(
+            &format!("i=ic2:d=0:p=icon:g=uuid1:e=1;{}", icon_b64), ""
+        );
+        // Title with d=1 triggers the notification, but no inline icon.
+        let (n2, _) = state.handle_event("i=ic2:d=1:p=title:g=uuid1;From cache", "");
+        let n2 = n2.expect("should produce notification");
+        // It should have the cached icon data.
+        assert_eq!(n2.icon_data, b"icon-data-for-uuid1");
+        assert_eq!(n2.icon_cache_key.as_deref(), Some("uuid1"));
+    }
+
+    #[test]
+    fn osc99_notification_types() {
+        let mut state = KittyNotificationState::default();
+        // t= values must be base64-encoded per spec.
+        let t_emacs = base64_encode(b"emacs");
+        let t_email = base64_encode(b"email");
+        let _ = state.handle_event(
+            &format!("i=nt1:d=0:p=title:t={};Typed", t_emacs), ""
+        );
+        let (n, _) = state.handle_event(
+            &format!("i=nt1:d=1:p=body:t={};Content", t_email), ""
+        );
+        let n = n.expect("should produce notification");
+        assert!(n.notification_types.contains(&"emacs".to_string()));
+        assert!(n.notification_types.contains(&"email".to_string()));
+    }
+
+    #[test]
+    fn osc99_full_notification_fields() {
+        let mut state = KittyNotificationState::default();
+        let icon_b64 = base64_encode(b"icon-bytes");
+        let t_important = base64_encode(b"important");
+        // First chunk: icon data.
+        let _ = state.handle_event(&format!(
+            "i=full:d=0:p=icon:g=cache1:e=1;{}", icon_b64
+        ), "");
+        // Second chunk: title with all metadata.
+        let _ = state.handle_event(
+            &format!("i=full:d=0:p=title:u=2:o=unfocused:f={}:s={}:n={}:t={}:w=3000:c=1;Urgent title",
+                base64_encode(b"myapp"),
+                base64_encode(b"silent"),
+                base64_encode(b"dialog-warning"),
+                t_important,
+            ), ""
+        );
+        let _ = state.handle_event("i=full:d=0:p=body;Urgent body", "");
+        // Final chunk: buttons with d=1.
+        let (n, _) = state.handle_event(
+            "i=full:d=1:p=buttons;Ack\u{2028}Snooze", ""
+        );
+        let n = n.expect("should produce notification");
+        assert_eq!(n.title, "Urgent title");
+        assert_eq!(n.body, "Urgent body");
+        assert_eq!(n.urgency, zenterm_core::KittyUrgency::Critical);
+        assert_eq!(n.occasion, zenterm_core::KittyOccasion::Unfocused);
+        assert_eq!(n.timeout_ms, 3000);
+        assert!(n.close_report);
+        assert_eq!(n.buttons, vec!["Ack", "Snooze"]);
+        assert!(!n.icon_data.is_empty());
+        assert_eq!(n.icon_cache_key.as_deref(), Some("cache1"));
+        assert!(n.notification_types.contains(&"important".to_string()));
+        assert_eq!(n.app_name.as_deref(), Some("myapp"));
+        assert_eq!(n.sound.as_deref(), Some("silent"));
+        assert!(n.icon_names.contains(&"dialog-warning".to_string()));
     }
 }

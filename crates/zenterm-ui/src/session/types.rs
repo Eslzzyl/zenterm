@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -175,6 +176,19 @@ pub struct TerminalSession {
     /// Used to suppress duplicate motion events when the pointer hasn't
     /// moved to a new cell.
     pub(crate) last_sgr_motion_pos: Option<(usize, usize)>,
+
+    // ── Kitty OSC 99: notification response channel ──────────────────
+    /// Sender half: cloned into notification threads so they can write
+    /// escape-sequence responses back to the PTY (for `a=report`, `c=1`,
+    /// and button clicks).
+    pub(crate) notification_resp_tx: mpsc::Sender<String>,
+    /// Receiver half: drained in [`Self::pump_pty`] after each feed.
+    pub(crate) notification_resp_rx: mpsc::Receiver<String>,
+
+    // ── Window / tab focus state (for Kitty OSC 99 `o=` filtering) ──
+    /// Whether this session's tab is the currently active tab.
+    /// Set by the app layer before [`Self::handle_side_effects`].
+    pub(crate) tab_active: bool,
 }
 
 // ── Constants ──────────────────────────────────────────────────────────

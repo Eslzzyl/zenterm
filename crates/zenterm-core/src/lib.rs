@@ -85,9 +85,22 @@ pub struct KittyNotification {
     pub sound: Option<String>,
     /// Icon names (`n=`, base64-decoded), in order.
     pub icon_names: Vec<String>,
-    /// If non-empty, report click events (`a=report`).
+    /// Raw icon data from `p=icon` (when `e=1`).
+    pub icon_data: Vec<u8>,
+    /// Icon cache key (`g=`), for reusing transmitted icon data.
+    pub icon_cache_key: Option<String>,
+    /// Notification types (`t=`, base64-decoded).  Multiple values allowed.
+    pub notification_types: Vec<String>,
+    /// Button labels from `p=buttons`, split by U+2028.
+    pub buttons: Vec<String>,
+    /// Auto-close timeout in milliseconds from `w=`:
+    ///   -1 → system default
+    ///    0 → never expire
+    ///   >0 → close after N ms
+    pub timeout_ms: i32,
+    /// If true, send escape code when notification is clicked (`a=report`).
     pub report_click: bool,
-    /// If true, send an escape code when the notification is closed (`c=1`).
+    /// If true, send escape code when notification is closed (`c=1`).
     pub close_report: bool,
 }
 

@@ -49,6 +49,15 @@ impl TerminalSession {
             self.terminal_dirty = true;
         }
 
+        // Drain Kitty OSC 99 notification responses (a=report, c=1,
+        // button clicks) back to the PTY.
+        while let Ok(resp) = self.notification_resp_rx.try_recv() {
+            log::debug!("pump_pty: writing notification response: {resp}");
+            if let Err(e) = self.pty.write(resp.as_bytes()) {
+                log::error!("failed to write notification response: {e}");
+            }
+        }
+
         if !self.pty_exited {
             if let Some(status) = self.pty.try_wait() {
                 log::info!("shell exited with status: {status:?}, closing");
@@ -105,37 +114,142 @@ impl TerminalSession {
         let basic_notif = self.terminal.take_notification();
         if let Some(kitty) = kitty_notif {
             log::info!("desktop notification (Kitty OSC 99): {:?}", kitty);
-            let title = if kitty.title.is_empty() {
-                kitty.body.clone()
-            } else {
-                kitty.title.clone()
+
+            // ── `o=` occasion filtering ──────────────────────────────
+            let window_focused = egui_ctx.input(|i| i.viewport().focused).unwrap_or(true);
+            let should_show = match kitty.occasion {
+                zenterm_core::KittyOccasion::Always => true,
+                zenterm_core::KittyOccasion::Unfocused => !window_focused,
+                zenterm_core::KittyOccasion::Invisible => !window_focused || !self.tab_active,
             };
-            let body = if kitty.title.is_empty() {
-                String::new()
+            if !should_show {
+                log::debug!(
+                    "suppressed Kitty notification (occasion={:?}, window_focused={}, tab_active={})",
+                    kitty.occasion, window_focused, self.tab_active,
+                );
             } else {
-                kitty.body.clone()
-            };
-            let app_name = kitty
-                .app_name
-                .clone()
-                .unwrap_or_else(|| "Zenterm".to_string());
-            let icon_names = kitty.icon_names.clone();
-            std::thread::Builder::new()
-                .name("notify".into())
-                .spawn(move || {
-                    let mut n = notify_rust::Notification::new();
-                    n.summary(&title);
-                    n.body(&body);
-                    n.appname(&app_name);
-                    // Set first icon name if provided (XDG only; no-op on other platforms).
-                    if let Some(icon) = icon_names.first() {
-                        n.icon(icon);
-                    }
-                    if let Err(e) = n.show() {
-                        log::error!("failed to show desktop notification: {e}");
-                    }
-                })
-                .ok();
+                let title = if kitty.title.is_empty() {
+                    kitty.body.clone()
+                } else {
+                    kitty.title.clone()
+                };
+                let body = if kitty.title.is_empty() {
+                    String::new()
+                } else {
+                    kitty.body.clone()
+                };
+                let app_name = kitty
+                    .app_name
+                    .clone()
+                    .unwrap_or_else(|| "Zenterm".to_string());
+                let icon_names = kitty.icon_names.clone();
+                let icon_data = kitty.icon_data.clone();
+                let buttons = kitty.buttons.clone();
+                let timeout_ms = kitty.timeout_ms;
+                let sound = kitty.sound.clone();
+                let resp_tx = self.notification_resp_tx.clone();
+                let notif_id = kitty.id.clone();
+                let report_click = kitty.report_click;
+                let close_report = kitty.close_report;
+                std::thread::Builder::new()
+                    .name("notify".into())
+                    .spawn(move || {
+                        let mut n = notify_rust::Notification::new();
+                        n.summary(&title);
+                        n.body(&body);
+                        n.appname(&app_name);
+
+                        // Icon: prefer icon_data (write temp file, works on all platforms),
+                        // fall back to icon name (XDG only).
+                        if !icon_data.is_empty() {
+                            let tmp_dir = std::env::temp_dir();
+                            let path = tmp_dir.join(format!("zenterm-icon-{}.png", std::process::id()));
+                            if let Ok(mut file) = std::fs::File::create(&path) {
+                                use std::io::Write;
+                                if file.write_all(&icon_data).is_ok() {
+                                    if let Some(p) = path.to_str() {
+                                        n.image_path(p);
+                                    }
+                                }
+                            }
+                        } else if let Some(icon) = icon_names.first() {
+                            n.icon(icon);
+                        }
+
+                        // Timeout.
+                        match timeout_ms {
+                            -1 => {} // system default
+                            0 => { n.timeout(notify_rust::Timeout::Never); }
+                            ms if ms > 0 => {
+                                n.timeout(notify_rust::Timeout::Milliseconds(ms as u32));
+                            }
+                            _ => {}
+                        }
+
+                        // Sound (XDG only via Hint).
+                        #[cfg(all(unix, not(target_os = "macos")))]
+                        if let Some(ref name) = sound {
+                            n.hint(notify_rust::Hint::Sound(name.clone()));
+                        }
+                        #[cfg(not(all(unix, not(target_os = "macos"))))]
+                        let _ = sound;
+
+                        // Buttons (XDG only via action).
+                        #[cfg(all(unix, not(target_os = "macos")))]
+                        for (i, label) in buttons.iter().enumerate() {
+                            n.action(&format!("btn{}", i + 1), label);
+                        }
+                        #[cfg(not(all(unix, not(target_os = "macos"))))]
+                        let _ = buttons;
+
+                        // Show notification and handle callbacks.
+                        if report_click || close_report {
+                            #[cfg(all(unix, not(target_os = "macos")))]
+                            {
+                                if let Ok(mut handle) = n.show() {
+                                    use notify_rust::ActionResponse;
+                                    loop {
+                                        match handle.wait_for_action() {
+                                            ActionResponse::Closed(_reason) => {
+                                                if close_report {
+                                                    let id = notif_id.as_deref().unwrap_or("0");
+                                                    let resp = format!("\x1b]99;i={}:p=close;\x1b\\\\", id);
+                                                    let _ = resp_tx.send(resp);
+                                                }
+                                                break;
+                                            }
+                                            ActionResponse::Action(act) => {
+                                                if report_click {
+                                                    let id = notif_id.as_deref().unwrap_or("0");
+                                                    if let Some(num) = act.strip_prefix("btn") {
+                                                        let resp = format!("\x1b]99;i={};{}\x1b\\\\", id, num);
+                                                        let _ = resp_tx.send(resp);
+                                                    } else {
+                                                        let resp = format!("\x1b]99;i={};\x1b\\\\", id);
+                                                        let _ = resp_tx.send(resp);
+                                                    }
+                                                }
+                                                break;
+                                            }
+                                            _ => break,
+                                        }
+                                    }
+                                }
+                            }
+                            #[cfg(not(all(unix, not(target_os = "macos"))))]
+                            {
+                                let _ = n.show();
+                                let _ = resp_tx;
+                                let _ = notif_id;
+                            }
+                        } else {
+                            if let Err(e) = n.show() {
+                                log::error!("failed to show desktop notification: {e}");
+                            }
+                        }
+                    })
+                    .ok();
+            }
         } else if let Some((title, body)) = basic_notif {
             log::info!("desktop notification (OSC 9/777): title={title:?} body={body:?}");
             std::thread::Builder::new()

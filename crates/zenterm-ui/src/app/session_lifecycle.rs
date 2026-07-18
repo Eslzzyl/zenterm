@@ -96,6 +96,7 @@ impl ZentermApp {
         let mut exit_ids: Vec<SessionId> = Vec::new();
         for id in ids {
             let effects = if let Some(s) = self.sessions.get_mut(&id) {
+                s.tab_active = self.active_session_id == Some(id);
                 s.handle_side_effects(ctx)
             } else {
                 Vec::new()
