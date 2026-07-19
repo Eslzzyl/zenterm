@@ -32,6 +32,7 @@ use zenterm_core::{HintingMode, RenderMode, SubpixelLayout};
 pub mod allocate;
 pub mod atlas_impl;
 pub mod builtin;
+pub mod font_list;
 pub mod rasterize;
 
 // All `impl GlyphAtlas` blocks live in sub-modules:

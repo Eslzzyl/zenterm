@@ -16,6 +16,7 @@ egui = "0.34"
 egui-wgpu = "0.34"
 wgpu = "29"
 alacritty_terminal = "0.26"
+fontdb = "0.23"
 log = "0.4"
 arboard = "3"
 egui_dock = { version = "0.19.1", features = ["serde"] }

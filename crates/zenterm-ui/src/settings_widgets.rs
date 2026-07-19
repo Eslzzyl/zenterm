@@ -12,6 +12,7 @@
 //!
 //! The `description` is optional — pass an empty string to skip it.
 
+use std::collections::HashSet;
 use std::ops::RangeInclusive;
 
 // ── Section header ─────────────────────────────────────────────────────
@@ -167,7 +168,78 @@ pub fn combo_setting<T: PartialEq + Copy>(
     });
 }
 
-// ── Color (hex string) ────────────────────────────────────────────────
+// ── Font family combo (with preview) ──────────────────────────────────
+
+/// A labelled combo box for selecting a font family.
+///
+/// Each option whose name appears in `registered` is rendered with
+/// [`RichText`] using the font's own typeface (requires the font to be
+/// registered in egui's [`FontDefinitions`] via
+/// [`crate::settings::register_preview_fonts`]).
+///
+/// If `current` is not in `families` the combo shows a "Custom: …" entry
+/// and falls back to a text input so the user can type arbitrary names
+/// (e.g. `"monospace"`).
+pub fn font_combo_setting(
+    ui: &mut egui::Ui,
+    label: &str,
+    current: &mut String,
+    families: &[String],
+    registered: &HashSet<String>,
+    description: &str,
+) {
+    row(ui, label, description, |ui| {
+        // Decide whether the current value is in the known list.
+        let known = families.iter().any(|f| f == current);
+
+        // Helper: build a RichText with the font's own typeface when
+        // the font was successfully registered, or plain text otherwise.
+        let rich_or_plain = |name: &str| -> egui::WidgetText {
+            if registered.contains(name) {
+                egui::RichText::new(name)
+                    .font(egui::FontId::new(14.0, egui::FontFamily::Name(name.into())))
+                    .into()
+            } else {
+                egui::RichText::new(name).into()
+            }
+        };
+
+        // The closed-button label.
+        let selected_text = if known {
+            rich_or_plain(current)
+        } else {
+            egui::RichText::new(format!("Custom: {current}")).into()
+        };
+
+        egui::ComboBox::from_id_salt(label)
+            .selected_text(selected_text)
+            .width(180.0)
+            .show_ui(ui, |ui| {
+                for family in families {
+                    let selected = *current == *family;
+                    if ui
+                        .selectable_label(selected, rich_or_plain(family))
+                        .clicked()
+                    {
+                        *current = family.clone();
+                    }
+                }
+            });
+
+        // When the current value is not in the list, show a text field as
+        // fallback so the user can still type arbitrary family names.
+        if !known {
+            let resp = ui.add(
+                egui::TextEdit::singleline(current)
+                    .desired_width(180.0)
+                    .hint_text("e.g. monospace"),
+            );
+            if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                resp.surrender_focus();
+            }
+        }
+    });
+}
 
 /// A labelled hex colour input (e.g. `"#rrggbb"`).
 ///

@@ -7,9 +7,10 @@ edition = "2024"
 zenterm-core = { path = "../zenterm-core" }
 cosmic-text = "0.19"
 etagere = "0.3"
+fontdb = "0.23"
 swash = "0.2"
 zeno = "0.3"
+ttf-parser = "0.25"
 log = "0.4"
 
 [dev-dependencies]
-fontdb = "0.23"

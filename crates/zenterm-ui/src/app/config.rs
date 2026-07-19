@@ -101,12 +101,9 @@ impl ZentermApp {
             }
         }
 
-        // Rebuild the glyph atlas if the logical font size changed.
-        let font_size_changed =
-            (self.config.font.size - old_config.font.size).abs() > f32::EPSILON;
-        if (font_size_changed || changes.font)
-            && (self.config.font.size - old_config.font.size).abs() > f32::EPSILON
-        {
+        // Rebuild the glyph atlas when any font property changes
+        // (size, family, ligatures, hinting, etc.).
+        if changes.font {
             let new_font_size = self.config.font.size * self.pixels_per_point;
             let font_family =
                 std::borrow::Cow::Owned(self.config.font.normal.family.clone());

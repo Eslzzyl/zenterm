@@ -14,6 +14,13 @@ impl ZentermApp {
     pub(crate) fn render_settings_viewport(&mut self, ctx: &egui::Context) {
         use egui::{ViewportBuilder, ViewportId};
 
+        // ── One-time font registration ─────────────────────────────
+        if self.settings_state.open && !self.settings_state.fonts_registered {
+            let ok = crate::settings::register_preview_fonts(ctx, &self.settings_state.font_families);
+            self.settings_state.registered_fonts = ok;
+            self.settings_state.fonts_registered = true;
+        }
+
         let viewport_id = ViewportId::from_hash_of("zenterm_settings_viewport");
         let builder = ViewportBuilder::default()
             .with_title("Settings")

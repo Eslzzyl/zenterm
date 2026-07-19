@@ -5801,6 +5801,7 @@ dependencies = [
  "fontdb",
  "log",
  "swash",
+ "ttf-parser",
  "zeno",
  "zenterm-core",
 ]
@@ -5860,6 +5861,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui_dock",
+ "fontdb",
  "linkify",
  "log",
  "notify-rust",

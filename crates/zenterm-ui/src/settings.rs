@@ -8,6 +8,8 @@
 //! - "Reset All" in the nav sidebar resets to defaults, applies, and saves.
 //! - No explicit Apply/Save buttons — direct manipulation.
 
+use std::collections::HashSet;
+
 use zenterm_config::colors::{AnsiColors, ColorsConfig, CursorColors, PrimaryColors, SelectionColors, ThemePreference};
 use zenterm_config::cursor::{Blinking, CursorConfig, CursorShape};
 use zenterm_core::{HintingMode, RenderMode};
@@ -89,16 +91,32 @@ pub struct SettingsState {
     pub selected_section: SettingsSection,
     /// When `true`, a confirmation dialog for "Reset All" is shown.
     pub pending_reset_confirm: bool,
+    /// Cached list of all monospace font families on this system.
+    /// Populated once at construction by reading the font database.
+    pub font_families: Vec<String>,
+    /// Whether the preview fonts have been registered in egui's
+    /// [`FontDefinitions`] via [`register_preview_fonts`].
+    pub fonts_registered: bool,
+    /// Subset of [`font_families`](Self::font_families) for which
+    /// [`register_preview_fonts`] succeeded.  Every name in this set
+    /// has valid font data that egui can safely use with RichText.
+    pub registered_fonts: HashSet<String>,
 }
 
 impl SettingsState {
     /// Create a new settings state from the app's current config.
+    ///
+    /// Enumerates system monospace fonts (one-time disk scan, ≈9 ms).
     pub fn new(config: &Config) -> Self {
+        let font_families = zenterm_glyph::font_list::list_monospace_families();
         Self {
             open: false,
             working_config: config.clone(),
             selected_section: SettingsSection::Window,
             pending_reset_confirm: false,
+            font_families,
+            fonts_registered: false,
+            registered_fonts: HashSet::new(),
         }
     }
 
@@ -195,6 +213,8 @@ fn render_settings_content(
                         ui,
                         state.selected_section,
                         &mut state.working_config,
+                        &state.font_families,
+                        &state.registered_fonts,
                     );
                 });
             });
@@ -226,10 +246,10 @@ fn render_settings_content(
 
 // ── Per-section render dispatcher ────────────────────────────────────────
 
-fn render_section(ui: &mut egui::Ui, section: SettingsSection, cfg: &mut Config) {
+fn render_section(ui: &mut egui::Ui, section: SettingsSection, cfg: &mut Config, font_families: &[String], registered_fonts: &HashSet<String>) {
     match section {
         SettingsSection::Window => render_window_section(ui, &mut cfg.window),
-        SettingsSection::Font => render_font_section(ui, &mut cfg.font),
+        SettingsSection::Font => render_font_section(ui, &mut cfg.font, font_families, registered_fonts),
         SettingsSection::Colors => render_colors_section(ui, &mut cfg.colors),
         SettingsSection::Cursor => render_cursor_section(ui, &mut cfg.cursor),
         SettingsSection::Selection => render_selection_section(ui, &mut cfg.selection),
@@ -264,14 +284,14 @@ fn render_window_section(ui: &mut egui::Ui, w: &mut WindowConfig) {
 
 // ── Font section ─────────────────────────────────────────────────────────
 
-fn render_font_section(ui: &mut egui::Ui, f: &mut FontConfig) {
+fn render_font_section(ui: &mut egui::Ui, f: &mut FontConfig, font_families: &[String], registered_fonts: &HashSet<String>) {
     settings_widgets::section_header(ui, "Font", "Terminal typeface and spacing.");
     settings_widgets::drag_f32(ui, "Size", &mut f.size, 0.5,
         "Font size in logical pixels at 1× DPI");
-    render_font_description(ui, "Normal", &mut f.normal);
-    render_opt_font_description(ui, "Bold", &mut f.bold);
-    render_opt_font_description(ui, "Italic", &mut f.italic);
-    render_opt_font_description(ui, "Bold Italic", &mut f.bold_italic);
+    render_font_description(ui, "Normal", &mut f.normal, font_families, registered_fonts);
+    render_opt_font_description(ui, "Bold", &mut f.bold, font_families, registered_fonts);
+    render_opt_font_description(ui, "Italic", &mut f.italic, font_families, registered_fonts);
+    render_opt_font_description(ui, "Bold Italic", &mut f.bold_italic, font_families, registered_fonts);
 
     ui.add_space(8.0);
     settings_widgets::section_header(ui, "Spacing", "");
@@ -315,12 +335,12 @@ fn render_font_section(ui: &mut egui::Ui, f: &mut FontConfig) {
     );
 }
 
-fn render_font_description(ui: &mut egui::Ui, label: &str, fd: &mut FontDescription) {
-    settings_widgets::text_setting(ui, &format!("{label} Family"), &mut fd.family,
-        "Font family name (e.g. \"JetBrains Mono\")");
+fn render_font_description(ui: &mut egui::Ui, label: &str, fd: &mut FontDescription, font_families: &[String], registered_fonts: &HashSet<String>) {
+    settings_widgets::font_combo_setting(ui, &format!("{label} Family"), &mut fd.family, font_families, registered_fonts,
+        "Font family name");
 }
 
-fn render_opt_font_description(ui: &mut egui::Ui, label: &str, opt: &mut Option<FontDescription>) {
+fn render_opt_font_description(ui: &mut egui::Ui, label: &str, opt: &mut Option<FontDescription>, font_families: &[String], registered_fonts: &HashSet<String>) {
     let mut enabled = opt.is_some();
     settings_widgets::bool_setting(ui, &format!("{label} – Enable"), &mut enabled,
         &format!("Override the {label} font face"));
@@ -329,7 +349,7 @@ fn render_opt_font_description(ui: &mut egui::Ui, label: &str, opt: &mut Option<
             family: "Menlo".into(),
             style: None,
         });
-        render_font_description(ui, label, fd);
+        render_font_description(ui, label, fd, font_families, registered_fonts);
     } else {
         *opt = None;
     }
@@ -524,4 +544,75 @@ fn render_ui_section(ui: &mut egui::Ui, u: &mut UiConfig) {
         "Save tab layout changes to disk automatically");
     settings_widgets::drag_u64(ui, "Debounce (ms)", &mut u.layout_debounce_ms, 10.0,
         "Milliseconds to wait before writing layout changes");
+}
+
+// ── Egui font registration for preview ─────────────────────────────────
+
+/// Register all known monospace fonts into egui's font system so that
+/// [`font_combo_setting`](settings_widgets::font_combo_setting) can render
+/// each font-family name in its own typeface.
+///
+/// This is a **one-time** operation (gated by
+/// [`SettingsState::fonts_registered`]).  It reads font-file data from disk
+/// and calls [`egui::Context::set_fonts`], which rebuilds the font atlas.
+/// On a typical system with 20–30 monospace families the total cost is
+/// ≈30–60 ms and happens only when the settings panel is first opened.
+///
+/// Returns the set of family names that were successfully registered.
+/// Only these names should be passed to [`font_combo_setting`] via
+/// [`SettingsState::registered_fonts`] so that the ComboBox only uses
+/// `RichText` previews for fonts that egui can actually render.
+pub fn register_preview_fonts(ctx: &egui::Context, families: &[String]) -> HashSet<String> {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+
+    let mut fonts = egui::FontDefinitions::default();
+    let mut ok: HashSet<String> = HashSet::with_capacity(families.len());
+
+    for family in families {
+        // Find the file path + face index for a regular-weight face.
+        let Some(src) = zenterm_glyph::font_list::find_font_source(&db, family) else {
+            continue;
+        };
+
+        let Ok(data) = std::fs::read(&src.path) else {
+            continue;
+        };
+
+        // Validate font data with ttf-parser (same engine fontdb uses).
+        // egui uses skrifa internally; some fonts that pass fontdb's
+        // ttf-parser still confuse skrifa and produce a zero units_per_em,
+        // which would cause a division-by-zero panic inside epaint.
+        if !zenterm_glyph::font_list::validate_font_data(&data, src.index) {
+            log::warn!(
+                "register_preview_fonts: skipping {family:?} ({}:{}) – ttf-parser rejects face",
+                src.path.display(),
+                src.index,
+            );
+            continue;
+        }
+
+        fonts.font_data.insert(
+            family.clone(),
+            std::sync::Arc::new(egui::FontData {
+                font: std::borrow::Cow::Owned(data),
+                index: src.index,
+                tweak: Default::default(),
+            }),
+        );
+        fonts
+            .families
+            .entry(egui::FontFamily::Name(family.clone().into()))
+            .or_default()
+            .push(family.clone());
+        ok.insert(family.clone());
+    }
+
+    log::info!(
+        "register_preview_fonts: registered {} / {} families",
+        ok.len(),
+        families.len()
+    );
+    ctx.set_fonts(fonts);
+    ok
 }
