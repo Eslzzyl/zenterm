@@ -64,6 +64,7 @@ impl ZentermApp {
                 SessionMeta {
                     id: id.0,
                     title: s.title.clone(),
+                    title_override: s.title_override.clone(),
                     cwd: s.cwd.clone(),
                     shell: None,
                     workspace_id: ws_id,

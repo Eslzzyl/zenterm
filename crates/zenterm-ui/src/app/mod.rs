@@ -70,6 +70,10 @@ pub struct ZentermApp {
     // ── Pending actions accumulated by the dock viewer ─────────────
     pending_close: Vec<SessionId>,
     pending_adds: u32,
+    /// Set by `context_menu` when the user requests a tab rename.
+    /// `ZentermApp` picks this up after `DockArea::show_inside` and
+    /// opens the rename dialog.
+    pending_rename: Option<SessionId>,
 
     /// Last window title sent to the OS.  Used to deduplicate
     /// `ViewportCommand::Title` so we don't call `[NSWindow setTitle:]`
@@ -153,7 +157,7 @@ impl ZentermApp {
             0,
             0,
         );
-        let mut session = TerminalSession::new(
+        let session = TerminalSession::new(
             first_id,
             size,
             scheme.clone(),
@@ -164,7 +168,8 @@ impl ZentermApp {
             callback.clone(),
             egui_ctx.clone(),
         );
-        session.title = "shell".into();
+        // `TerminalSession::new` already sets a reasonable initial title
+        // via `detect_shell_name()`.  No override needed.
         let mut sessions = HashMap::new();
         sessions.insert(first_id, session);
 
@@ -206,7 +211,7 @@ impl ZentermApp {
             if sessions.contains_key(sid) {
                 continue;
             }
-            let mut s = TerminalSession::new(
+            let s = TerminalSession::new(
                 *sid,
                 size,
                 scheme.clone(),
@@ -217,7 +222,6 @@ impl ZentermApp {
                 callback.clone(),
                 egui_ctx.clone(),
             );
-            s.title = "shell".into();
             sessions.insert(*sid, s);
         }
 
@@ -226,12 +230,19 @@ impl ZentermApp {
             workspaces.active_workspace_mut().new_tab(first_id);
         }
 
-        // Hydrate session titles / cwd from sessions.json.
+        // Hydrate session cwd and title_override from sessions.json.
+        // Note: `title` is NOT restored here — it's a transient value
+        // that the shell will set via OSC shortly after startup, and
+        // restoring a stale title from disk would only cause confusion
+        // (e.g. overwriting the constructor's detected shell name).
         let saved_meta = layout_io.load_sessions();
         for (id, meta) in saved_meta {
             if let Some(session) = sessions.get_mut(&SessionId(id)) {
-                if !meta.title.is_empty() {
-                    session.title = meta.title;
+                // Restore manual title override if one was persisted.
+                if let Some(ref override_title) = meta.title_override {
+                    if !override_title.is_empty() {
+                        session.title_override = Some(override_title.clone());
+                    }
                 }
                 if let Some(cwd) = meta.cwd {
                     session.cwd = Some(cwd);
@@ -267,6 +278,7 @@ impl ZentermApp {
             error_toast: None,
             pending_close: Vec::new(),
             pending_adds: 0,
+            pending_rename: None,
             current_window_title: None,
             config_dirty: false,
             last_config_save_at: None,

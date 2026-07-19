@@ -1,5 +1,6 @@
 //! Terminal session construction.
 
+use std::path::Path;
 use std::sync::mpsc;
 use std::sync::Arc;
 
@@ -10,6 +11,34 @@ use zenterm_term::{ColorScheme, Terminal};
 use super::types::{NotificationState, SessionId, TerminalSession};
 use crate::glyph_cache::SharedGlyphAtlas;
 use crate::gpu::SharedGpuContext;
+
+/// Detect the shell name from environment variables.
+///
+/// Priority:
+/// 1. `$SHELL` — standard on Unix, also set by MSYS2/Git Bash on Windows
+/// 2. `$ComSpec` — Windows cmd.exe (matches what `portable-pty` uses as
+///    the default program on Windows)
+/// 3. `"terminal"` — fallback
+///
+/// The `.exe` suffix is stripped on Windows for cleaner display.
+fn detect_shell_name() -> String {
+    let shell = std::env::var("SHELL")
+        .or_else(|_| std::env::var("ComSpec"))
+        .unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "cmd.exe".into()
+            } else {
+                "terminal".into()
+            }
+        });
+
+    Path::new(&shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.trim_end_matches(".exe").to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "terminal".into())
+}
 
 impl TerminalSession {
     /// Construct a new session: spawn a PTY, initialise the terminal,
@@ -64,7 +93,9 @@ impl TerminalSession {
         let (notification_resp_tx, notification_resp_rx) = mpsc::channel();
         Self {
             id,
-            title: format!("shell-{}", id.0),
+            title: detect_shell_name(),
+            title_override: None,
+            seen_terminal_title: false,
             cwd: None,
             git_branch: None,
             notification: NotificationState::None,

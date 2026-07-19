@@ -61,6 +61,11 @@ pub struct PersistedWorkspace {
 pub struct SessionMeta {
     pub id: u64,
     pub title: String,
+    /// Manual tab-title override.  `None` when the user has not
+    /// overridden the title (the terminal-set title is in use).
+    /// `Some("")` is treated the same as `None`.
+    #[serde(default)]
+    pub title_override: Option<String>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
     #[serde(default)]
@@ -276,6 +281,7 @@ mod tests {
             SessionMeta {
                 id: 0,
                 title: "shell".into(),
+                title_override: None,
                 cwd: Some(PathBuf::from("/Users/me/proj")),
                 shell: None,
                 workspace_id: Some(0),
@@ -283,6 +289,7 @@ mod tests {
             SessionMeta {
                 id: 1,
                 title: "build".into(),
+                title_override: None,
                 cwd: None,
                 shell: Some("/bin/zsh".into()),
                 workspace_id: Some(1),

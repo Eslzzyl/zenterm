@@ -61,7 +61,15 @@ pub enum NotificationState {
 pub struct TerminalSession {
     // ── Identity ─────────────────────────────────────────────────────
     pub id: SessionId,
+    /// Terminal-set title (OSC 0/1/2).  Updated by the PTY pump.
     pub title: String,
+    /// Manually overridden tab title.  When `Some` and non-empty, this
+    /// takes priority over all other title sources (see [`Self::title_effective`]).
+    pub title_override: Option<String>,
+    /// Whether the terminal has ever sent at least one OSC title sequence
+    /// (including empty).  Used by [`Self::title_effective`] to distinguish
+    /// "never received a title" from "OSC set title to empty".
+    pub seen_terminal_title: bool,
     pub cwd: Option<PathBuf>,
     pub git_branch: Option<String>,
     pub notification: NotificationState,
@@ -221,3 +229,45 @@ pub(crate) const SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 24.0;
 /// flicker.  This value should be longer than the typical gap between the
 /// pre-exec and post-exec title events (usually < 20 ms on a local PTY).
 pub(crate) const TITLE_DEBOUNCE_MS: f64 = 80.0;
+
+// ── Title resolution ─────────────────────────────────────────────────
+
+impl TerminalSession {
+    /// Resolve the effective display title using the priority chain:
+    ///
+    /// 1. [`Self::title_override`] — manually set by user (highest priority)
+    /// 2. [`Self::title`] — OSC-set terminal title (only if
+    ///    [`Self::seen_terminal_title`] is true and title is non-empty)
+    /// 3. **Inferred title** — basename of [`Self::cwd`] (working directory)
+    /// 4. `"terminal"` — ultimate hardcoded fallback
+    pub fn title_effective(&self) -> String {
+        // ① Manual override
+        if let Some(ref t) = self.title_override {
+            if !t.is_empty() {
+                return t.clone();
+            }
+        }
+
+        // ② Terminal / initial title (non-empty)
+        // This covers both the OSC-set terminal title and the initial
+        // best-guess title set by the constructor (e.g. "bash" from
+        // `$SHELL`).  We do NOT gate on `seen_terminal_title` here so
+        // that the initial title shows immediately at startup; once the
+        // shell sends a real OSC title it replaces this value.
+        if !self.title.is_empty() {
+            return self.title.clone();
+        }
+
+        // ③ Inferred from cwd basename
+        if let Some(ref cwd) = self.cwd {
+            if let Some(name) = cwd.file_name().and_then(|n| n.to_str()) {
+                if !name.is_empty() {
+                    return name.to_string();
+                }
+            }
+        }
+
+        // ④ Ultimate fallback
+        "terminal".to_string()
+    }
+}

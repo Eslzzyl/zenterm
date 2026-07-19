@@ -16,12 +16,30 @@
 //! The manager persists `next_session_id` and `next_workspace_id`
 //! through [`crate::layout_io`].
 
+use std::path::Path;
 use std::time::Instant;
 
 use egui_dock::DockState;
 use serde::{Deserialize, Serialize};
 
 use crate::session::SessionId;
+
+/// Pick a sensible default name for the initial workspace based on
+/// the user's shell, falling back to `"default"`.
+fn default_workspace_name() -> String {
+    let shell = std::env::var("SHELL")
+        .or_else(|_| std::env::var("ComSpec"))
+        .unwrap_or_else(|_| {
+            if cfg!(windows) { "cmd.exe".into() } else { "default".into() }
+        });
+
+    Path::new(&shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.trim_end_matches(".exe").to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "default".into())
+}
 
 // ── WorkspaceId ─────────────────────────────────────────────────────────
 
@@ -127,11 +145,13 @@ pub struct WorkspaceManager {
 }
 
 impl WorkspaceManager {
-    /// Create a manager with a single "default" workspace.
+    /// Create a manager with a single workspace named after the user's
+    /// shell (or `"default"` if `$SHELL` is unset).
     pub fn new() -> Self {
         let default_ws_id = WorkspaceId(0);
+        let name = default_workspace_name();
         Self {
-            workspaces: vec![WorkspaceState::new(default_ws_id, "default")],
+            workspaces: vec![WorkspaceState::new(default_ws_id, name)],
             active_workspace_id: default_ws_id,
             next_session_id: 1,
             next_workspace_id: 1,
@@ -313,19 +333,21 @@ mod tests {
     fn new_manager_has_default_workspace() {
         let mgr = WorkspaceManager::new();
         assert_eq!(mgr.workspaces.len(), 1);
-        assert_eq!(mgr.active_workspace().name, "default");
+        // Name depends on $SHELL env var; just verify it's non-empty.
+        assert!(!mgr.active_workspace().name.is_empty());
     }
 
     #[test]
     fn create_and_switch_workspace() {
         let mut mgr = WorkspaceManager::new();
+        let initial_name = mgr.workspaces[0].name.clone();
         let dev_id = mgr.create_workspace("dev");
         assert_eq!(mgr.workspaces.len(), 2);
         assert_eq!(mgr.active_workspace().name, "dev");
 
         let ws0_id = mgr.workspaces[0].id;
         assert!(mgr.switch_to(ws0_id));
-        assert_eq!(mgr.active_workspace().name, "default");
+        assert_eq!(mgr.active_workspace().name, initial_name);
         assert!(mgr.switch_to(dev_id));
         assert_eq!(mgr.active_workspace().name, "dev");
     }

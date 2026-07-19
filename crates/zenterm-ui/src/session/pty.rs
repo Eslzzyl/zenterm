@@ -91,7 +91,29 @@ impl TerminalSession {
         // Apply pending title if it has been stable long enough.
         if let Some((title, at)) = &self.pending_title {
             if at.elapsed().as_secs_f64() * 1000.0 >= TITLE_DEBOUNCE_MS {
-                if self.title != *title {
+                self.seen_terminal_title = true;
+
+                if title.is_empty() {
+                    // Empty title → fallback to cwd basename.
+                    // This matches Ghostty's behaviour: an empty OSC title
+                    // sequence is treated as a reset, and we show the
+                    // working directory name instead.
+                    let fallback = self
+                        .cwd
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+                    if self.title != fallback {
+                        log::debug!(
+                            "session: empty title → fallback to cwd '{:?}'",
+                            fallback,
+                        );
+                        self.title = fallback;
+                        effects.push(SessionEffect::WindowTitle(self.title.clone()));
+                    }
+                } else if self.title != *title {
                     log::debug!("session: window title changed: {:?} -> {:?}", self.title, title);
                     self.title = title.clone();
                     effects.push(SessionEffect::WindowTitle(title.clone()));

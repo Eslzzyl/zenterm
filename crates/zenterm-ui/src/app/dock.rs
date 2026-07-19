@@ -18,6 +18,7 @@ impl ZentermApp {
         // Clear pending queues collected during the previous frame.
         self.pending_close.clear();
         self.pending_adds = 0;
+        self.pending_rename = None;
 
         // ── Optional sidebar ────────────────────────────────────────
         let show_sidebar = self.config.ui.sidebar_enabled;
@@ -110,14 +111,12 @@ impl ZentermApp {
 
                     // ── Apply queued actions ──────────────────────
                     if queued_new_ws {
-                        let active_title = self
+                        let active_session = self
                             .active_session_id
-                            .and_then(|id| self.sessions.get(&id))
-                            .map(|s| s.title.clone())
-                            .unwrap_or_else(|| "workspace".into());
+                            .and_then(|id| self.sessions.get(&id));
                         let ws_name = Self::generate_workspace_name(
                             &self.workspaces,
-                            &active_title,
+                            active_session,
                         );
                         self.workspaces.create_workspace(ws_name);
                         // Also spawn a first tab in the new workspace.
@@ -272,6 +271,7 @@ impl ZentermApp {
                         active_session_id: &mut self.active_session_id,
                         pending_close: &mut self.pending_close,
                         pending_adds: &mut self.pending_adds,
+                        pending_rename: &mut self.pending_rename,
                         show_active_indicator,
                     };
                     area.show_inside(ui, &mut viewer);
@@ -344,6 +344,71 @@ impl ZentermApp {
                     }
                 }
             });
+
+        // ── Tab rename dialog (modal, rendered outside the dock area) ──
+        if let Some(rename_id) = self.pending_rename {
+            let buf_id = egui::Id::new(("tab_rename_buf", rename_id.0));
+
+            // Pre-fill with the current effective title.
+            let initial = self
+                .sessions
+                .get(&rename_id)
+                .map(|s| s.title_effective())
+                .unwrap_or_default();
+
+            let mut buf: String = ui.ctx().data(|d| {
+                d.get_temp::<String>(buf_id)
+                    .unwrap_or(initial)
+            });
+
+            let ctx = ui.ctx();
+            let area_id = egui::Id::new(("tab_rename_area", rename_id.0));
+
+            egui::Area::new(area_id)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::popup(&*ctx.global_style())
+                        .inner_margin(egui::Margin::symmetric(16, 12))
+                        .show(ui, |ui| {
+                            ui.set_min_width(280.0);
+                            ui.strong("Rename Tab");
+                            ui.add_space(10.0);
+
+                            ui.add(
+                                egui::TextEdit::singleline(&mut buf)
+                                    .id(egui::Id::new("tab_rename_dialog_input"))
+                                    .desired_width(f32::INFINITY),
+                            )
+                            .request_focus();
+
+                            ui.add_space(14.0);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button("OK").clicked() {
+                                        if !buf.is_empty() {
+                                            if let Some(s) = self.sessions.get_mut(&rename_id) {
+                                                s.title_override = Some(buf.clone());
+                                            }
+                                        }
+                                        self.pending_rename = None;
+                                        ui.ctx().data_mut(|d| {
+                                            d.remove_temp::<String>(buf_id);
+                                        });
+                                    }
+                                    ui.add_space(8.0);
+                                    if ui.button("Cancel").clicked() {
+                                        self.pending_rename = None;
+                                        ui.ctx().data_mut(|d| {
+                                            d.remove_temp::<String>(buf_id);
+                                        });
+                                    }
+                                },
+                            );
+                        });
+                });
+        }
 
         // ── Apply pending actions collected by the viewer ─────────
         let added = self.pending_adds;

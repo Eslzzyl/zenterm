@@ -195,20 +195,22 @@ impl ZentermApp {
         }
     }
 
-    /// Generate a unique workspace name based on the active tab's
-    /// title.  Falls back to a numbered name if the title is empty
-    /// or the name already exists.
+    /// Generate a unique workspace name.
+    ///
+    /// Uses the active session's effective title to produce a concise,
+    /// readable name suitable for the sidebar.  Falls back to
+    /// `"workspace"` if no session is available or the title is empty.
+    /// Appends a numeric suffix (`-2`, `-3`, …) if the name is taken.
     pub(crate) fn generate_workspace_name(
         workspaces: &WorkspaceManager,
-        active_title: &str,
+        active_session: Option<&crate::session::TerminalSession>,
     ) -> String {
-        let base = if active_title.is_empty() {
-            "workspace".into()
-        } else {
-            // Truncate very long titles to keep the sidebar tidy.
-            let mut t = active_title.to_string();
-            t.truncate(40);
-            t
+        let base = match active_session {
+            Some(session) => {
+                let title = session.title_effective();
+                extract_workspace_essence(&title)
+            }
+            None => "workspace".into(),
         };
 
         // Ensure uniqueness by appending a suffix if needed.
@@ -228,7 +230,47 @@ impl ZentermApp {
         }
         unreachable!()
     }
+}
 
+/// Extract a concise, human-readable workspace name from a session title.
+fn extract_workspace_essence(title: &str) -> String {
+    let t = title.trim();
+    if t.is_empty() {
+        return "workspace".into();
+    }
+
+    // ① If the title looks like a path, take the last (non-empty) component.
+    if t.contains('/') || t.contains('\\') {
+        if let Some(last) = t
+            .split(&['/', '\\'][..])
+            .filter(|s| !s.is_empty())
+            .last()
+        {
+            // Also strip common file extensions for cleanliness.
+            let cleaned = if let Some((stem, _ext)) = last.rsplit_once('.') {
+                if stem.len() > 1 { stem } else { last }
+            } else {
+                last
+            };
+            return truncate_str(cleaned, 30);
+        }
+    }
+
+    // ② If it looks like a command line (contains spaces), take the first word.
+    if let Some((cmd, _)) = t.split_once(' ') {
+        return truncate_str(cmd, 30);
+    }
+
+    // ③ Use the title as-is (truncated to 30 chars).
+    truncate_str(t, 30)
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        s[..max].to_string()
+    }
 }
 // ── Colour helpers ─────────────────────────────────────────────────────
 

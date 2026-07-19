@@ -29,6 +29,10 @@ pub struct TabViewerContext<'a> {
     pub pending_close: &'a mut Vec<SessionId>,
     /// Counts `on_add` invocations that should result in a new tab.
     pub pending_adds: &'a mut u32,
+    /// Set by `context_menu` when the user requests a tab rename.
+    /// The caller (`ZentermApp`) picks this up after `DockArea::show_inside`
+    /// and opens the rename dialog.
+    pub pending_rename: &'a mut Option<SessionId>,
     /// Whether to draw the active-panel border indicator.
     /// Should be `false` when there is only a single tab (no split).
     pub show_active_indicator: bool,
@@ -41,7 +45,7 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         let base = self
             .sessions
             .get(tab)
-            .map(|s| s.title.clone())
+            .map(|s| s.title_effective())
             .unwrap_or_else(|| format!("(missing #{})", tab.0));
 
         // Append ConEmu progress indicator if non-default.
@@ -52,6 +56,26 @@ impl<'a> TabViewer for TabViewerContext<'a> {
             _ => base,
         }
         .into()
+    }
+
+    fn context_menu(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab, _path: NodePath) {
+        if let Some(session) = self.sessions.get(tab) {
+            let has_override = session.title_override.is_some();
+
+            if ui.button("Rename Tab…").clicked() {
+                *self.pending_rename = Some(*tab);
+                ui.close();
+            }
+
+            if has_override {
+                if ui.button("Reset Tab Title").clicked() {
+                    if let Some(s) = self.sessions.get_mut(tab) {
+                        s.title_override = None;
+                    }
+                    ui.close();
+                }
+            }
+        }
     }
 
     fn id(&mut self, tab: &mut Self::Tab) -> egui::Id {
