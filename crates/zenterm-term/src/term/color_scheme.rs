@@ -16,6 +16,16 @@ pub struct ColorScheme {
     pub selection_bg: Rgba,
     /// Selection foreground colour.  `None` means keep the cell's fg.
     pub selection_fg: Option<Rgba>,
+
+    // ── Cursor colours ───────────────────────────────────────────────
+    /// Cursor fill colour (background of the cursor cell).
+    pub cursor_bg: Rgba,
+    /// Cursor text colour.  `None` means "use the cell's own foreground".
+    pub cursor_fg: Option<Rgba>,
+
+    // Saved original theme cursor_bg so OSC 112 (reset cursor colour)
+    // can restore it without requiring a full theme rebuild.
+    theme_cursor_bg: Rgba,
 }
 
 impl fmt::Debug for ColorScheme {
@@ -50,7 +60,7 @@ impl ColorScheme {
         // Foreground / Background / Cursor.
         colors[NamedColor::Foreground as usize] = Some(rgba_to_rgb(&theme.foreground));
         colors[NamedColor::Background as usize] = Some(rgba_to_rgb(&theme.background));
-        colors[NamedColor::Cursor as usize] = Some(rgba_to_rgb(&theme.cursor));
+        colors[NamedColor::Cursor as usize] = Some(rgba_to_rgb(&theme.cursor_bg));
         // Dim / Bright foreground.
         colors[NamedColor::DimForeground as usize] = Some(rgba_to_rgb(&theme.dim_foreground));
         colors[NamedColor::BrightForeground as usize] = Some(rgba_to_rgb(&theme.bright_foreground));
@@ -77,16 +87,44 @@ impl ColorScheme {
             colors[232 + i] = Some(Rgb { r: v, g: v, b: v });
         }
 
+        let cursor_fg = if theme.cursor_fg.is_fully_transparent() {
+            None
+        } else {
+            Some(theme.cursor_fg)
+        };
+
         Self {
             colors,
             selection_bg: theme.selection_bg,
             selection_fg: Some(theme.selection_fg),
+            cursor_bg: theme.cursor_bg,
+            cursor_fg,
+            theme_cursor_bg: theme.cursor_bg,
         }
     }
 
     /// Rebuild this scheme from a new theme (replaces *all* colours).
     pub fn set_theme(&mut self, theme: &Theme) {
         *self = Self::from_theme(theme);
+    }
+
+    // ── Dynamic cursor colour overrides (OSC 12 / 112) ────────────────
+
+    /// Override the cursor fill colour at runtime (OSC 12).
+    ///
+    /// Sets both the alacritty `Colors` array entry (so that VT colour
+    /// lookups still work) and our own `cursor_bg` field (used directly
+    /// by the renderer).
+    pub fn set_cursor_color(&mut self, rgb: Rgb) {
+        self.colors[NamedColor::Cursor as usize] = Some(rgb);
+        self.cursor_bg = Rgba::from_u8(rgb.r, rgb.g, rgb.b, 255);
+    }
+
+    /// Reset the cursor fill colour to the theme default (OSC 112).
+    pub fn reset_cursor_color(&mut self) {
+        let rgb = rgba_to_rgb(&self.theme_cursor_bg);
+        self.colors[NamedColor::Cursor as usize] = Some(rgb);
+        self.cursor_bg = self.theme_cursor_bg;
     }
 }
 
@@ -98,6 +136,7 @@ fn rgba_to_rgb(c: &Rgba) -> Rgb {
         b: (c.b() * 255.0).round() as u8,
     }
 }
+
 pub(crate) fn named_color_default_rgb(named: NamedColor) -> Rgb {
     match named {
         NamedColor::Black => Rgb { r: 0, g: 0, b: 0 },

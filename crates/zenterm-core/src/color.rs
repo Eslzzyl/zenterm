@@ -53,6 +53,11 @@ impl Rgba {
     pub fn a(&self) -> f32 {
         self.0[3]
     }
+
+    /// Returns `true` when the alpha channel is zero (fully transparent).
+    pub fn is_fully_transparent(self) -> bool {
+        self.0[3] == 0.0
+    }
 }
 
 impl From<[f32; 4]> for Rgba {

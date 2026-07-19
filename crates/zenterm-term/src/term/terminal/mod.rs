@@ -17,7 +17,7 @@ use crate::image::sixel;
 use crate::image::ImageCache;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{ClipboardType, Config as TermConfig, Term, TermDamage, TermMode};
-use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor};
+use alacritty_terminal::vte::ansi::{Color, Handler, NamedColor, Processor, Rgb};
 
 use zenterm_core::cell::{Cell, UnderlineStyle};
 use zenterm_core::color::Rgba;
@@ -436,6 +436,46 @@ impl Terminal {
                     let title = parts.next().unwrap_or("").to_string();
                     let body = parts.next().unwrap_or("").to_string();
                     self.pending_notification = Some((title, body));
+                }
+                // ── Dynamic colour (OSC 10/11/12 / 110/111/112) ──────
+                10 | 11 | 12 => {
+                    // OSC 10 — foreground; OSC 11 — background;
+                    // OSC 12 — cursor fill colour.
+                    //
+                    // Payload format: "#RRGGBB" or "?" (query, not yet
+                    // implemented — ignore queries for now).
+                    let payload = osc.payload.trim();
+                    if payload == "?" {
+                        // Query — reply would be written to the PTY via
+                        // `replies`.  Not yet implemented.
+                    } else if let Some(rgb) = parse_osc_hex_rgb(payload) {
+                        let index = match osc.number {
+                            10 => NamedColor::Foreground as usize,
+                            11 => NamedColor::Background as usize,
+                            12 => {
+                                self.set_cursor_color(rgb);
+                                // Skip the generic set_color path for
+                                // cursor so we don't re-damage.
+                                self.damage.mark_all();
+                                continue;
+                            }
+                            _ => unreachable!(),
+                        };
+                        self.term.set_color(index, rgb);
+                    }
+                }
+                110 | 111 | 112 => {
+                    // OSC 110/111/112 — reset foreground/background/cursor.
+                    // (These resets are essentially no-ops for our
+                    // architecture since we always resolve from the scheme;
+                    // we still apply them to keep alacritty's internal
+                    // Colors array consistent.)
+                    match osc.number {
+                        110 => self.term.reset_color(NamedColor::Foreground as usize),
+                        111 => self.term.reset_color(NamedColor::Background as usize),
+                        112 => self.reset_cursor_color(),
+                        _ => unreachable!(),
+                    }
                 }
                 99 => {
                     // OSC 99 — Kitty desktop notification.
@@ -1114,6 +1154,8 @@ impl Terminal {
             pos: TermPos::new(viewport_line.max(0) as usize, point.column.0),
             style: self.term.cursor_style(),
             visible: self.term.mode().contains(TermMode::SHOW_CURSOR),
+            cursor_bg: self.scheme.cursor_bg,
+            cursor_fg: self.scheme.cursor_fg,
         }
     }
 
@@ -1133,6 +1175,22 @@ impl Terminal {
     /// Get the current colour scheme (for inspection).
     pub fn scheme(&self) -> &ColorScheme {
         &self.scheme
+    }
+
+    // ── Dynamic cursor colour (OSC 12 / 112) ─────────────────────────
+
+    /// Override the cursor fill colour at runtime via OSC 12.
+    pub fn set_cursor_color(&mut self, rgb: Rgb) {
+        self.scheme.set_cursor_color(rgb);
+        // Cursor colour changes don't need a full cell re-resolve, but
+        // we need the cursor quad to be re-emitted.
+        self.damage.mark_all();
+    }
+
+    /// Reset the cursor colour to the theme default via OSC 112.
+    pub fn reset_cursor_color(&mut self) {
+        self.scheme.reset_cursor_color();
+        self.damage.mark_all();
     }
 
     // ── Pending side-effect accessors ──────────────────────────────────
@@ -1301,4 +1359,17 @@ impl Terminal {
                 .unwrap_or(Rgba::WHITE),
         }
     }
+}
+
+/// Parse an OSC colour payload in `"#RRGGBB"` hex format, stripping an
+/// optional leading `#`.  Returns `None` on invalid input.
+fn parse_osc_hex_rgb(s: &str) -> Option<Rgb> {
+    let s = s.strip_prefix('#').unwrap_or(s);
+    if s.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some(Rgb { r, g, b })
 }

@@ -3,6 +3,7 @@
 use alacritty_terminal::vte::ansi::CursorStyle;
 
 use zenterm_core::cell::Cell;
+use zenterm_core::color::Rgba;
 use zenterm_core::position::TermPos;
 
 /// Cursor information for rendering.
@@ -11,6 +12,10 @@ pub struct CursorInfo {
     pub pos: TermPos,
     pub style: CursorStyle,
     pub visible: bool,
+    /// Cursor fill colour (background of the cursor cell).
+    pub cursor_bg: Rgba,
+    /// Cursor text colour.  `None` → use the cell's own foreground.
+    pub cursor_fg: Option<Rgba>,
 }
 
 // ── Grid view ───────────────────────────────────────────────────────────

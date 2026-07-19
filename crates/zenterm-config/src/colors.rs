@@ -206,7 +206,10 @@ impl ColorsConfig {
 
         // Cursor.
         if let Some(c) = parse_hex_opt(&self.cursor.cursor) {
-            theme.cursor = c;
+            theme.cursor_bg = c;
+        }
+        if let Some(c) = parse_hex_opt(&self.cursor.text) {
+            theme.cursor_fg = c;
         }
 
         // Selection.

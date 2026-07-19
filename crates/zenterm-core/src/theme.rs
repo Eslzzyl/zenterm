@@ -4,6 +4,14 @@
 //! terminal session: foreground / background, cursor, selection, and the
 //! full ANSI 16-colour palette.  It is designed to be cheaply cloneable
 //! so each terminal tab can hold its own copy.
+//!
+//! # Cursor colours
+//!
+//! The cursor is modelled as a **fill** (`cursor_bg`) and an optional
+//! **text** (`cursor_fg`).  When `cursor_fg` is fully transparent it
+//! means "use the cell's own foreground colour" (the classic inverse-video
+//! cursor behaviour).  Opaque `cursor_fg` overrides the text colour of
+//! the character under the block cursor.
 
 use std::borrow::Cow;
 
@@ -49,8 +57,11 @@ pub struct Theme {
     pub foreground: Rgba,
     /// Default background colour.
     pub background: Rgba,
-    /// Cursor colour.
-    pub cursor: Rgba,
+    /// Cursor fill colour (background of the cursor cell).
+    pub cursor_bg: Rgba,
+    /// Cursor text colour.  Fully transparent → use the cell's own
+    /// foreground (classic inverse-video behaviour).
+    pub cursor_fg: Rgba,
     /// Selection background colour.
     pub selection_bg: Rgba,
     /// Selection foreground colour.
@@ -74,127 +85,123 @@ pub struct Theme {
     pub ui_bg: Rgba,
     /// Text colour for UI panels.
     pub ui_text: Rgba,
-    /// Accent colour for UI controls.
+    /// Accent colour for interactive UI elements.
     pub ui_accent: Rgba,
-    /// Surface colour (cards, list items).
+    /// Surface colour for cards / list items.
     pub ui_surface: Rgba,
 }
 
 impl Theme {
     /// Resolve a [`ThemePreference`] + system-dark-mode flag into a
-    /// concrete theme.
-    ///
-    /// Returns an owned clone so the caller can further customise colours
-    /// (e.g. apply config-file overrides) without mutating the built-in
-    /// statics.
+    /// concrete [`Theme`].
     pub fn resolve(pref: ThemePreference, system_dark: bool) -> Theme {
         match pref {
             ThemePreference::Dark => THEME_DARK.clone(),
             ThemePreference::Light => THEME_LIGHT.clone(),
             ThemePreference::System => {
-                if system_dark {
-                    THEME_DARK.clone()
-                } else {
-                    THEME_LIGHT.clone()
-                }
+                if system_dark { THEME_DARK.clone() } else { THEME_LIGHT.clone() }
             }
         }
     }
 }
 
-// ── Built-in presets ──────────────────────────────────────────────────
+// ── Built-in themes ───────────────────────────────────────────────────
 
-/// The default **dark** theme — a classic terminal look with black
-/// background and light-grey text.
+/// Built-in dark theme (sRGB approximate colour palette).
 pub static THEME_DARK: Theme = Theme {
     name: Cow::Borrowed("Dark"),
+
+    // Terminal basics.
     foreground: srgb(220, 220, 220),
     background: srgb(0, 0, 0),
-    cursor: srgb(220, 220, 220),
-    selection_bg: srgb(81, 108, 165),
+    cursor_bg: srgb(220, 220, 220),
+    cursor_fg: Rgba::TRANSPARENT,
+    selection_bg: srgb(80, 80, 100),
     selection_fg: srgb(220, 220, 220),
 
+    // ANSI normal.
     ansi_normal: [
         srgb(0, 0, 0),       // Black
-        srgb(170, 0, 0),     // Red
-        srgb(0, 170, 0),     // Green
-        srgb(170, 85, 0),    // Yellow
-        srgb(0, 0, 170),     // Blue
-        srgb(170, 0, 170),   // Magenta
-        srgb(0, 170, 170),   // Cyan
-        srgb(200, 200, 200), // White
+        srgb(200, 50, 50),   // Red
+        srgb(80, 180, 80),   // Green
+        srgb(200, 180, 50),  // Yellow
+        srgb(50, 100, 200),  // Blue
+        srgb(180, 60, 180),  // Magenta
+        srgb(50, 170, 180),  // Cyan
+        srgb(190, 190, 190), // White
     ],
+
+    // ANSI bright.
     ansi_bright: [
-        srgb(85, 85, 85),    // BrightBlack
-        srgb(255, 85, 85),   // BrightRed
-        srgb(85, 255, 85),   // BrightGreen
-        srgb(255, 255, 85),  // BrightYellow
-        srgb(85, 85, 255),   // BrightBlue
-        srgb(255, 85, 255),  // BrightMagenta
-        srgb(85, 255, 255),  // BrightCyan
+        srgb(100, 100, 100), // BrightBlack
+        srgb(255, 80, 80),   // BrightRed
+        srgb(100, 255, 100), // BrightGreen
+        srgb(255, 255, 80),  // BrightYellow
+        srgb(80, 130, 255),  // BrightBlue
+        srgb(255, 80, 255),  // BrightMagenta
+        srgb(80, 255, 255),  // BrightCyan
         srgb(255, 255, 255), // BrightWhite
     ],
 
+    // Extended.
     dim_foreground: srgb(140, 140, 140),
     bright_foreground: srgb(255, 255, 255),
 
-    // Dark UI colours
-    ui_bg: srgb(18, 18, 18),
+    // UI chrome.
+    ui_bg: srgb(30, 30, 30),
     ui_text: srgb(200, 200, 200),
-    ui_accent: srgb(81, 108, 165),
-    ui_surface: srgb(30, 30, 30),
+    ui_accent: srgb(60, 120, 220),
+    ui_surface: srgb(45, 45, 45),
 };
 
-/// A **light** theme — white background with dark text, suitable for
-/// use on a bright desktop.
-///
-/// ANSI color values are tuned for readability on a light background:
-/// regular colours are dark enough to contrast against white, and
-/// "bright" variants are *saturated* (rather than light) so they remain
-/// legible instead of washing out.
+/// Built-in light theme (sRGB approximate colour palette).
 pub static THEME_LIGHT: Theme = Theme {
     name: Cow::Borrowed("Light"),
+
+    // Terminal basics.
     foreground: srgb(30, 30, 30),
     background: srgb(255, 255, 255),
-    cursor: srgb(30, 30, 30),
-    selection_bg: srgb(130, 170, 250),
+    cursor_bg: srgb(30, 30, 30),
+    cursor_fg: Rgba::TRANSPARENT,
+    selection_bg: srgb(180, 180, 220),
     selection_fg: srgb(30, 30, 30),
 
-    // Regular ANSI colours – dark enough to be clearly visible on white.
+    // ANSI normal.
     ansi_normal: [
-        srgb(12, 12, 12),   // Black          (#0C0C0C)
-        srgb(197, 15, 31),  // Red            (#C50F1F)
-        srgb(19, 161, 14),  // Green          (#13A10E)
-        srgb(193, 156, 0),  // Yellow         (#C19C00)
-        srgb(0, 55, 218),   // Blue           (#0037DA)
-        srgb(136, 23, 152), // Magenta        (#881798)
-        srgb(58, 150, 221), // Cyan           (#3A96DD)
-        srgb(204, 204, 204),// White          (#CCCCCC)
-    ],
-    // Bright ANSI colours – saturated (not light) so they stay legible
-    // against a white background.
-    ansi_bright: [
-        srgb(118, 118, 118),// BrightBlack    (#767676)
-        srgb(231, 72, 86),  // BrightRed      (#E74856)
-        srgb(22, 198, 12),  // BrightGreen    (#16C60C)
-        srgb(200, 175, 0),  // BrightYellow   (#C8AF00 — darker gold)
-        srgb(59, 120, 255), // BrightBlue     (#3B78FF)
-        srgb(180, 0, 158),  // BrightMagenta  (#B4009E)
-        srgb(97, 214, 214), // BrightCyan     (#61D6D6)
-        srgb(242, 242, 242),// BrightWhite    (#F2F2F2)
+        srgb(0, 0, 0),       // Black
+        srgb(200, 50, 50),   // Red
+        srgb(80, 180, 80),   // Green
+        srgb(180, 160, 40),  // Yellow
+        srgb(50, 80, 180),   // Blue
+        srgb(160, 50, 160),  // Magenta
+        srgb(40, 150, 160),  // Cyan
+        srgb(180, 180, 180), // White
     ],
 
-    dim_foreground: srgb(140, 140, 140),
+    // ANSI bright.
+    ansi_bright: [
+        srgb(100, 100, 100), // BrightBlack
+        srgb(255, 60, 60),   // BrightRed
+        srgb(60, 220, 60),   // BrightGreen
+        srgb(220, 220, 60),  // BrightYellow
+        srgb(60, 100, 220),  // BrightBlue
+        srgb(220, 60, 220),  // BrightMagenta
+        srgb(60, 220, 220),  // BrightCyan
+        srgb(255, 255, 255), // BrightWhite
+    ],
+
+    // Extended.
+    dim_foreground: srgb(120, 120, 120),
     bright_foreground: srgb(0, 0, 0),
 
-    // Light UI colours
-    ui_bg: srgb(240, 240, 240),
+    // UI chrome.
+    ui_bg: srgb(235, 235, 235),
     ui_text: srgb(30, 30, 30),
-    ui_accent: srgb(50, 100, 200),
-    ui_surface: srgb(255, 255, 255),
+    ui_accent: srgb(60, 100, 200),
+    ui_surface: srgb(220, 220, 220),
 };
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

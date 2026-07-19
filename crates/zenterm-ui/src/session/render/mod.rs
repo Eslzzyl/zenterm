@@ -148,6 +148,8 @@ impl TerminalSession {
         let cursor = self.terminal.cursor();
         let cursor_row = cursor.pos.line;
         let cursor_orig_col = cursor.pos.column;
+        let cursor_bg = cursor.cursor_bg;
+        let cursor_fg = cursor.cursor_fg;
         // cursor_col is set below once cols is available.
 
         let blink_on = if cursor.style.blinking
@@ -354,7 +356,11 @@ impl TerminalSession {
                 });
 
                 let (draw_fg, draw_bg) = if is_block_cursor {
-                    (cell.bg, cell.fg)
+                    // Use the theme/OSC-specified cursor colours.  When
+                    // cursor_fg is None, fall back to the cell's own
+                    // foreground (classic inverse-video behaviour).
+                    let cf = cursor_fg.unwrap_or(cell.fg);
+                    (cf, cursor_bg)
                 } else {
                     (cell.fg, cell.bg)
                 };
@@ -414,7 +420,7 @@ impl TerminalSession {
                     let outcome = process_ligature_run(
                         &mut atlas, &grid, row, run_start, run_end,
                         cursor_visible, cursor_row, cursor_col,
-                        cursor_shape, display_offset,
+                        cursor_shape, cursor_bg, display_offset,
                         sel_range.as_ref(), sel_bg, sel_fg,
                         default_bg, baseline, cw, ch,
                         x_off, y_off, x_scale, y_scale, cols,
@@ -582,7 +588,10 @@ impl TerminalSession {
                         }
 
                         let (glyph_fg, glyph_bg) = if is_cursor && !is_block_cursor {
-                            (cell.bg, cell.fg)
+                            // Underline / Beam cursor: the glyph itself
+                            // uses the cursor fill colour as a visual
+                            // indicator.
+                            (cursor_bg, cell.fg)
                         } else if is_sel {
                             (sel_fg.unwrap_or(draw_fg), sel_bg)
                         } else {
@@ -625,7 +634,7 @@ impl TerminalSession {
                         &mut self.cached_deco,
                         &grid, row, col, cols,
                         cursor_visible, cursor_row, cursor_col,
-                        cursor_shape, display_offset,
+                        cursor_shape, cursor_bg, display_offset,
                         sel_range.as_ref(), sel_bg, sel_fg,
                         default_bg, baseline, ch, cw,
                         x_off, y_off,

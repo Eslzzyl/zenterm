@@ -27,6 +27,7 @@ pub(crate) fn emit_deco_for_cell(
     cursor_row: usize,
     cursor_col: usize,
     cursor_shape: CursorShape,
+    cursor_bg: Rgba,
     _display_offset: usize,
     sel_range: Option<&SelectionRange>,
     _sel_bg: Rgba,
@@ -58,7 +59,7 @@ pub(crate) fn emit_deco_for_cell(
     });
 
     let (draw_fg, _draw_bg) = if is_block_cursor {
-        (cell.bg, cell.fg)
+        (cursor_bg, cell.fg)
     } else {
         (cell.fg, cell.bg)
     };
@@ -75,7 +76,9 @@ pub(crate) fn emit_deco_for_cell(
 
     // ── Pass 3: underline / strikethrough ──────────────
     let deco_color = if is_cursor {
-        [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0]
+        // Underline/strikethrough under the cursor uses the cursor
+        // fill colour for visual continuity.
+        [cursor_bg.r(), cursor_bg.g(), cursor_bg.b(), 1.0]
     } else if is_sel {
         let deco_fg = sel_fg.unwrap_or(cell.fg);
         [deco_fg.r(), deco_fg.g(), deco_fg.b(), 1.0]
@@ -142,7 +145,7 @@ pub(crate) fn emit_deco_for_cell(
 
     // ── Pass 4: cursor style decorations (Beam / Underline) ──
     if is_cursor && !is_block_cursor {
-        let cursor_color = [cell.bg.r(), cell.bg.g(), cell.bg.b(), 1.0];
+        let cursor_color = [cursor_bg.r(), cursor_bg.g(), cursor_bg.b(), 1.0];
         let thickness = 2.0_f32.max((ch * 0.08).round());
         let cx_px = x_off + (col as f32 * cw).round();
         let cy_px = y_off + (row as f32 * ch).round();
