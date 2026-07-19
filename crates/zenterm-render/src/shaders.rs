@@ -119,7 +119,7 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
         // Un-premultiply and convert from sRGB to linear.
         let a = texel.a;
         if (a == 0.0) {
-            return vec4<f32>(linear_to_srgb(bg_r), linear_to_srgb(bg_g), linear_to_srgb(bg_b), 1.0);
+            return vec4<f32>(linear_to_srgb(bg_r), linear_to_srgb(bg_g), linear_to_srgb(bg_b), in.fg_color.a);
         }
         let c_r = srgb_to_linear(texel.r / a);
         let c_g = srgb_to_linear(texel.g / a);
@@ -128,7 +128,7 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
         let r = linear_to_srgb(bg_r + (c_r - bg_r) * a);
         let g = linear_to_srgb(bg_g + (c_g - bg_g) * a);
         let b = linear_to_srgb(bg_b + (c_b - bg_b) * a);
-        return vec4<f32>(r, g, b, 1.0);
+        return vec4<f32>(r, g, b, in.fg_color.a);
     }
 
     if (in.flags == 1u) {
@@ -137,7 +137,7 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
         let r = linear_to_srgb(bg_r + (fg_r - bg_r) * alpha);
         let g = linear_to_srgb(bg_g + (fg_g - bg_g) * alpha);
         let b = linear_to_srgb(bg_b + (fg_b - bg_b) * alpha);
-        return vec4<f32>(r, g, b, 1.0);
+        return vec4<f32>(r, g, b, in.fg_color.a);
     }
 
     if (in.flags == 4u) {
@@ -153,6 +153,6 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
     let r = linear_to_srgb(mix(bg_r, fg_r, coverage.r));
     let g = linear_to_srgb(mix(bg_g, fg_g, coverage.g));
     let b = linear_to_srgb(mix(bg_b, fg_b, coverage.b));
-    return vec4<f32>(r, g, b, 1.0);
+    return vec4<f32>(r, g, b, in.fg_color.a);
 }
 ";

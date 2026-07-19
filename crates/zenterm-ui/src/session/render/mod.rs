@@ -307,16 +307,13 @@ impl TerminalSession {
                 cursor_row,    // row
                 self.cell_width,
                 self.cell_height,
-                cols as f32,   // span full width
+                cols as f32,   // num_cells — highlight spans full row width
                 highlight,
                 default_bg,
-                true,          // force (always emit, don't skip same-colour)
-                x_off,
-                y_off,
-                x_scale,
-                y_scale,
-            );
-        }
+                false,
+                x_off, y_off, x_scale, y_scale,
+                self.window_opacity,
+            );        }
 
         for row in 0..rows {
             let mut col = 0;
@@ -427,6 +424,7 @@ impl TerminalSession {
                         &mut self.cached_bg,
                         &mut self.cached_glyph_per_atlas,
                         &mut self.cached_deco,
+                        self.window_opacity,
                     );
                     last_checked_run_end = outcome.last_checked;
                     if outcome.has_new_glyphs {
@@ -484,6 +482,7 @@ impl TerminalSession {
                         default_bg,
                         is_block_cursor,
                         x_off, y_off, x_scale, y_scale,
+                        self.window_opacity,
                     );
                 }
 

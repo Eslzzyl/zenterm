@@ -31,6 +31,7 @@ impl ZentermApp {
             self.atlas.clone(),
             self.callback.clone(),
             self.egui_ctx.clone(),
+            self.config.window.opacity,
         );
         self.sessions.insert(id, session);
         self.workspaces.active_workspace_mut().new_tab(id);

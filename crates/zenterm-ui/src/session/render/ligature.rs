@@ -69,6 +69,9 @@ pub(crate) fn process_ligature_run(
     // The caller ensures the outer vec is large enough.
     glyph_instances: &mut Vec<Vec<CellInstance>>,
     deco_instances: &mut Vec<CellInstance>,
+    // Opacity factor applied to background quad alpha (for window
+    // transparency support).
+    opacity: f32,
 ) -> LigatureOutcome {
     let run_text = shaping::extract_run_text(grid, row, run_start, run_end);
     if !shaping::might_ligate(&run_text) {
@@ -182,6 +185,7 @@ pub(crate) fn process_ligature_run(
                         default_bg,
                         c_is_block,
                         x_off, y_off, x_scale, y_scale,
+                        opacity,
                     );
 
                     // ── Pass 2: glyph strip ──

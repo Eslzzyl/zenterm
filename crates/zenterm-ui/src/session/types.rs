@@ -130,6 +130,11 @@ pub struct TerminalSession {
     // ── Theming ─────────────────────────────────────────────────────
     pub default_bg: egui::Color32,
 
+    /// Window-level opacity factor (0.0 = fully transparent, 1.0 = opaque).
+    /// Applied to the terminal background so the desktop / window content
+    /// behind the terminal area shows through.
+    pub window_opacity: f32,
+
     // ── Cell-instance cache (avoids full rebuild when terminal is idle) ──
     pub(crate) cached_bg: Vec<CellInstance>,
     /// Per-atlas-slot glyph instance caches.  Indexed by atlas_index;

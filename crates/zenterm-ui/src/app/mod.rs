@@ -167,6 +167,7 @@ impl ZentermApp {
             atlas.clone(),
             callback.clone(),
             egui_ctx.clone(),
+            config.window.opacity,
         );
         // `TerminalSession::new` already sets a reasonable initial title
         // via `detect_shell_name()`.  No override needed.
@@ -221,6 +222,7 @@ impl ZentermApp {
                 atlas.clone(),
                 callback.clone(),
                 egui_ctx.clone(),
+                config.window.opacity,
             );
             sessions.insert(*sid, s);
         }

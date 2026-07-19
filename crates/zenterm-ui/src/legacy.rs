@@ -53,7 +53,13 @@ pub fn render_legacy_single(
     // Legacy mode has one session → one callback → no cross-contamination.
     let callback =
         egui_wgpu::Callback::new_paint_callback(cell_rect, session.callback.clone());
-    ui.painter().rect_filled(cell_rect, 0.0, session.default_bg);
+    // Apply window opacity so the desktop shows through.
+    let bg_with_opacity = {
+        let c = session.default_bg;
+        let a = (c.a() as f32 * session.window_opacity).round().clamp(0.0, 255.0) as u8;
+        egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), a)
+    };
+    ui.painter().rect_filled(cell_rect, 0.0, bg_with_opacity);
     ui.painter().add(callback);
 
     session.render_context_menu(ui, &response);

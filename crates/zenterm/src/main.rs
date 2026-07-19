@@ -34,7 +34,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(initial_size)
             .with_title(&config.window.title)
-            .with_transparent(config.window.opacity < 1.0)
+            .with_transparent(true)
             .with_resizable(true),
         // Use smaller GPU memory blocks — we're a terminal, not a game.
         // Performance (default) pre-allocates 128–256 MB blocks from the

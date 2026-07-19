@@ -132,7 +132,14 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         // Paint the terminal background (egui shape, not wgpu callback).
         // The wgpu callback for cell instances is registered once at the
         // dock level (see `render_tabs_with_dock` in `app.rs`).
-        ui.painter().rect_filled(cell_rect, 0.0, session.default_bg);
+        // Apply window opacity so the desktop shows through when
+        // the user configures a transparent background.
+        let bg_with_opacity = {
+            let c = session.default_bg;
+            let a = (c.a() as f32 * session.window_opacity).round().clamp(0.0, 255.0) as u8;
+            egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), a)
+        };
+        ui.painter().rect_filled(cell_rect, 0.0, bg_with_opacity);
 
         // Scrollbar overlay (on top of the background).
         session.render_scrollbar(ui, cell_rect);
