@@ -20,7 +20,7 @@ pub mod theme;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use egui::Context;
 
@@ -86,12 +86,19 @@ pub struct ZentermApp {
     /// the disk write so rapid changes (e.g. slider drag or window
     /// resize) don't thrash the I/O.
     last_config_save_at: Option<Instant>,
+
+    // ── Event-driven wakeup (idle CPU) ──────────────────────────
+    /// Stored egui context, used to create cross-thread wakeup
+    /// callbacks for PTY reader threads.  Clone is cheap (Arc bump).
+    /// Set from the `CreationContext` during construction.
+    pub(crate) egui_ctx: egui::Context,
 }
 
 // ── Construction ───────────────────────────────────────────────────────
 
 impl ZentermApp {
     pub fn new_with_wgpu(
+        egui_ctx: egui::Context,
         device: wgpu::Device,
         queue: wgpu::Queue,
         target_format: wgpu::TextureFormat,
@@ -155,6 +162,7 @@ impl ZentermApp {
             gpu.clone(),
             atlas.clone(),
             callback.clone(),
+            egui_ctx.clone(),
         );
         session.title = "shell".into();
         let mut sessions = HashMap::new();
@@ -207,6 +215,7 @@ impl ZentermApp {
                 gpu.clone(),
                 atlas.clone(),
                 callback.clone(),
+                egui_ctx.clone(),
             );
             s.title = "shell".into();
             sessions.insert(*sid, s);
@@ -261,6 +270,7 @@ impl ZentermApp {
             current_window_title: None,
             config_dirty: false,
             last_config_save_at: None,
+            egui_ctx,
         }
     }
 
@@ -306,9 +316,15 @@ impl eframe::App for ZentermApp {
             self.feed_keyboard_to_active(ctx);
         }
 
-        // 3. Advance frame count and trigger cursor-blink rebuilds.
+        // 3. Cursor blink — schedule timer-based ticks.
+        //
+        // Uses `request_repaint_after` (an OS-level timer, zero CPU while
+        // waiting) instead of incrementing a `frame_count` every frame.
+        // The blink phase is computed in `update_cell_instances` using
+        // elapsed time since `blink_epoch`, so no per-frame state is
+        // needed — the timer merely ensures we wake up to re-render when
+        // the phase toggles.
         for (_, session) in self.sessions.iter_mut() {
-            session.frame_count = session.frame_count.wrapping_add(1);
             let blinking = session.terminal.cursor().style.blinking
                 && !matches!(
                     session.terminal.cursor().style.shape,
@@ -316,14 +332,36 @@ impl eframe::App for ZentermApp {
                 );
             if blinking {
                 session.terminal_dirty = true;
+                ctx.request_repaint_after(Duration::from_millis(session.blink_interval));
             }
         }
 
-        // 4. Render the main UI (terminal, tabs, sidebar).
-        #[allow(deprecated)]
-        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
-            self.ui(ui, frame);
-        });
+        // 4. Render the main UI (terminal, tabs, sidebar) — only when
+        //    something has actually changed.
+        //
+        // In the event-driven architecture we avoid rendering on every
+        // frame.  Instead, we check for pending work:
+        //   - `terminal_dirty`: at least one session has new terminal
+        //     content (PTY data, cursor blink, input, config change)
+        //   - `layout_dirty`: the dock/tab layout changed (session
+        //     created, closed, or workspace switched)
+        //
+        // If nothing is dirty we skip the CentralPanel entirely, which
+        // means:
+        //   - `clear_instances` / `clear_atlas_ranges` are NOT called
+        //   - `bump_instance_gen` is NOT called → GPU instance gen
+        //     stays unchanged → GPU `prepare()` skips buffer upload
+        //   - egui still paints whatever its immediate-mode UI produces
+        //     (the empty CentralPanel draws nothing, but other panels
+        //     like the settings window continue to work)
+        let needs_render = self.layout_dirty
+            || self.sessions.values().any(|s| s.terminal_dirty);
+        if needs_render {
+            #[allow(deprecated)]
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                self.ui(ui, frame);
+            });
+        }
 
         // 4.5. Enable IME when the terminal has keyboard focus (no egui
         //      widget focused).  This tells egui-winit → winit to call
@@ -379,8 +417,23 @@ impl eframe::App for ZentermApp {
         // 7. Debounced config write (settings panel + window size).
         self.maybe_save_config();
 
-        // 8. Request continuous repaint.
-        ctx.request_repaint();
+        // 8. Layout persistence (debounced).
+        if self.layout_dirty {
+            self.maybe_persist_layout();
+        }
+
+        // 9. Do NOT call ctx.request_repaint() here.
+        //
+        // In the event-driven architecture, the egui event loop enters
+        // idle (zero CPU) when there are no pending repaint requests.
+        // The following events trigger repaint externally:
+        //   - PTY data arrives → reader thread calls ctx.request_repaint()
+        //     via the wakeup callback
+        //   - Cursor blink → request_repaint_after() fires
+        //   - User input (mouse, keyboard) → egui repaints automatically
+        //   - Window resize → egui repaints automatically
+        //   - Settings panel → egui repaints while it's open
+        //   - Config/theme reload → explicit request_repaint() in handler
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -417,9 +470,6 @@ impl eframe::App for ZentermApp {
 
         // Push the concatenated instance buffer to the GPU side.
         self.gpu.bump_instance_gen();
-
-        // Debounced layout persistence.
-        self.maybe_persist_layout();
     }
 
     fn on_exit(&mut self) {

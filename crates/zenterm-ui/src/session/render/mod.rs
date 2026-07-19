@@ -161,7 +161,14 @@ impl TerminalSession {
         let blink_on = if cursor.style.blinking
             && !matches!(cursor.style.shape, CursorShape::Block)
         {
-            (self.frame_count / self.blink_interval) % 2 == 0
+            // Time-based blink phase: toggle every blink_interval ms.
+            // Uses `blink_epoch` as a fixed reference point so the phase
+            // is consistent regardless of frame rate.  This replaces the
+            // old `frame_count / blink_interval` approach which required
+            // incrementing a counter every frame.
+            let elapsed = self.blink_epoch.elapsed().as_millis();
+            let period = (self.blink_interval as u128).max(100) * 2;
+            (elapsed % period) < period / 2
         } else {
             true
         };

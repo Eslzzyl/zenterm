@@ -95,8 +95,11 @@ pub struct TerminalSession {
     pub selecting: bool,
     pub terminal_dirty: bool,
     pub last_resize_at: Option<f64>,
-    pub frame_count: u64,
     pub blink_interval: u64,
+    /// Epoch timestamp for time-based cursor blink phase computation.
+    /// Replaces the old `frame_count`-based approach so we don't need
+    /// to increment a counter every frame.
+    pub blink_epoch: std::time::Instant,
     pub pty_exited: bool,
     /// Whether we have already emitted [`SessionEffect::CloseWindow`] for
     /// this session.  Guards against repeated emissions across frames.

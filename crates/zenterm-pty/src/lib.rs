@@ -43,8 +43,48 @@ pub struct PtySession {
 impl PtySession {
     /// Spawn a new shell in a PTY of the given size.
     ///
-    /// Uses the user's default shell.
+    /// Uses the user's default shell.  No wakeup callback — the caller
+    /// must poll [`try_read()`](Self::try_read) to receive data.
     pub fn spawn(size: TermSize) -> Result<Self> {
+        Self::spawn_with_wakeup(size, None)
+    }
+
+    /// Spawn a new shell with an optional wakeup callback.
+    ///
+    /// When provided, `wakeup` is invoked from the reader thread after
+    /// each successful PTY read.  This is the primary mechanism for
+    /// event-driven wakeup: the callback typically calls
+    /// `egui::Context::request_repaint()` to notify the UI thread.
+    ///
+    /// The existing data channel (`try_read`) remains active — the
+    /// wakeup is an addition, not a replacement.  If you pass `None`,
+    /// behaviour is identical to [`spawn()`](Self::spawn).
+    pub fn spawn_with_wakeup(
+        size: TermSize,
+        wakeup: Option<Box<dyn Fn() + Send + Sync>>,
+    ) -> Result<Self> {
+        Self::spawn_with_handlers(size, wakeup, None)
+    }
+
+    /// Spawn a new shell with wakeup and optional data handler.
+    ///
+    /// When `on_data` is provided, the reader thread calls this
+    /// callback with each chunk of raw PTY data **instead of** sending
+    /// the data through the internal channel.  This enables the reader
+    /// thread to process PTY data directly (e.g. call
+    /// `terminal.feed()` on a shared terminal state).
+    ///
+    /// Even with `on_data`, the channel still receives an empty `Vec`
+    /// on EOF so that [`try_read()`](Self::try_read) can detect shell
+    /// exit.
+    ///
+    /// When `on_data` is `None`, behaviour is identical to
+    /// [`spawn_with_wakeup()`](Self::spawn_with_wakeup).
+    pub fn spawn_with_handlers(
+        size: TermSize,
+        wakeup: Option<Box<dyn Fn() + Send + Sync>>,
+        on_data: Option<Box<dyn Fn(&[u8]) + Send + Sync>>,
+    ) -> Result<Self> {
         let pty_system = NativePtySystem::default();
 
         let pair = pty_system
@@ -95,9 +135,21 @@ impl PtySession {
                         }
                         Ok(n) => {
                             log::debug!("pty-reader: read {} bytes from PTY: {:02x?}", n, &buf[..n]);
-                            if tx.send(buf[..n].to_vec()).is_err() {
+                            if let Some(ref handler) = on_data {
+                                // Feed handler processes the data directly
+                                // (e.g. calls terminal.feed() in the reader
+                                // thread).  No data is sent to the channel
+                                // — the main thread only receives EOF.
+                                handler(&buf[..n]);
+                            } else if tx.send(buf[..n].to_vec()).is_err() {
                                 log::debug!("pty-reader: channel closed, exiting");
                                 break;
+                            }
+                            // Notify the event loop that data is available.
+                            // Called AFTER the handler/channel send so the
+                            // main thread finds data when it wakes up.
+                            if let Some(ref w) = wakeup {
+                                w();
                             }
                         }
                         Err(e) => {

@@ -14,6 +14,10 @@ use crate::gpu::SharedGpuContext;
 impl TerminalSession {
     /// Construct a new session: spawn a PTY, initialise the terminal,
     /// measure cell geometry, and wire the wgpu callback.
+    ///
+    /// `egui_ctx` is stored internally and cloned into the PTY reader
+    /// thread as a wakeup callback (`ctx.request_repaint()`) so that
+    /// incoming PTY data wakes the egui event loop from idle.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: SessionId,
@@ -24,8 +28,18 @@ impl TerminalSession {
         gpu: SharedGpuContext,
         atlas: Arc<SharedGlyphAtlas>,
         callback: CallbackHandle,
+        egui_ctx: egui::Context,
     ) -> Self {
-        let mut pty = zenterm_pty::PtySession::spawn(size).expect("failed to spawn PTY");
+        // Create a wakeup callback that the PTY reader thread calls
+        // after each successful read.  This is the core of the event-
+        // driven architecture: instead of the main thread polling PTY
+        // every frame, the reader thread notifies the event loop.
+        let wakeup = {
+            let ctx = egui_ctx.clone();
+            Box::new(move || ctx.request_repaint())
+        };
+        let mut pty = zenterm_pty::PtySession::spawn_with_wakeup(size, Some(wakeup))
+            .expect("failed to spawn PTY");
         let mut terminal = Terminal::new(size, scheme);
 
         let (cell_width, cell_height) = atlas.cell_size();
@@ -70,8 +84,8 @@ impl TerminalSession {
             selecting: false,
             terminal_dirty: true,
             last_resize_at: None,
-            frame_count: 0,
             blink_interval,
+            blink_epoch: std::time::Instant::now(),
             pty_exited: false,
             exit_effect_sent: false,
             highlight_cursor_line: false,

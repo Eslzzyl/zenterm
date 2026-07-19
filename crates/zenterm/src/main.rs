@@ -80,6 +80,7 @@ fn main() -> eframe::Result<()> {
             let pixels_per_point = cc.egui_ctx.pixels_per_point();
 
             Ok(Box::new(zenterm_ui::ZentermApp::new_with_wgpu(
+                cc.egui_ctx.clone(),
                 render_state.device,
                 render_state.queue,
                 render_state.target_format,

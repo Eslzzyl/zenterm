@@ -60,6 +60,8 @@ impl ZentermApp {
             // Persist settings changes to disk (debounced).
             self.config_dirty = true;
             self.last_config_save_at = Some(Instant::now());
+            // Wake the main viewport so terminal re-renders with new config.
+            ctx.request_repaint();
         }
 
         // ── Handle Reset All ──────────────────────────────────────
@@ -72,6 +74,18 @@ impl ZentermApp {
                 self.error_toast = Some(format!("Failed to save reset config: {e}"));
             }
             self.settings_state.open = false;
+            ctx.request_repaint();
+        }
+
+        // Keep the main viewport alive while the settings window is
+        // open.  egui's `show_viewport_immediate` requires the parent
+        // to keep painting for the child native window to remain
+        // responsive.  We use a timer (not immediate) so idle CPU stays
+        // near zero while the settings panel is visible but inactive.
+        // User interactions with the settings panel trigger their own
+        // repaints at full framerate.
+        if self.settings_state.open {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
 }

@@ -30,6 +30,7 @@ impl ZentermApp {
             self.gpu.clone(),
             self.atlas.clone(),
             self.callback.clone(),
+            self.egui_ctx.clone(),
         );
         self.sessions.insert(id, session);
         self.workspaces.active_workspace_mut().new_tab(id);
@@ -128,6 +129,11 @@ impl ZentermApp {
                 );
                 self.current_window_title = Some(t.clone());
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(t.clone()));
+                // Ensure the UI re-renders so the tab bar shows the new
+                // title.  The session's `self.title` was already updated
+                // in `TerminalSession::handle_side_effects`; the tab bar
+                // won't reflect it until the next frame.
+                ctx.request_repaint();
             } else {
                 log::trace!("app: window title unchanged ({:?}), skipping ViewportCommand", t);
             }

@@ -139,6 +139,7 @@ impl ZentermApp {
                             self.gpu.clone(),
                             self.atlas.clone(),
                             self.callback.clone(),
+                            self.egui_ctx.clone(),
                         );
                         self.sessions.insert(id, session);
                         self.workspaces.active_workspace_mut().new_tab(id);
