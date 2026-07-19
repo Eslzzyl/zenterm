@@ -17,7 +17,7 @@ impl TerminalSession {
         }
         let ppp = ui.ctx().pixels_per_point();
         let pos = ui.ctx().input(|i| i.pointer.hover_pos());
-        log::debug!(
+        log::trace!(
             "compute_hover: pointer_pos={:?} cell_rect={:?} cw={} ch={}",
             pos,
             cell_rect,
@@ -31,18 +31,18 @@ impl TerminalSession {
                 let row = ((pos.y - cell_rect.top()) * ppp / self.cell_height) as usize;
                 let cols = self.terminal.size().cols as usize;
                 let rows = self.terminal.size().rows as usize;
-                log::debug!(
+                log::trace!(
                     "compute_hover: col={} row={} cols={} rows={} cw={} ch={}",
                     col, row, cols, rows, self.cell_width, self.cell_height,
                 );
                 if col < cols && row < rows {
                     Some((row, col))
                 } else {
-                    log::debug!("compute_hover: cell ({},{}) out of bounds", row, col);
+                    log::trace!("compute_hover: cell ({},{}) out of bounds", row, col);
                     None
                 }
             });
-        log::debug!(
+        log::trace!(
             "compute_hover: old={:?} new={:?}",
             self.hover_cell,
             new_hover,

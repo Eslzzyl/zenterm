@@ -28,12 +28,9 @@ use crate::{AtlasRange, CellInstance, TerminalRenderPass};
 /// Thread-safe shared state between `ZentermApp` (updates each frame) and
 /// [`TerminalWgpuCallback`] (uploads to GPU each frame).
 pub struct SharedRenderState {
-    /// Cell instance data for the current frame — built by the UI thread,
-    /// consumed by `prepare()`.
-    pub instances: Mutex<Vec<CellInstance>>,
-    /// Per-atlas-slot instance ranges describing which instances in
-    /// `instances` belong to which atlas texture.
-    pub atlas_ranges: Mutex<Vec<AtlasRange>>,
+    /// Per-frame instance data: cell instances + atlas ranges behind a
+    /// single Mutex so callers lock once instead of acquiring two locks.
+    pub frame_data: Mutex<FrameData>,
     /// Monotonically increasing generation counter.  Incremented by the UI
     /// thread whenever `instances` changes.  `prepare()` compares this with
     /// its local copy to decide whether a GPU buffer upload is needed.
@@ -43,6 +40,20 @@ pub struct SharedRenderState {
     /// When `atlas_dirty` is true, this holds the per-slot data so
     /// `prepare()` can upload or recreate textures.
     pub atlas_update: Mutex<Option<AtlasUpdate>>,
+}
+
+/// Per-frame instance data shared between the UI thread and GPU prepare.
+///
+/// Both fields are locked together under a single [`Mutex`] so that
+/// the clear → populate → consume cycle acquires one lock instead of
+/// two, reducing lock contention on every frame.
+pub struct FrameData {
+    /// Cell instance data for the current frame — built by the UI thread,
+    /// consumed by `prepare()`.
+    pub instances: Vec<CellInstance>,
+    /// Per-atlas-slot instance ranges describing which instances in
+    /// `instances` belong to which atlas texture.
+    pub atlas_ranges: Vec<AtlasRange>,
 }
 
 /// Pixel data for one slot in the texture atlas.
@@ -65,8 +76,10 @@ impl SharedRenderState {
     /// Create a new shared state with the given initial instance capacity.
     pub fn new(capacity: usize) -> Self {
         Self {
-            instances: Mutex::new(Vec::with_capacity(capacity)),
-            atlas_ranges: Mutex::new(Vec::new()),
+            frame_data: Mutex::new(FrameData {
+                instances: Vec::with_capacity(capacity),
+                atlas_ranges: Vec::new(),
+            }),
             instance_gen: AtomicU64::new(1),
             atlas_dirty: AtomicBool::new(false),
             atlas_update: Mutex::new(None),
@@ -231,14 +244,11 @@ impl CallbackTrait for TerminalWgpuCallback {
         if current_gen != last_gen {
             self.last_instance_gen.store(current_gen, Ordering::Relaxed);
 
-            let instances = {
-                let mut guard = self.shared.instances.lock().unwrap();
-                std::mem::take(&mut *guard)
-            };
-            let atlas_ranges = {
-                let mut guard = self.shared.atlas_ranges.lock().unwrap();
-                std::mem::take(&mut *guard)
-            };
+            // Single lock for both instances + atlas_ranges.
+            let mut guard = self.shared.frame_data.lock().unwrap();
+            let instances = std::mem::take(&mut guard.instances);
+            let atlas_ranges = std::mem::take(&mut guard.atlas_ranges);
+            drop(guard);
 
             if !instances.is_empty() {
                 if let Ok(rp_guard) = self.render_pass.lock() {

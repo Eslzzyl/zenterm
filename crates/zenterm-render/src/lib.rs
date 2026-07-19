@@ -9,7 +9,7 @@ pub mod atlas;
 pub mod callback;
 pub mod shaders;
 
-pub use callback::CallbackHandle;
+pub use callback::{CallbackHandle, FrameData};
 
 use std::sync::atomic::{AtomicU32, Ordering};
 

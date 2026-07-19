@@ -98,7 +98,7 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         // Allocate the terminal area and run mouse / SGR / context-menu.
         let sense = egui::Sense::click_and_drag();
         let (cell_rect, response) = ui.allocate_exact_size(ui.available_size(), sense);
-        log::info!(
+        log::trace!(
             "[dbg] tab_viewer: calling handle_mouse for tab={:?}, active={:?}, rect={:?}, event_count={}",
             tab, self.active_session_id, cell_rect,
             ui.ctx().input(|i| i.events.len()),

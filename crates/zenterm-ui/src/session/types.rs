@@ -134,6 +134,11 @@ pub struct TerminalSession {
     /// Image quads with z_index >= 0 (render on top of text), per atlas slot.
     pub(crate) cached_image_above: Vec<Vec<CellInstance>>,
 
+    /// ── Reusable batch buffer for PTY data ──────────────────────────
+    /// Avoids allocating a new Vec in `pump_pty()` on every call.
+    /// Cleared and repopulated each pump cycle.
+    pub(crate) batch_buf: Vec<u8>,
+
     /// ── Title debounce ──────────────────────────────────────────────────
     ///
     /// Some shells (fish, zsh with plugins) send a transient title event

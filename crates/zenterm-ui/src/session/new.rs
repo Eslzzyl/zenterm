@@ -111,6 +111,7 @@ impl TerminalSession {
             last_sgr_motion_pos: None,
             notification_resp_tx,
             notification_resp_rx,
+            batch_buf: Vec::new(),
             tab_active: false,
         }
     }

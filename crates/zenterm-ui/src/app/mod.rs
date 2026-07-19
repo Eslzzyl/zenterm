@@ -451,11 +451,10 @@ impl eframe::App for ZentermApp {
         }
 
         // Clear the shared instance buffer and atlas ranges at the
-        // start of every frame.  Each session appends its own instances
-        // and ranges; the final `bump_instance_gen` is called once
-        // after the dock finishes.
-        self.gpu.clear_instances();
-        self.gpu.clear_atlas_ranges();
+        // start of every frame (single lock for both).  Each session
+        // appends its own instances and ranges; the final
+        // `bump_instance_gen` is called once after the dock finishes.
+        self.gpu.clear_frame();
 
         if self.config.ui.tabs_enabled {
             self.render_tabs_with_dock(ui);

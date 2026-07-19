@@ -82,27 +82,21 @@ impl TerminalSession {
                 || self.cached_image_below.iter().any(|v| !v.is_empty())
                 || self.cached_image_above.iter().any(|v| !v.is_empty());
             if has_instances {
-                let mut buf = self
+                let mut fd = self
                     .gpu
                     .shared
-                    .instances
+                    .frame_data
                     .lock()
-                    .expect("SharedRenderState.instances poisoned");
-                let mut ranges = self
-                    .gpu
-                    .shared
-                    .atlas_ranges
-                    .lock()
-                    .expect("atlas_ranges poisoned");
-                buf.extend(&self.cached_bg);
+                    .expect("frame_data poisoned");
+                fd.instances.extend(&self.cached_bg);
                 // Append per-atlas image instances (z < 0).
                 for (slot_idx, instances) in self.cached_image_below.iter().enumerate() {
                     if instances.is_empty() {
                         continue;
                     }
-                    let start = buf.len() as u32;
-                    buf.extend(instances);
-                    ranges.push(AtlasRange {
+                    let start = fd.instances.len() as u32;
+                    fd.instances.extend(instances);
+                    fd.atlas_ranges.push(AtlasRange {
                         atlas_index: slot_idx,
                         start,
                         count: instances.len() as u32,
@@ -113,30 +107,28 @@ impl TerminalSession {
                     if instances.is_empty() {
                         continue;
                     }
-                    let start = buf.len() as u32;
-                    buf.extend(instances);
-                    ranges.push(AtlasRange {
+                    let start = fd.instances.len() as u32;
+                    fd.instances.extend(instances);
+                    fd.atlas_ranges.push(AtlasRange {
                         atlas_index: slot_idx,
                         start,
                         count: instances.len() as u32,
                     });
                 }
-                buf.extend(&self.cached_deco);
+                fd.instances.extend(&self.cached_deco);
                 // Append per-atlas image instances (z >= 0).
                 for (slot_idx, instances) in self.cached_image_above.iter().enumerate() {
                     if instances.is_empty() {
                         continue;
                     }
-                    let start = buf.len() as u32;
-                    buf.extend(instances);
-                    ranges.push(AtlasRange {
+                    let start = fd.instances.len() as u32;
+                    fd.instances.extend(instances);
+                    fd.atlas_ranges.push(AtlasRange {
                         atlas_index: slot_idx,
                         start,
                         count: instances.len() as u32,
                     });
                 }
-                drop(ranges);
-                drop(buf);
             }
             return has_instances;
         }
@@ -230,6 +222,22 @@ impl TerminalSession {
         }
         if self.cached_deco.capacity() < instances_cap {
             self.cached_deco.reserve(instances_cap - self.cached_deco.capacity());
+        }
+        // Shrink cached buffers when the grid shrinks significantly
+        // (capacity > 2x needed) to avoid retaining large allocations
+        // after window resize.
+        let shrink_threshold = instances_cap.saturating_mul(2);
+        if self.cached_bg.capacity() > shrink_threshold {
+            self.cached_bg.shrink_to(instances_cap);
+        }
+        if self.cached_deco.capacity() > shrink_threshold {
+            self.cached_deco.shrink_to(instances_cap);
+        }
+        if self.cached_image_below.capacity() > shrink_threshold {
+            self.cached_image_below.shrink_to(instances_cap);
+        }
+        if self.cached_image_above.capacity() > shrink_threshold {
+            self.cached_image_above.shrink_to(instances_cap);
         }
         let mut has_new_glyphs = false;
         let mut img_below_count: usize = 0;
@@ -661,7 +669,7 @@ impl TerminalSession {
         }
 
         if img_below_count > 0 || img_above_count > 0 {
-            log::debug!(
+            log::trace!(
                 "[img] render frame: below={}, above={}, total_placements={}, dirty={}",
                 img_below_count, img_above_count,
                 self.terminal.image_placements_count(),
@@ -670,27 +678,21 @@ impl TerminalSession {
         }
 
         // Append to the shared instance buffer in draw order.
-        let mut buf = self
+        let mut fd = self
             .gpu
             .shared
-            .instances
+            .frame_data
             .lock()
-            .expect("SharedRenderState.instances poisoned");
-        let mut ranges = self
-            .gpu
-            .shared
-            .atlas_ranges
-            .lock()
-            .expect("atlas_ranges poisoned");
-        buf.extend(&self.cached_bg);
+            .expect("frame_data poisoned");
+        fd.instances.extend(&self.cached_bg);
         // Append per-atlas image instances (z < 0).
         for (slot_idx, instances) in self.cached_image_below.iter().enumerate() {
             if instances.is_empty() {
                 continue;
             }
-            let start = buf.len() as u32;
-            buf.extend(instances);
-            ranges.push(AtlasRange {
+            let start = fd.instances.len() as u32;
+            fd.instances.extend(instances);
+            fd.atlas_ranges.push(AtlasRange {
                 atlas_index: slot_idx,
                 start,
                 count: instances.len() as u32,
@@ -701,30 +703,29 @@ impl TerminalSession {
             if instances.is_empty() {
                 continue;
             }
-            let start = buf.len() as u32;
-            buf.extend(instances);
-            ranges.push(AtlasRange {
+            let start = fd.instances.len() as u32;
+            fd.instances.extend(instances);
+            fd.atlas_ranges.push(AtlasRange {
                 atlas_index: slot_idx,
                 start,
                 count: instances.len() as u32,
             });
         }
-        buf.extend(&self.cached_deco);
+        fd.instances.extend(&self.cached_deco);
         // Append per-atlas image instances (z >= 0).
         for (slot_idx, instances) in self.cached_image_above.iter().enumerate() {
             if instances.is_empty() {
                 continue;
             }
-            let start = buf.len() as u32;
-            buf.extend(instances);
-            ranges.push(AtlasRange {
+            let start = fd.instances.len() as u32;
+            fd.instances.extend(instances);
+            fd.atlas_ranges.push(AtlasRange {
                 atlas_index: slot_idx,
                 start,
                 count: instances.len() as u32,
             });
         }
-        drop(ranges);
-        drop(buf);
+        drop(fd);
         // Mark the GPU side as dirty (instance generation bumped by
         // the app after all sessions have appended).
         if has_new_glyphs {

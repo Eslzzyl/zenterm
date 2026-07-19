@@ -21,7 +21,11 @@ impl TerminalSession {
         if self.pty_exited {
             return;
         }
-        let mut batch = Vec::with_capacity(65536);
+        let batch = &mut self.batch_buf;
+        batch.clear();
+        if batch.capacity() < 65536 {
+            batch.reserve(65536 - batch.capacity());
+        }
         while let Some(result) = self.pty.try_read() {
             match result {
                 Ok(data) => batch.extend_from_slice(&data),
@@ -34,13 +38,12 @@ impl TerminalSession {
             }
         }
         if !batch.is_empty() {
-            log::debug!("pump_pty: batching {} bytes from PTY", batch.len());
+            log::trace!("pump_pty: batching {} bytes from PTY", batch.len());
             let replies = self.terminal.feed(&batch);
             if !replies.is_empty() {
-                log::debug!(
-                    "pump_pty: writing {} reply bytes: {:02x?}",
+                log::trace!(
+                    "pump_pty: writing {} reply bytes",
                     replies.len(),
-                    &replies
                 );
                 if let Err(e) = self.pty.write(&replies) {
                     log::error!("failed to write pty reply: {e}");

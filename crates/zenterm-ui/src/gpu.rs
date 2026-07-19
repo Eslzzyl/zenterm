@@ -33,8 +33,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use zenterm_render::callback::SharedRenderState;
-use zenterm_render::AtlasRange;
+use zenterm_render::callback::{FrameData, SharedRenderState};
 
 /// Application-wide GPU handle set, shared by reference across all
 /// terminal sessions and the wgpu paint callback.
@@ -76,25 +75,22 @@ impl SharedGpuContext {
         }
     }
 
-    /// Clear the shared instance buffer.  Call once per frame,
-    /// before any session writes its instances.
-    pub fn clear_instances(&self) {
-        let mut buf = self.shared.instances.lock().expect("instances poisoned");
-        buf.clear();
+    /// Lock and return the per-frame data guard for direct access.
+    ///
+    /// Callers can clear, extend, and otherwise manipulate the
+    /// instance buffer and atlas ranges through a single lock
+    /// acquisition, avoiding the previous pattern of two separate
+    /// locks for `instances` and `atlas_ranges`.
+    pub fn lock_frame_data(&self) -> std::sync::MutexGuard<'_, FrameData> {
+        self.shared.frame_data.lock().expect("frame_data poisoned")
     }
 
-    /// Clear the shared atlas ranges.  Call alongside `clear_instances`
-    /// at the start of each frame.
-    pub fn clear_atlas_ranges(&self) {
-        let mut buf = self.shared.atlas_ranges.lock().expect("atlas_ranges poisoned");
-        buf.clear();
-    }
-
-    /// Append an atlas range to the shared list.  Called by each
-    /// session after it appends its glyph instances.
-    pub fn push_atlas_range(&self, range: AtlasRange) {
-        let mut buf = self.shared.atlas_ranges.lock().expect("atlas_ranges poisoned");
-        buf.push(range);
+    /// Clear both the instance buffer and atlas ranges in one lock.
+    /// Call once per frame before any session writes its instances.
+    pub fn clear_frame(&self) {
+        let mut fd = self.lock_frame_data();
+        fd.instances.clear();
+        fd.atlas_ranges.clear();
     }
 
     /// Bump the instance generation counter.  Call once per frame
