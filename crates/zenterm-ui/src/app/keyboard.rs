@@ -6,6 +6,8 @@
 use egui::Context;
 use alacritty_terminal::term::TermMode;
 
+use zenterm_input::MappingOptions;
+
 use super::ZentermApp;
 impl ZentermApp {
     pub(crate) fn forward_event_to_active(&mut self, event: &egui::Event) {
@@ -34,8 +36,15 @@ impl ZentermApp {
                     }
                 }
 
+                // Build mapping options from terminal state + config.
+                let mode = session.terminal.mode();
+                let opts = MappingOptions {
+                    app_cursor: mode.contains(TermMode::APP_CURSOR),
+                    macos_option_as_alt: self.config.window.macos_option_as_alt,
+                };
+
                 // Map event to PTY bytes (handles Commit, Text, Key, Paste).
-                if let Some(bytes) = zenterm_input::InputMapper::map(event) {
+                if let Some(bytes) = zenterm_input::InputMapper::map(event, &opts) {
                     if let Err(e) = session.pty.write(&bytes) {
                         log::error!("PTY write error: {e}");
                     }

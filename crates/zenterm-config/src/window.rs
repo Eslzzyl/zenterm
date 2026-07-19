@@ -40,6 +40,18 @@ pub struct WindowConfig {
     #[serde(default)]
     pub startup_mode: StartupMode,
 
+    /// macOS-only: treat the Option key as Alt.
+    ///
+    /// When `true`, Option+key behaves like Alt+key, sending `ESC` +
+    /// the key's ASCII byte.  When `false` (the default), Option+key
+    /// composes special Unicode characters per the macOS keyboard
+    /// layout (e.g. Option+A → "å").
+    ///
+    /// Only `false` and `true` are supported because egui does not
+    /// expose left/right Option side information.
+    #[serde(default)]
+    pub macos_option_as_alt: bool,
+
     /// Last known window inner size in logical points.
     ///
     /// Saved automatically when the terminal grid is resized, and
@@ -60,6 +72,7 @@ impl Default for WindowConfig {
             blur: false,
             decorations: default_decorations(),
             startup_mode: StartupMode::default(),
+            macos_option_as_alt: false,
             last_window_size: None,
         }
     }
