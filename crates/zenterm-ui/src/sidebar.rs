@@ -15,6 +15,8 @@
 
 use crate::workspace::WorkspaceId;
 
+use egui::Color32;
+
 // ── Data types ───────────────────────────────────────────────────────────
 
 /// Pre-computed snapshot of all data the sidebar needs to render.
@@ -74,7 +76,7 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
     let mut events = Vec::new();
 
     ui.vertical(|ui| {
-        ui.add_space(6.0);
+        ui.add_space(10.0);
 
         // ── "New shell" / "New WS" / ⚙ buttons ──────────────────
         ui.horizontal(|ui| {
@@ -91,8 +93,7 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
                 }
             });
         });
-        ui.add_space(2.0);
-        ui.separator();
+        ui.add_space(6.0);
 
         // ── Scrollable workspace list ───────────────────────────
         egui::ScrollArea::vertical()
@@ -102,24 +103,39 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
                     let ws_id = ws_entry.id;
 
                     // ── Allocate full-width clickable card ──────
-                    let desired = egui::vec2(ui.available_width(), 48.0);
+                    let desired = egui::vec2(ui.available_width(), 52.0);
                     let (card_rect, card_resp) =
                         ui.allocate_exact_size(desired, egui::Sense::click());
 
                     // Paint background for the entire card.
                     let is_hovered = card_resp.hovered();
+                    let corner_radius = 8.0;
                     let bg = if ws_entry.is_active {
                         ui.visuals().selection.bg_fill
                     } else if is_hovered {
-                        ui.visuals().widgets.hovered.bg_fill
+                        Color32::from_rgba_premultiplied(
+                            ui.visuals().widgets.hovered.bg_fill.r(),
+                            ui.visuals().widgets.hovered.bg_fill.g(),
+                            ui.visuals().widgets.hovered.bg_fill.b(),
+                            (ui.visuals().widgets.hovered.bg_fill.a() as f32 * 0.6) as u8,
+                        )
                     } else {
-                        ui.visuals().faint_bg_color
+                        Color32::TRANSPARENT
                     };
                     ui.painter()
-                        .rect_filled(card_rect, 6.0, bg);
+                        .rect_filled(card_rect, corner_radius, bg);
+
+                    // Card border — use the same subtle stroke as windows.
+                    let border_color = ui.visuals().window_stroke.color;
+                    ui.painter().rect_stroke(
+                        card_rect,
+                        corner_radius,
+                        egui::Stroke::new(1.0, border_color),
+                        egui::StrokeKind::Inside,
+                    );
 
                     // ── Card content ─────────────────────────────
-                    let content_rect = card_rect.shrink2(egui::vec2(10.0, 6.0));
+                    let content_rect = card_rect.shrink2(egui::vec2(14.0, 8.0));
                     let mut content_ui = ui.new_child(
                         egui::UiBuilder::default()
                             .max_rect(content_rect)
@@ -174,7 +190,7 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
                     });
 
                     // Gap between cards.
-                    ui.add_space(4.0);
+                    ui.add_space(6.0);
                 }
             });
     });

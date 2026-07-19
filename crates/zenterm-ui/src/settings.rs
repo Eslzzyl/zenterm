@@ -144,11 +144,11 @@ fn render_settings_content(
         // ── Left: navigation sidebar ───────────────────────────
         egui::Panel::left("settings_nav")
             .resizable(false)
-            .default_size(160.0)
-            .min_size(120.0)
+            .default_size(180.0)
+            .min_size(140.0)
             .show_inside(ui, |ui| {
                 ui.vertical(|ui| {
-                    ui.add_space(4.0);
+                    ui.add_space(12.0);
 
                     for sec in SettingsSection::ALL {
                         let selected = *sec == state.selected_section;
@@ -163,7 +163,7 @@ fn render_settings_content(
 
                     // ── Push "Reset All" to the bottom ────────
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                        ui.add_space(8.0);
+                        ui.add_space(12.0);
                         if ui
                             .button(egui::RichText::new("↺ Reset All").color(egui::Color32::LIGHT_RED))
                             .clicked()
@@ -185,10 +185,12 @@ fn render_settings_content(
                         egui::RichText::new("⚠ Some changes require an application restart to take full effect")
                             .color(egui::Color32::YELLOW),
                     );
-                    ui.add_space(4.0);
+                    ui.add_space(6.0);
                 }
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    // Add comfortable top padding inside the scroll content.
+                    ui.add_space(4.0);
                     render_section(
                         ui,
                         state.selected_section,

@@ -18,31 +18,43 @@ use std::ops::RangeInclusive;
 
 /// Draw a section title with an optional subtitle below it.
 pub fn section_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
-    ui.add_space(8.0);
-    ui.heading(title);
+    ui.add_space(16.0);
+    ui.horizontal(|ui| {
+        ui.add_space(2.0);
+        ui.heading(title);
+    });
     if !subtitle.is_empty() {
-        ui.label(egui::RichText::new(subtitle).color(ui.visuals().weak_text_color.unwrap_or(egui::Color32::GRAY)));
+        ui.add_space(2.0);
+        ui.label(
+            egui::RichText::new(subtitle)
+                .size(ui.text_style_height(&egui::TextStyle::Body) * 0.85)
+                .color(ui.visuals().weak_text_color.unwrap_or(egui::Color32::GRAY)),
+        );
     }
-    ui.separator();
     ui.add_space(4.0);
+    ui.separator();
+    ui.add_space(6.0);
 }
 
 // ─── Label + control row helper ────────────────────────────────────────
 
 /// Draw a label and description in the left column, then the control
-/// in the right column.
+/// in the right column, with consistent vertical spacing.
 fn row<F>(ui: &mut egui::Ui, label: &str, description: &str, add_control: F)
 where
     F: FnOnce(&mut egui::Ui),
 {
+    // Add a small gap between rows for visual breathing room.
+    ui.add_space(2.0);
     ui.horizontal(|ui| {
         // Label + description column (grow to fill space, pushing control right).
         ui.vertical(|ui| {
-            ui.label(label);
+            ui.set_min_height(28.0);
+            ui.label(egui::RichText::new(label).size(14.0));
             if !description.is_empty() {
                 ui.label(
                     egui::RichText::new(description)
-                        .size(ui.text_style_height(&egui::TextStyle::Body) * 0.85)
+                        .size(ui.text_style_height(&egui::TextStyle::Body) * 0.82)
                         .color(ui.visuals().weak_text_color.unwrap_or(egui::Color32::GRAY)),
                 );
             }

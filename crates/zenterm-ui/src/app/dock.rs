@@ -2,7 +2,7 @@
 //!
 //! Owns the sidebar, dock area, tab viewer, and pending action queues.
 
-use egui::{CornerRadius, Id, Margin, Stroke};
+use egui::{Color32, CornerRadius, Id, Margin, Stroke};
 use egui_dock::{DockArea, Style, TabAddAlign};
 
 use zenterm_term::ColorScheme;
@@ -24,7 +24,6 @@ impl ZentermApp {
         if show_sidebar {
             let pos = self.config.ui.sidebar_position;
             let width = self.config.ui.sidebar_width;
-            let min_w = self.config.ui.sidebar_min_width;
             let max_w = self.config.ui.sidebar_max_width;
             let panel = match pos {
                 zenterm_config::ui::SidebarPosition::Left => {
@@ -60,7 +59,7 @@ impl ZentermApp {
             panel
                 .resizable(true)
                 .default_size(width)
-                .min_size(min_w)
+                .min_size(width)       // default = minimum = can't go narrower
                 .max_size(max_w)
                 .show_inside(ui, |ui| {
                     let mut queued_new_tab = false;
@@ -211,18 +210,51 @@ impl ZentermApp {
 
                 // ── Style setup (reusable outside the borrow block) ──
                 let mut style = Style::from_egui(ui.style().as_ref());
-                // Remove rounded corners, inner margin, and border stroke
-                // on the tab body so the terminal fills edge-to-edge without
-                // a visible container wrapper.
+                let egui_visuals = ui.visuals().clone();
+
+                // Tab bar — taller, subtle background, flush corners.
+                style.tab_bar.bg_fill = egui_visuals.extreme_bg_color;
+                style.tab_bar.height = 30.0;
+                style.tab_bar.inner_margin = Margin::symmetric(4, 0);
+                style.tab_bar.corner_radius = CornerRadius::ZERO;
+                style.tab_bar.hline_color = egui_visuals.window_stroke.color;
+
+                // Tab spacing — small gap between tabs, minimum width.
+                style.tab.spacing = 2.0;
+                style.tab.minimum_width = Some(80.0);
+
+                // Tab body: no margin, no stroke, no corners so the
+                // terminal content goes edge-to-edge.
                 style.tab.tab_body.corner_radius = CornerRadius::ZERO;
                 style.tab.tab_body.inner_margin = Margin::ZERO;
                 style.tab.tab_body.stroke = Stroke::NONE;
-                // Also flatten the tab bar corners to avoid exposing the
-                // background behind the rounded top-left / top-right edges.
-                style.tab_bar.corner_radius = CornerRadius::ZERO;
-                // Place the "+" add-tab button right after the last tab
-                // instead of right-aligning it to the tab bar edge.
+
+                // Active tab — top corners rounded, bottom flat.
+                let top_round = CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 };
+                style.tab.active.corner_radius = top_round;
+                style.tab.active_with_kb_focus.corner_radius = top_round;
+                // Ensure all other states share the same top-right rounding
+                // so the close-button hover highlight doesn't become a
+                // square that overflows the tab corner.
+                style.tab.inactive.corner_radius = top_round;
+                style.tab.inactive_with_kb_focus.corner_radius = top_round;
+                style.tab.hovered.corner_radius = top_round;
+                style.tab.focused.corner_radius = top_round;
+                style.tab.focused_with_kb_focus.corner_radius = top_round;
+
+                // Place the "+" add-tab button right after the last tab.
                 style.buttons.add_tab_align = TabAddAlign::Left;
+
+                // Tab close button — × colour changes on hover but no
+                // background highlight (avoids shape mismatch with the
+                // tab's top-right corner rounding).
+                let weak_text = egui_visuals.weak_text_color.unwrap_or(
+                    egui_visuals.text_color().linear_multiply(0.55),
+                );
+                let text_bright = egui_visuals.strong_text_color();
+                style.buttons.close_tab_color = weak_text;
+                style.buttons.close_tab_active_color = text_bright;
+                style.buttons.close_tab_bg_fill = Color32::TRANSPARENT;
 
                 // ── Render tabs (nested scope to drop viewer early) ──
                 {
