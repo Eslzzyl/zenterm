@@ -3,9 +3,16 @@ use egui::Modifiers;
 
 // ── Helper shortcuts ───────────────────────────────────────────
 
-/// Default mapping options for tests (app_cursor off, option_as_alt off, no kitty).
+/// Default mapping options for tests (app_cursor off, option_as_alt on, no kitty).
+///
+/// We enable `macos_option_as_alt` so that Alt+key tests work on macOS
+/// (where the default configuration leaves it off).  Unit tests for the
+/// mapping logic should always treat the Alt modifier as active.
 fn default_opts() -> MappingOptions {
-    MappingOptions::new()
+    MappingOptions {
+        macos_option_as_alt: true,
+        ..MappingOptions::new()
+    }
 }
 
 /// Options with specific Kitty flags.
