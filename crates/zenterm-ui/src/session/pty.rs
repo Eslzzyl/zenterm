@@ -316,7 +316,7 @@ impl TerminalSession {
         }
 
         if let Some(text) = self.terminal.take_clipboard_store() {
-            if let Ok(mut cb) = arboard::Clipboard::new() {
+            if let Some(ref mut cb) = self.clipboard {
                 if let Err(e) = cb.set_text(text) {
                     log::error!("failed to store clipboard text: {e}");
                 }
@@ -324,7 +324,7 @@ impl TerminalSession {
         }
 
         if let Some(formatter) = self.terminal.take_clipboard_load() {
-            if let Ok(mut cb) = arboard::Clipboard::new() {
+            if let Some(ref mut cb) = self.clipboard {
                 match cb.get_text() {
                     Ok(text) => {
                         let seq = formatter(&text);

@@ -104,6 +104,13 @@ impl ZentermApp {
             }
         }
 
+        // Propagate selection config changes.
+        if changes.selection {
+            for (_, session) in self.sessions.iter_mut() {
+                session.save_to_clipboard = self.config.selection.save_to_clipboard;
+            }
+        }
+
         // Apply per-session config changes.
         if changes.font || changes.cursor || changes.colors {
             for (_, session) in self.sessions.iter_mut() {

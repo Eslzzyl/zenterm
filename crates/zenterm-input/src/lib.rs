@@ -227,8 +227,21 @@ impl InputMapper {
                 }
             }
 
-            // Copy / Cut events are handled by the app layer; do not forward.
-            egui::Event::Copy | egui::Event::Cut => None,
+            // Event::Copy from egui-winit (Ctrl+C on Win/Linux, Cmd+C on macOS).
+            // When handle_shortcuts didn't consume it (no selection), send SIGINT
+            // on non-macOS.  On macOS, Cmd+C without selection does nothing.
+            egui::Event::Copy => {
+                #[cfg(target_os = "macos")]
+                {
+                    None
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    Some(vec![0x03])
+                }
+            }
+            // Cut events should never reach a terminal; ignore them.
+            egui::Event::Cut => None,
 
             _ => None,
         }

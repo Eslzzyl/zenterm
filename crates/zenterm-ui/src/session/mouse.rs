@@ -285,7 +285,7 @@ impl TerminalSession {
                     }
                 }
             } else {
-                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                if let Some(ref mut clipboard) = self.clipboard {
                     if let Ok(text) = clipboard.get_text() {
                         if !text.is_empty() {
                             if let Err(e) = self.pty.write(text.as_bytes()) {
@@ -479,6 +479,19 @@ impl TerminalSession {
             } else {
                 self.selecting = false;
                 self.terminal_dirty = true;
+
+                // ── Auto-copy selection to clipboard ──────────────
+                if self.save_to_clipboard {
+                    if let Some(text) = self.terminal.selected_text() {
+                        if !text.is_empty() {
+                            if let Some(ref mut cb) = self.clipboard {
+                                if let Err(e) = cb.set_text(text) {
+                                    log::error!("failed to copy selection to clipboard: {e}");
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -620,13 +633,17 @@ impl TerminalSession {
             if self.terminal.has_selection() {
                 if ctx_ui.button("Copy").clicked() {
                     if let Some(text) = self.terminal.selected_text() {
-                        ctx_ui.ctx().copy_text(text);
+                        if let Some(ref mut cb) = self.clipboard {
+                            if let Err(e) = cb.set_text(text) {
+                                log::error!("failed to copy to clipboard: {e}");
+                            }
+                        }
                     }
                     ctx_ui.close();
                 }
             }
             if ctx_ui.button("Paste").clicked() {
-                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                if let Some(ref mut clipboard) = self.clipboard {
                     if let Ok(text) = clipboard.get_text() {
                         if !text.is_empty() {
                             if let Err(e) = self.pty.write(text.as_bytes()) {

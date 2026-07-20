@@ -92,6 +92,7 @@ impl ZentermApp {
     /// Returns `true` if a shortcut was consumed (skip forwarding to
     /// the active session).
     pub(crate) fn handle_shortcuts(&mut self, ctx: &Context) -> bool {
+        log::warn!("[clipboard] handle_shortcuts entered — checking for copy/paste events");
         let (copy, paste, reload, settings, ws_switch, ws_cycle) = ctx.input(|input| {
             let mut c = false;
             let mut p = false;
@@ -100,6 +101,12 @@ impl ZentermApp {
             let mut ws_switch: Option<usize> = None;
             let mut ws_cycle: Option<isize> = None;
             for event in &input.events {
+                // Catch Event::Copy from egui-winit (Windows/Linux: Ctrl+C/Ctrl+Shift+C,
+                // macOS: Cmd+C).  When there's a selection, copy it; without selection,
+                // fall through to InputMapper which sends SIGINT on non-macOS.
+                if matches!(event, egui::Event::Copy) {
+                    c = true;
+                }
                 if let egui::Event::Key {
                     key,
                     pressed: true,
@@ -111,7 +118,10 @@ impl ZentermApp {
                     let shift_ctrl = modifiers.ctrl && modifiers.shift && !modifiers.alt;
                     if shift_ctrl {
                         match key {
-                            egui::Key::C => c = true,
+                            egui::Key::C => {
+                                log::info!("[clipboard] Ctrl+Shift+C detected, setting copy=true");
+                                c = true;
+                            }
                             egui::Key::V => p = true,
                             egui::Key::R => r = true,
                             _ => {}
@@ -144,6 +154,14 @@ impl ZentermApp {
                             egui::Key::Tab if !modifiers.shift => ws_cycle = Some(1),
                             egui::Key::Tab if modifiers.shift => ws_cycle = Some(-1),
                             _ => {}
+                        }
+                    }
+                    // Ctrl+Insert → copy, Shift+Insert → paste
+                    if *key == egui::Key::Insert {
+                        if modifiers.ctrl && !modifiers.shift && !modifiers.alt {
+                            c = true;
+                        } else if modifiers.shift && !modifiers.ctrl && !modifiers.alt {
+                            p = true;
                         }
                     }
                 }
@@ -200,23 +218,41 @@ impl ZentermApp {
             }
         }
         if copy {
+            log::warn!("[clipboard] entering copy handler, active_session_id={:?}", self.active_session_id);
             if let Some(id) = self.active_session_id {
                 if let Some(session) = self.sessions.get_mut(&id) {
-                    if session.terminal.has_selection() {
+                    let has_sel = session.terminal.has_selection();
+                    log::warn!("[clipboard] session found, has_selection={has_sel}");
+                    if has_sel {
                         if let Some(text) = session.terminal.selected_text() {
-                            ctx.copy_text(text);
+                            log::warn!("[clipboard] selected_text len={}", text.len());
+                            if let Some(ref mut cb) = session.clipboard {
+                                log::warn!("[clipboard] clipboard Some, calling set_text");
+                                match cb.set_text(text) {
+                                    Ok(_) => log::warn!("[clipboard] *** set_text SUCCESS ***"),
+                                    Err(e) => log::error!("[clipboard] set_text FAILED: {e}"),
+                                }
+                            } else {
+                                log::error!("[clipboard] clipboard is None (arboard init failed at session creation)");
+                            }
                             return true;
+                        } else {
+                            log::warn!("[clipboard] has_selection=true but selected_text() returned None");
                         }
                     }
+                } else {
+                    log::error!("[clipboard] get_mut returned None for session");
                 }
+            } else {
+                log::error!("[clipboard] active_session_id is None");
             }
         }
         if paste {
-            if let Ok(mut cb) = arboard::Clipboard::new() {
-                if let Ok(text) = cb.get_text() {
-                    if !text.is_empty() {
-                        if let Some(id) = self.active_session_id {
-                            if let Some(session) = self.sessions.get_mut(&id) {
+            if let Some(id) = self.active_session_id {
+                if let Some(session) = self.sessions.get_mut(&id) {
+                    if let Some(ref mut cb) = session.clipboard {
+                        if let Ok(text) = cb.get_text() {
+                            if !text.is_empty() {
                                 if let Err(e) = session.pty.write(text.as_bytes()) {
                                     log::error!("PTY paste error: {e}");
                                 }

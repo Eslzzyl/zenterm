@@ -108,6 +108,12 @@ pub struct TerminalSession {
     /// Replaces the old `frame_count`-based approach so we don't need
     /// to increment a counter every frame.
     pub blink_epoch: std::time::Instant,
+    /// Automatically copy selected text to the system clipboard
+    /// (mirrors `config.selection.save_to_clipboard`).
+    pub save_to_clipboard: bool,
+    /// Persistent clipboard handle (single instance, following Alacritty's
+    /// pattern — avoids temporary `arboard::Clipboard::new()` on each op).
+    pub clipboard: Option<arboard::Clipboard>,
     pub pty_exited: bool,
     /// Whether we have already emitted [`SessionEffect::CloseWindow`] for
     /// this session.  Guards against repeated emissions across frames.
