@@ -38,6 +38,38 @@ startup_mode = "Maximized"
 
 ---
 
+## `[background]` — Background image
+
+Show an image behind the terminal content.  The image is rendered through the
+GPU pipeline and appears behind all cell instances (selection, cursor,
+highlighted text are drawn on top of it).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `image_path` | `string` | — | Path to an image file. Supports any format the `image` crate can decode (PNG, JPEG, GIF, WebP, BMP). Empty or absent = no background image. |
+| `image_opacity` | `float` | `0.8` | Opacity of the image (`0.0` = fully transparent / theme colour only, `1.0` = image fully replaces the theme background). |
+| `image_mode` | `string` | `"Cover"` | How the image fits the terminal area. One of: `"Cover"`, `"Contain"`, `"Stretch"`, `"Center"`. |
+
+### `image_mode` values
+
+| Value | Behaviour |
+|-------|-----------|
+| `Cover` | Scale the image to fill the entire viewport, cropping the longer dimension to preserve the aspect ratio. |
+| `Contain` | Scale the image to fit within the viewport, letterboxing (adding empty bands) when the aspect ratios differ. |
+| `Stretch` | Stretch the image to fill the entire viewport, ignoring the aspect ratio. |
+| `Center` | Center the image at its native pixel size. Larger images are cropped; smaller images show the theme background colour around them. |
+
+### Example
+
+```toml
+[background]
+image_path = "~/Pictures/wallpaper.png"
+image_opacity = 0.5
+image_mode = "Cover"
+```
+
+---
+
 ## `[font]` — Font settings
 
 Configure the typeface, size, and spacing.

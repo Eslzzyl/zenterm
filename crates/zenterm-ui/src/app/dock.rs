@@ -274,6 +274,7 @@ impl ZentermApp {
                         pending_adds: &mut self.pending_adds,
                         pending_rename: &mut self.pending_rename,
                         show_active_indicator,
+                        background_active: self.background_image_loaded,
                     };
                     area.show_inside(ui, &mut viewer);
                 } // viewer dropped → self.sessions borrow released

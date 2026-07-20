@@ -20,9 +20,14 @@ use crate::session::{SessionId, TerminalSession};
 /// The session is identified by [`SessionId(0)`]; if it does not
 /// exist (which should never happen in `tabs_enabled = false` mode)
 /// the function returns without drawing.
+///
+/// When `background_active` is `true`, the terminal background is
+/// handled by the BACKGROUND quad in the wgpu callback; the egui
+/// `rect_filled` is skipped.
 pub fn render_legacy_single(
     ui: &mut egui::Ui,
     sessions: &mut std::collections::HashMap<SessionId, TerminalSession>,
+    background_active: bool,
 ) {
     let session = match sessions.get_mut(&SessionId(0)) {
         Some(s) => s,
@@ -54,12 +59,16 @@ pub fn render_legacy_single(
     let callback =
         egui_wgpu::Callback::new_paint_callback(cell_rect, session.callback.clone());
     // Apply window opacity so the desktop shows through.
-    let bg_with_opacity = {
-        let c = session.default_bg;
-        let a = (c.a() as f32 * session.window_opacity).round().clamp(0.0, 255.0) as u8;
-        egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), a)
-    };
-    ui.painter().rect_filled(cell_rect, 0.0, bg_with_opacity);
+    // When the BACKGROUND quad is active, the wgpu callback draws
+    // the background image; skip the egui rect_filled.
+    if !background_active {
+        let bg_with_opacity = {
+            let c = session.default_bg;
+            let a = (c.a() as f32 * session.window_opacity).round().clamp(0.0, 255.0) as u8;
+            egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), a)
+        };
+        ui.painter().rect_filled(cell_rect, 0.0, bg_with_opacity);
+    }
     ui.painter().add(callback);
 
     session.render_context_menu(ui, &response);

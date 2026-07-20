@@ -10,6 +10,7 @@
 
 use std::collections::HashSet;
 
+use zenterm_config::background::{BackgroundConfig, ImageFitMode};
 use zenterm_config::colors::{AnsiColors, ColorsConfig, CursorColors, PrimaryColors, SelectionColors, ThemePreference};
 use zenterm_config::cursor::{Blinking, CursorConfig, CursorShape};
 use zenterm_core::{HintingMode, RenderMode};
@@ -38,6 +39,7 @@ pub enum SettingsSection {
     Terminal,
     Keyboard,
     Ui,
+    Background,
 }
 
 impl SettingsSection {
@@ -52,6 +54,7 @@ impl SettingsSection {
         Self::Terminal,
         Self::Keyboard,
         Self::Ui,
+        Self::Background,
     ];
 
     pub fn label(self) -> &'static str {
@@ -65,6 +68,7 @@ impl SettingsSection {
             Self::Terminal => "Terminal",
             Self::Keyboard => "Keyboard",
             Self::Ui => "UI",
+            Self::Background => "Background",
         }
     }
 }
@@ -257,6 +261,7 @@ fn render_section(ui: &mut egui::Ui, section: SettingsSection, cfg: &mut Config,
         SettingsSection::Terminal => render_terminal_section(ui, &mut cfg.terminal),
         SettingsSection::Keyboard => render_keyboard_section(ui, &mut cfg.keyboard),
         SettingsSection::Ui => render_ui_section(ui, &mut cfg.ui),
+        SettingsSection::Background => render_background_section(ui, &mut cfg.background),
     }
 }
 
@@ -544,6 +549,42 @@ fn render_ui_section(ui: &mut egui::Ui, u: &mut UiConfig) {
         "Save tab layout changes to disk automatically");
     settings_widgets::drag_u64(ui, "Debounce (ms)", &mut u.layout_debounce_ms, 10.0,
         "Milliseconds to wait before writing layout changes");
+}
+
+// ── Background section ────────────────────────────────────────────────────
+
+fn render_background_section(ui: &mut egui::Ui, bg: &mut BackgroundConfig) {
+    settings_widgets::section_header(ui, "Background", "Terminal background image.");
+
+    // Image path with browse button.
+    let mut path = bg.image_path.clone().unwrap_or_default();
+    settings_widgets::row(ui, "Image Path", "Absolute path to an image file.", |ui| {
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut path)
+                .hint_text("Select or type a path…")
+                .desired_width(220.0));
+            if ui.button("Browse…").clicked() {
+                if let Some(picked) = rfd::FileDialog::new()
+                    .set_title("Select Background Image")
+                    .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "ico"])
+                    .pick_file()
+                {
+                    path = picked.display().to_string();
+                }
+            }
+        });
+    });
+    bg.image_path = if path.is_empty() { None } else { Some(path) };
+
+    settings_widgets::slider_setting(ui, "Image Opacity", &mut bg.image_opacity, 0.0..=1.0,
+        "Blends image with terminal background.");
+
+    settings_widgets::combo_setting(ui, "Fit Mode", &mut bg.image_mode, &[
+        (ImageFitMode::Cover, "Cover"),
+        (ImageFitMode::Contain, "Contain"),
+        (ImageFitMode::Stretch, "Stretch"),
+        (ImageFitMode::Center, "Center"),
+    ], "How the image fits the terminal area.");
 }
 
 // ── Egui font registration for preview ─────────────────────────────────

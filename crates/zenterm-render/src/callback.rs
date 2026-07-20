@@ -40,6 +40,22 @@ pub struct SharedRenderState {
     /// When `atlas_dirty` is true, this holds the per-slot data so
     /// `prepare()` can upload or recreate textures.
     pub atlas_update: Mutex<Option<AtlasUpdate>>,
+    /// Pending background image upload.  Written by the UI thread when the
+    /// user sets/changes the background image; consumed by `prepare()`.
+    pub background_data: Mutex<Option<BackgroundImageData>>,
+    /// Monotonically increasing generation counter for background texture
+    /// changes.  `prepare()` checks this to decide whether to upload.
+    pub background_gen: AtomicU64,
+}
+
+/// Pixel data for a background image to be uploaded to the GPU.
+pub struct BackgroundImageData {
+    /// RGBA8 sRGB pixel data (4 bytes per pixel).
+    pub data: Vec<u8>,
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
 }
 
 /// Per-frame instance data shared between the UI thread and GPU prepare.
@@ -54,6 +70,10 @@ pub struct FrameData {
     /// Per-atlas-slot instance ranges describing which instances in
     /// `instances` belong to which atlas texture.
     pub atlas_ranges: Vec<AtlasRange>,
+    /// When `true`, instance 0 is a BACKGROUND quad sampled from
+    /// @group(1) instead of the glyph atlas.  Must be set by the UI
+    /// thread every frame before the instance data is consumed.
+    pub background_active: bool,
 }
 
 /// Pixel data for one slot in the texture atlas.
@@ -79,10 +99,13 @@ impl SharedRenderState {
             frame_data: Mutex::new(FrameData {
                 instances: Vec::with_capacity(capacity),
                 atlas_ranges: Vec::new(),
+                background_active: false,
             }),
             instance_gen: AtomicU64::new(1),
             atlas_dirty: AtomicBool::new(false),
             atlas_update: Mutex::new(None),
+            background_data: Mutex::new(None),
+            background_gen: AtomicU64::new(0),
         }
     }
 }
@@ -238,16 +261,43 @@ impl CallbackTrait for TerminalWgpuCallback {
             log::trace!("callback prepare: atlas not dirty");
         }
 
+        // ── 1b. Update background texture if dirty ─────────────────────
+        {
+            let _t0 = std::time::Instant::now();
+            let update = self.shared.background_data.lock().unwrap().take();
+            if let Some(bg_data) = update {
+                log::debug!(
+                    "callback prepare: background image update {}x{}",
+                    bg_data.width,
+                    bg_data.height,
+                );
+                if let Ok(mut rp_guard) = self.render_pass.lock() {
+                    if let Some(ref mut rp) = *rp_guard {
+                        rp.update_background_texture(
+                            &self.device,
+                            &self.queue,
+                            &bg_data.data,
+                            bg_data.width,
+                            bg_data.height,
+                        );
+                    }
+                }
+                self.shared.background_gen.fetch_add(1, Ordering::Release);
+                log::debug!("bg: prepare total took {:?}", _t0.elapsed());
+            }
+        }
+
         // ── 2. Upload cell instance data ────────────────────────────────
         let current_gen = self.shared.instance_gen.load(Ordering::Acquire);
         let last_gen = self.last_instance_gen.load(Ordering::Relaxed);
         if current_gen != last_gen {
             self.last_instance_gen.store(current_gen, Ordering::Relaxed);
 
-            // Single lock for both instances + atlas_ranges.
+            // Single lock for both instances + atlas_ranges + background_active.
             let mut guard = self.shared.frame_data.lock().unwrap();
             let instances = std::mem::take(&mut guard.instances);
             let atlas_ranges = std::mem::take(&mut guard.atlas_ranges);
+            let background_active = guard.background_active;
             drop(guard);
 
             if !instances.is_empty() {
@@ -267,11 +317,12 @@ impl CallbackTrait for TerminalWgpuCallback {
                 }
             }
 
-            // Pass atlas ranges to the render pass for segmented drawing.
-            if !atlas_ranges.is_empty() {
+            // Pass atlas ranges and background_active to the render pass.
+            if !atlas_ranges.is_empty() || background_active {
                 if let Ok(mut rp_guard) = self.render_pass.lock() {
                     if let Some(ref mut rp) = *rp_guard {
                         rp.set_atlas_ranges(atlas_ranges);
+                        rp.set_background_active(background_active);
                     }
                 }
             }

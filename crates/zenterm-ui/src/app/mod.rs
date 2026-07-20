@@ -28,6 +28,8 @@ use zenterm_config::Config;
 use zenterm_core::SubpixelLayout;
 use zenterm_core::theme::{Theme, ThemePreference, THEME_DARK};
 use zenterm_render::callback::{CallbackHandle, SharedRenderState, TerminalWgpuCallback};
+use zenterm_render::glyph_type;
+use zenterm_render::BackgroundImageData;
 use zenterm_term::ColorScheme;
 
 use crate::glyph_cache::SharedGlyphAtlas;
@@ -66,6 +68,11 @@ pub struct ZentermApp {
     pub default_bg: egui::Color32,
     pub pixels_per_point: f32,
     pub error_toast: Option<String>,
+
+    /// Whether a background image is loaded and should be rendered.
+    background_image_loaded: bool,
+    /// Pixel dimensions of the loaded background image (for fit mode).
+    loaded_bg_image_size: Option<(u32, u32)>,
 
     // ── Pending actions accumulated by the dock viewer ─────────────
     pending_close: Vec<SessionId>,
@@ -260,7 +267,7 @@ impl ZentermApp {
             .copied()
             .or(Some(first_id));
 
-        Self {
+        let mut app = Self {
             gpu,
             atlas,
             callback,
@@ -278,6 +285,8 @@ impl ZentermApp {
             default_bg,
             pixels_per_point,
             error_toast: None,
+            background_image_loaded: false,
+            loaded_bg_image_size: None,
             pending_close: Vec::new(),
             pending_adds: 0,
             pending_rename: None,
@@ -285,7 +294,18 @@ impl ZentermApp {
             config_dirty: false,
             last_config_save_at: None,
             egui_ctx,
+        };
+
+        // Load background image if configured.
+        // Clone the path first to avoid borrowing app.config.
+        let bg_path = app.config.background.image_path.clone();
+        if let Some(ref path) = bg_path {
+            if !path.is_empty() {
+                app.load_background_image(path);
+            }
         }
+
+        app
     }
 
 }
@@ -470,6 +490,27 @@ impl eframe::App for ZentermApp {
         // `bump_instance_gen` is called once after the dock finishes.
         self.gpu.clear_frame();
 
+        // Determine the terminal-area viewport size for aspect-ratio
+        // calculations in emit_background_quad.  The error-toast panel
+        // has already been allocated, so the remaining available rect is
+        // the terminal area (dock or central panel).  In dock mode the
+        // sidebar (if enabled) takes space from the left; subtract its
+        // configured default width so the aspect ratio matches the
+        // actual terminal viewport.
+        let avail = ui.available_size();
+        let ppp = ui.ctx().pixels_per_point();
+        let sidebar_w = if self.config.ui.tabs_enabled && self.config.ui.sidebar_enabled {
+            self.config.ui.sidebar_width
+        } else {
+            0.0
+        };
+        let viewport_size_px = [(avail.x - sidebar_w).max(1.0) * ppp, avail.y * ppp];
+
+        // Emit a BACKGROUND quad at instance 0 if a background image
+        // is loaded.  This must happen BEFORE sessions append their
+        // cell instances so the background quad is at index 0.
+        self.emit_background_quad(viewport_size_px);
+
         if self.config.ui.tabs_enabled {
             self.render_tabs_with_dock(ui);
         } else {
@@ -477,7 +518,7 @@ impl eframe::App for ZentermApp {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show_inside(ui, |ui| {
-                    render_legacy_single(ui, &mut self.sessions);
+                    render_legacy_single(ui, &mut self.sessions, self.background_image_loaded);
                 });
         }
 
@@ -485,8 +526,7 @@ impl eframe::App for ZentermApp {
         self.gpu.bump_instance_gen();
     }
 
-    fn on_exit(&mut self) {
-        self.persist_layout_now();
+    fn on_exit(&mut self) {        self.persist_layout_now();
         // Save any pending config changes (window size, settings, etc.)
         // immediately so the next session starts with the correct state.
         if self.config_dirty {
@@ -497,6 +537,168 @@ impl eframe::App for ZentermApp {
         }
     }
 }
+
+// ── Background image management ───────────────────────────────────────
+
+impl ZentermApp {
+    /// Emit a single BACKGROUND quad at instance 0 (behind all cells)
+    /// when a background image is loaded.  The quad covers the full
+    /// clip space [-1, 1] and the shader handles UV mapping based on
+    /// the configured fit mode.
+    ///
+    /// Must be called after `clear_frame()` and before any session's
+    /// `update_cell_instances()` so the quad sits at index 0.
+    fn emit_background_quad(&mut self, viewport_size_px: [f32; 2]) {
+        // If the flags aren't set yet, check whether an async decode
+        // has completed (background_data will be populated by the thread).
+        if !self.background_image_loaded {
+            let guard = self.gpu.shared.background_data.lock().expect("background_data lock");
+            if let Some(ref bg) = *guard {
+                let sz = (bg.width, bg.height);
+                drop(guard);
+                self.background_image_loaded = true;
+                self.loaded_bg_image_size = Some(sz);
+            } else {
+                // No background image configured or still loading.
+                let mut fd = self.gpu.lock_frame_data();
+                fd.background_active = false;
+                return;
+            }
+        }
+
+        let img_opacity = self.config.background.image_opacity;
+        let win_opacity = self.config.window.opacity;
+        let bg = self.theme.background;
+
+        // Compute viewport aspect ratio from the actual terminal area.
+        let vp_w = viewport_size_px[0].max(1.0);
+        let vp_h = viewport_size_px[1].max(1.0);
+
+        let (clip_pos, clip_size, uv_min, uv_max) = match self.loaded_bg_image_size {
+            Some((w, h)) => {
+                let (iw, ih) = (w as f32, h as f32);
+                match self.config.background.image_mode {
+                    zenterm_config::background::ImageFitMode::Stretch => {
+                        // Map entire image to full viewport.
+                        ([-1.0, 1.0], [2.0, 2.0], [0.0, 0.0], [1.0, 1.0])
+                    }
+                    zenterm_config::background::ImageFitMode::Cover => {
+                        // Scale to fill viewport, crop excess via UV.
+                        // The quad always covers [-1,1] in clip space.
+                        // UV cropping uses the viewport pixel aspect ratio.
+                        let image_ar = iw / ih;
+                        let vp_ar = vp_w / vp_h;
+                        if image_ar > vp_ar {
+                            // Image is wider relative to viewport → crop X.
+                            let crop = (1.0 - vp_ar / image_ar) * 0.5;
+                            ([-1.0, 1.0], [2.0, 2.0], [crop, 0.0], [1.0 - crop, 1.0])
+                        } else {
+                            // Image is taller relative to viewport → crop Y.
+                            let crop = (1.0 - image_ar / vp_ar) * 0.5;
+                            ([-1.0, 1.0], [2.0, 2.0], [0.0, crop], [1.0, 1.0 - crop])
+                        }
+                    }
+                    zenterm_config::background::ImageFitMode::Contain => {
+                        // Scale to fit within viewport, letterbox.
+                        let image_ar = iw / ih;
+                        let vp_ar = vp_w / vp_h;
+                        if image_ar > vp_ar {
+                            // Image is wider → letterbox top/bottom.
+                            let h_frac = vp_ar / image_ar;                            let clip_h = 2.0 * h_frac;
+                            let off_y = (2.0 - clip_h) * 0.5;
+                            ([-1.0, 1.0 - off_y], [2.0, clip_h], [0.0, 0.0], [1.0, 1.0])
+                        } else {
+                            // Image is taller → letterbox left/right.
+                            let w_frac = image_ar / vp_ar;
+                            let clip_w = 2.0 * w_frac;
+                            let off_x = (2.0 - clip_w) * 0.5;
+                            ([-1.0 + off_x, 1.0], [clip_w, 2.0], [0.0, 0.0], [1.0, 1.0])
+                        }
+                    }
+                    zenterm_config::background::ImageFitMode::Center => {
+                        // Native pixel size, centered.
+                        // Convert pixel dimensions to clip-space units.
+                        // 1 pixel = 2 / viewport_width (in X) or 2 / viewport_height (in Y).
+                        let cw = (iw / vp_w) * 2.0; // clip-space width
+                        let ch = (ih / vp_h) * 2.0; // clip-space height
+                        if cw >= 2.0 || ch >= 2.0 {
+                            // Image larger than viewport → center and crop.
+                            let crop_x = if cw > 2.0 { (cw - 2.0) / cw * 0.5 } else { 0.0 };
+                            let crop_y = if ch > 2.0 { (ch - 2.0) / ch * 0.5 } else { 0.0 };
+                            let end_x = if cw > 2.0 { 1.0 - (cw - 2.0) / cw * 0.5 } else { 1.0 };
+                            let end_y = if ch > 2.0 { 1.0 - (ch - 2.0) / ch * 0.5 } else { 1.0 };
+                            ([-1.0, 1.0], [2.0, 2.0], [crop_x, crop_y], [end_x, end_y])
+                        } else {
+                            let off_x = (2.0 - cw) * 0.5;
+                            let off_y = (2.0 - ch) * 0.5;
+                            ([-1.0 + off_x, 1.0 - off_y], [cw, ch], [0.0, 0.0], [1.0, 1.0])
+                        }
+                    }
+                }
+            }
+            None => ([-1.0, 1.0], [2.0, 2.0], [0.0, 0.0], [1.0, 1.0]),
+        };
+
+        let mut fd = self.gpu.lock_frame_data();
+        fd.background_active = true;
+        fd.instances.push(zenterm_render::CellInstance {
+            clip_pos,
+            uv_min,
+            uv_max,
+            clip_cell_size: clip_size,
+            glyph_size: [0.0; 2],
+            glyph_offset: [0.0; 2],
+            fg_color: [1.0, 1.0, 1.0, img_opacity],
+            bg_color: [bg.r(), bg.g(), bg.b(), win_opacity],
+            flags: glyph_type::BACKGROUND,
+        });
+    }
+
+    /// Load a background image from disk and push it to the GPU via
+    /// shared render state.  Called at startup and on config change.
+    ///
+    /// Decoding runs on a background thread so the UI is not blocked.
+    /// The image becomes visible once the GPU picks up the data in
+    /// the next `prepare()`.
+    pub(crate) fn load_background_image(&mut self, path: &str) {
+        // Clear flags immediately — show theme bg while async load runs.
+        self.background_image_loaded = false;
+        self.loaded_bg_image_size = None;
+        *self.gpu.shared.background_data.lock().expect("background_data lock") = None;
+
+        let path = path.to_owned();
+        let shared = self.gpu.shared.clone();
+        let egui_ctx = self.egui_ctx.clone();
+
+        std::thread::spawn(move || {
+            let _t0 = std::time::Instant::now();
+            let result = (|| -> Option<BackgroundImageData> {
+                let file_data = std::fs::read(&path).ok()?;
+                log::debug!("bg: file read took {:?}", _t0.elapsed());
+                let _t1 = std::time::Instant::now();
+                let img = image::load_from_memory(&file_data).ok()?;
+                log::debug!("bg: decode took {:?}", _t1.elapsed());
+                let _t2 = std::time::Instant::now();
+                let rgba = img.into_rgba8();
+                log::debug!("bg: into_rgba8 took {:?}", _t2.elapsed());
+                let (w, h) = rgba.dimensions();
+                Some(BackgroundImageData { data: rgba.into_raw(), width: w, height: h })
+            })();
+
+            match result {
+                Some(bg) => {
+                    *shared.background_data.lock().expect("background_data lock") = Some(bg);
+                    log::debug!("bg: total async load took {:?}", _t0.elapsed());
+                }
+                None => log::warn!("Failed to load background image: {path}"),
+            }
+
+            // Wake the UI thread so the next frame picks up the data.
+            egui_ctx.request_repaint();
+        });
+    }
+}
+
 // ── Colour helpers ─────────────────────────────────────────────────────
 
 /// Convert a [`Theme`] background colour to `egui::Color32`.

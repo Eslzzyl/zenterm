@@ -9,7 +9,7 @@ pub mod atlas;
 pub mod callback;
 pub mod shaders;
 
-pub use callback::{CallbackHandle, FrameData};
+pub use callback::{BackgroundImageData, CallbackHandle, FrameData};
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -41,6 +41,10 @@ pub mod glyph_type {
     /// Full RGBA image — texture sample outputs premultiplied linear RGBA.
     /// Used for Kitty / iTerm / Sixel image placement.
     pub const IMAGE: u32 = 4;
+    /// Full-viewport background image quad — sampled from background_atlas
+    /// (@group(1)), blended with theme background colour using uniforms
+    /// packed in fg_color.a (image_opacity) and bg_color (window_opacity + colour).
+    pub const BACKGROUND: u32 = 5;
 }
 
 /// Per-instance GPU data for one cell quad.
@@ -91,23 +95,37 @@ pub struct AtlasRange {
 /// The terminal render pass.
 ///
 /// Owns the wgpu pipeline, static vertex/index buffers, a dynamically
-/// written instance buffer, and one [`wgpu::BindGroup`] per atlas
-/// texture slot.
+/// written instance buffer, one [`wgpu::BindGroup`] per atlas texture slot
+/// (@group(0)), and an optional background-image bind group (@group(1)).
 pub struct TerminalRenderPass {
     pipeline: wgpu::RenderPipeline,
     instance_buf: wgpu::Buffer,
     vertex_buf: wgpu::Buffer,
     index_buf: wgpu::Buffer,
-    /// Shared bind-group layout (one texture + one sampler).
+    /// Shared bind-group layout for atlas slots (texture + sampler) @group(0).
     bind_group_layout: wgpu::BindGroupLayout,
     /// One bind group per atlas texture slot.
     atlas_bind_groups: Vec<wgpu::BindGroup>,
     /// Sampler shared by all atlas textures.
     atlas_sampler: wgpu::Sampler,
+    /// Linear sampler for the background image (avoids aliasing).
+    bg_sampler: wgpu::Sampler,
     /// Per-slot instance ranges for segmented drawing.
     atlas_ranges: Vec<AtlasRange>,
     num_instances: AtomicU32,
     max_instances: u32,
+
+    // ── Background image (optional quad behind all cells) ─────────────
+    /// Bind group layout for background image texture + sampler @group(1).
+    background_bind_group_layout: wgpu::BindGroupLayout,
+    /// Bind group for background image (or 1×1 dummy when inactive).
+    background_bind_group: wgpu::BindGroup,
+    /// Whether the current frame has a background quad at instance 0.
+    background_active: bool,
+    /// The uploaded background texture (kept alive).
+    background_texture: Option<wgpu::Texture>,
+    /// View into `background_texture`.
+    background_view: Option<wgpu::TextureView>,
 }
 
 impl TerminalRenderPass {
@@ -118,6 +136,11 @@ impl TerminalRenderPass {
     /// entry, all sharing the same [`wgpu::BindGroupLayout`] so the
     /// shader sees a uniform `texture_2d<f32>` at binding 0 regardless
     /// of which slot is active.
+    ///
+    /// A second bind group layout is created for the optional background
+    /// image texture (@group(1) in the shader).  A dummy 1×1 white texture
+    /// is bound so the pipeline is valid even when no background image
+    /// is loaded.
     pub fn new(
         device: &wgpu::Device,
         target_format: wgpu::TextureFormat,
@@ -158,7 +181,7 @@ impl TerminalRenderPass {
             mapped_at_creation: false,
         });
 
-        // Bind group layout (shared by all slots).
+        // ── @group(0): glyph atlas bind group layout ────────────────
         let bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("terminal.bind_group_layout"),
@@ -203,11 +226,80 @@ impl TerminalRenderPass {
             })
             .collect();
 
-        // Pipeline layout.
+        // ── Linear sampler for background image ─────────────────────
+        let bg_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("terminal.bg_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+
+        // ── @group(1): background image bind group layout ───────────
+        let background_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("terminal.background_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        // Create a 1×1 dummy white texture so the background bind group
+        // is always valid (wgpu requires all bind groups in the pipeline
+        // layout to be bound for every draw call).
+        let dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("terminal.background_dummy"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let dummy_view = dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let background_bind_group =
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("terminal.background_bind_group_dummy"),
+                layout: &background_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&dummy_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&bg_sampler),
+                    },
+                ],
+            });
+
+        // ── Pipeline layout (two bind group layouts) ────────────────
         let pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("terminal.pipeline_layout"),
-                bind_group_layouts: &[Some(&bind_group_layout)],
+                bind_group_layouts: &[
+                    Some(&bind_group_layout),
+                    Some(&background_bind_group_layout),
+                ],
                 immediate_size: 0,
             });
 
@@ -308,10 +400,105 @@ impl TerminalRenderPass {
             bind_group_layout,
             atlas_bind_groups,
             atlas_sampler: sampler.clone(),
+            bg_sampler,
             atlas_ranges: Vec::new(),
             num_instances: AtomicU32::new(0),
             max_instances,
+            background_bind_group_layout,
+            background_bind_group,
+            background_active: false,
+            background_texture: Some(dummy_tex),
+            background_view: Some(dummy_view),
         })
+    }
+
+    /// Signal whether the current frame has a background quad at instance 0.
+    pub fn set_background_active(&mut self, active: bool) {
+        self.background_active = active;
+    }
+
+    /// Upload a new background image texture and rebuild @group(1).
+    ///
+    /// `data` must be RGBA8 sRGB pixel data, `width` × `height`.
+    pub fn update_background_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        data: &[u8],
+        width: u32,
+        height: u32,
+    ) {
+        let _t0 = std::time::Instant::now();
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("terminal.background"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        log::debug!("bg: create_texture {:?}", _t0.elapsed());
+        // Pad bytes_per_row to 256-byte alignment (required by wgpu).
+        let _t1 = std::time::Instant::now();
+        let unpadded = width * 4;
+        let padding = (256 - unpadded % 256) % 256;
+        let bytes_per_row = unpadded + padding;
+        let padded_size = bytes_per_row as u64 * height as u64;
+        // Build a padded copy so wgpu doesn't reject the upload on
+        // backends that require tight alignment (D3D12, Vulkan).
+        let padded = if padding > 0 {
+            let mut buf = Vec::with_capacity(padded_size as usize);
+            for row in 0..height as usize {
+                buf.extend_from_slice(&data[row * unpadded as usize..(row + 1) * unpadded as usize]);
+                buf.extend(std::iter::repeat(0u8).take(padding as usize));
+            }
+            buf
+        } else {
+            data.to_vec()
+        };
+        log::debug!("bg: pad/copy {}x{} (pad={}) took {:?}", width, height, padding, _t1.elapsed());
+        let _t2 = std::time::Instant::now();
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &padded,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        log::debug!("bg: write_texture took {:?}", _t2.elapsed());
+
+        let _t3 = std::time::Instant::now();
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("terminal.background_bind_group"),
+            layout: &self.background_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.bg_sampler),
+                },
+            ],
+        });
+        log::debug!("bg: create_bind_group took {:?}", _t3.elapsed());
+        log::debug!("bg: total GPU update took {:?}", _t0.elapsed());
+
+        self.background_bind_group = bg;
+        self.background_texture = Some(tex);
+        self.background_view = Some(view);
     }
 
     /// Replace the set of atlas texture views (e.g. when a new slot
@@ -385,8 +572,10 @@ impl TerminalRenderPass {
     /// background and decoration quads that don't sample the atlas
     /// texture) are drawn with bind group 0.
     ///
-    /// The common case (single slot, no ranges) takes the fast path
-    /// with one bind + one draw call.
+    /// When `background_active` is true, instance 0 is a BACKGROUND
+    /// quad sampled from `@group(1)` (the background image texture).
+    /// It is drawn first with any valid `@group(0)` (it doesn't sample
+    /// glyph_atlas).  Cell instances start at offset 1.
     pub fn draw_to_pass(&self, rpass: &mut wgpu::RenderPass) {
         let count = self.num_instances.load(Ordering::Acquire);
         if count == 0 {
@@ -397,19 +586,42 @@ impl TerminalRenderPass {
         rpass.set_vertex_buffer(1, self.instance_buf.slice(..));
         rpass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
 
+        // Bind @group(1) once for all draw calls (background texture
+        // or 1×1 dummy).  Cell-instance draw paths do not sample it.
+        rpass.set_bind_group(1, &self.background_bind_group, &[]);
+
+        let bg_active = self.background_active;
+        let start: u32 = if bg_active { 1 } else { 0 };
+
+        // ── Draw background quad (instance 0) ───────────────────────
+        if bg_active {
+            // Bind any valid @group(0) — the BACKGROUND shader path
+            // does not sample glyph_atlas, but wgpu validation requires
+            // the binding to be present.
+            if let Some(bg) = self.atlas_bind_groups.first() {
+                rpass.set_bind_group(0, bg, &[]);
+            }
+            rpass.draw_indexed(0..6, 0, 0..1);
+        }
+
+        if count <= start {
+            return;
+        }
+
+        // ── Draw cell instances (offset by `start`) ─────────────────
         if self.atlas_ranges.is_empty() || self.atlas_bind_groups.is_empty() {
             // Single-slot / empty fast path.
             if let Some(bg) = self.atlas_bind_groups.first() {
                 rpass.set_bind_group(0, bg, &[]);
             }
-            rpass.draw_indexed(0..6, 0, 0..count);
+            rpass.draw_indexed(0..6, 0, start..count);
             return;
         }
 
         // Multi-slot segmented draw.  Gaps between ranges (flat
         // instances such as SOLID bg/deco that aren't in any range)
         // are drawn with bind group 0 — they don't sample the texture.
-        let mut drawn_end = 0u32;
+        let mut drawn_end = start;
         for range in &self.atlas_ranges {
             if range.count == 0 {
                 continue;

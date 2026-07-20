@@ -34,6 +34,7 @@
 
 mod config;
 
+pub mod background;
 pub mod colors;
 pub mod cursor;
 pub mod font;

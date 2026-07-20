@@ -36,6 +36,10 @@ pub struct TabViewerContext<'a> {
     /// Whether to draw the active-panel border indicator.
     /// Should be `false` when there is only a single tab (no split).
     pub show_active_indicator: bool,
+    /// When `true`, the BACKGROUND quad is already emitted at instance 0
+    /// and the egui `rect_filled` for the terminal background should be
+    /// skipped (the background image/texture is handled by the shader).
+    pub background_active: bool,
 }
 
 impl<'a> TabViewer for TabViewerContext<'a> {
@@ -134,12 +138,18 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         // dock level (see `render_tabs_with_dock` in `app.rs`).
         // Apply window opacity so the desktop shows through when
         // the user configures a transparent background.
-        let bg_with_opacity = {
-            let c = session.default_bg;
-            let a = (c.a() as f32 * session.window_opacity).round().clamp(0.0, 255.0) as u8;
-            egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), a)
-        };
-        ui.painter().rect_filled(cell_rect, 0.0, bg_with_opacity);
+        //
+        // When a BACKGROUND quad is active (background image loaded),
+        // skip this rect_filled — the background image is drawn by the
+        // shader as instance 0 in the wgpu callback.
+        if !self.background_active {
+            let bg_with_opacity = {
+                let c = session.default_bg;
+                let a = (c.a() as f32 * session.window_opacity).round().clamp(0.0, 255.0) as u8;
+                egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), a)
+            };
+            ui.painter().rect_filled(cell_rect, 0.0, bg_with_opacity);
+        }
 
         // Scrollbar overlay (on top of the background).
         session.render_scrollbar(ui, cell_rect);

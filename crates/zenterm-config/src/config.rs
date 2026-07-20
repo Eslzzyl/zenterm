@@ -10,6 +10,7 @@ use std::{env, fs, io};
 
 use serde::{Deserialize, Serialize};
 
+use crate::background::BackgroundConfig;
 use crate::colors::ColorsConfig;
 use crate::cursor::CursorConfig;
 use crate::font::FontConfig;
@@ -55,6 +56,10 @@ pub struct Config {
     /// UI chrome (tabs + sidebar).  Defaults to all-off.
     #[serde(default)]
     pub ui: UiConfig,
+
+    /// Terminal background image.
+    #[serde(default)]
+    pub background: BackgroundConfig,
 }
 
 // ── ConfigChanges ──────────────────────────────────────────────────────
@@ -74,6 +79,9 @@ pub struct ConfigChanges {
     pub terminal: bool,
     pub keyboard: bool,
     pub ui: bool,
+
+    /// Background image / opacity / mode changed.
+    pub background: bool,
 
     /// `true` when any changed section **requires an application
     /// restart** to take full effect (e.g. window decorations,
@@ -208,6 +216,7 @@ impl Config {
             terminal: self.terminal != other.terminal,
             keyboard: self.keyboard != other.keyboard,
             ui: self.ui != other.ui,
+            background: self.background != other.background,
             needs_restart: self.window.needs_restart() || other.window.needs_restart(),
         }
     }
@@ -230,6 +239,7 @@ impl Default for Config {
             terminal: TerminalConfig::default(),
             keyboard: KeyboardConfig::default(),
             ui: UiConfig::default(),
+            background: BackgroundConfig::default(),
         }
     }
 }

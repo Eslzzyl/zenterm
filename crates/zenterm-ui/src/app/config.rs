@@ -135,6 +135,35 @@ impl ZentermApp {
             }
         }
 
+        // Handle background image changes.
+        // Only re-decode the image when the path itself changes.
+        // Opacity and fit-mode changes are read live from config
+        // in emit_background_quad() and do not require a reload.
+        if changes.background {
+            let _t0 = std::time::Instant::now();
+            let old_path = old_config.background.image_path.as_deref().unwrap_or("").to_owned();
+            let new_path = self.config.background.image_path.as_deref().unwrap_or("").to_owned();
+            if old_path != new_path {
+                // Clone the path before the mutable borrow.
+                let path = self.config.background.image_path.clone();
+                match path {
+                    Some(p) if !p.is_empty() => {
+                        self.load_background_image(&p);
+                        log::debug!("bg: apply_new_config -> load_background_image took {:?}", _t0.elapsed());
+                    }
+                    _ => {
+                        // Clear the background image.
+                        self.background_image_loaded = false;
+                        self.loaded_bg_image_size = None;
+                        *self.gpu.shared.background_data.lock().expect("background_data lock") = None;
+                        log::debug!("bg: cleared (apply_new_config) {:?}", _t0.elapsed());
+                    }
+                }
+            } else {
+                log::debug!("bg: config change (opacity/mode only, no reload) {:?}", _t0.elapsed());
+            }
+        }
+
         changes
     }
 

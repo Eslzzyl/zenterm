@@ -41,7 +41,7 @@ pub fn section_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
 
 /// Draw a label and description in the left column, then the control
 /// in the right column, with consistent vertical spacing.
-fn row<F>(ui: &mut egui::Ui, label: &str, description: &str, add_control: F)
+pub(crate) fn row<F>(ui: &mut egui::Ui, label: &str, description: &str, add_control: F)
 where
     F: FnOnce(&mut egui::Ui),
 {
