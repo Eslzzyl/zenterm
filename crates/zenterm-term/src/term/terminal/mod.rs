@@ -139,7 +139,10 @@ pub struct Terminal {
 impl Terminal {
     /// Create a new terminal with the given dimensions.
     pub fn new(size: TermSize, scheme: ColorScheme) -> Self {
-        let config = TermConfig::default();
+        let config = TermConfig {
+            kitty_keyboard: true,
+            ..TermConfig::default()
+        };
         let dim = TermDimensions(size);
 
         // Create the event channel and listener — this replaces the previous
@@ -1162,6 +1165,15 @@ impl Terminal {
     /// Get terminal mode flags (needed by the input mapper).
     pub fn mode(&self) -> TermMode {
         *self.term.mode()
+    }
+
+    /// Extract the Kitty keyboard protocol flags from the current
+    /// terminal mode.
+    ///
+    /// Returns `None` when no Kitty flags are active (equivalent to the
+    /// classic xterm encoding path).
+    pub fn kitty_keyboard_flags(&self) -> Option<zenterm_input::KittyKeyboardFlags> {
+        zenterm_input::KittyKeyboardFlags::from_term_mode(self.term.mode().bits())
     }
 
     /// Replace the colour scheme (e.g. when the user switches themes).

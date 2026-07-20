@@ -13,6 +13,9 @@
 //! - Application mode cursor keys → `SS3 {letter}` (when `app_cursor` is set)
 //! - Clipboard paste via `Event::Paste`
 //!
+//! When the Kitty keyboard protocol is active, keys are encoded using the
+//! progressive CSI-u format (see [`KittyKeyboardFlags`]).
+//!
 //! # CSI-u modifier encoding (xterm / Kitty legacy)
 //!
 //! | Modifiers                | Index | Example            |
@@ -29,18 +32,66 @@
 use egui::Key;
 
 mod keys;
+mod kitty;
 mod sequences;
 #[cfg(test)]
 mod tests;
 
 use self::keys::{key_to_ascii, key_to_ctrl_code, key_to_ctrl_extended};
-use self::sequences::{cursor_seq, fkey_seq, tilde_seq, tilde_seq_raw};
+use self::kitty::{lookup as kitty_lookup, Terminator};
+use self::sequences::{
+    ascii_alternates, csi_u_simple, cursor_seq, fkey_seq, kitty_mod_idx, kitty_seq,
+    modifier_index, tilde_seq, tilde_seq_raw,
+};
+
+bitflags::bitflags! {
+    /// Flags for the Kitty keyboard protocol.
+    ///
+    /// These correspond to the bit positions used in the `CSI ? {flags} u`
+    /// query and the `KeyboardModes` type in `vte::ansi`.
+    ///
+    /// | Bit | Constant                   | Meaning                                    |
+    /// |-----|----------------------------|--------------------------------------------|
+    /// | 0   | `DISAMBIGUATE_ESCAPE_CODES`| Send CSI-u sequences for modified keys     |
+    /// | 1   | `REPORT_EVENT_TYPES`       | Include press/repeat/release event type    |
+    /// | 2   | `REPORT_ALTERNATE_KEYS`    | Include shifted/unshifted alternate codes  |
+    /// | 3   | `REPORT_ALL_KEYS_AS_ESCAPE_CODES`| Every key produces a CSI sequence    |
+    /// | 4   | `REPORT_ASSOCIATED_TEXT`   | Include the generated text code points     |
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct KittyKeyboardFlags: u8 {
+        const NONE                          = 0;
+        const DISAMBIGUATE_ESCAPE_CODES     = 0b00001;
+        const REPORT_EVENT_TYPES            = 0b00010;
+        const REPORT_ALTERNATE_KEYS         = 0b00100;
+        const REPORT_ALL_KEYS_AS_ESCAPE_CODES = 0b01000;
+        const REPORT_ASSOCIATED_TEXT        = 0b10000;
+    }
+}
+
+impl KittyKeyboardFlags {
+    /// Convert from the `TermMode` bits used by `alacritty_terminal`.
+    ///
+    /// `alacritty_terminal` stores the five Kitty flags in `TermMode`
+    /// bits 18–22.  This function extracts them and returns the
+    /// corresponding [`KittyKeyboardFlags`].
+    ///
+    /// Returns `None` when **no** Kitty bits are set (equivalent to
+    /// the legacy / xterm encoding path).
+    pub fn from_term_mode(mode: u32) -> Option<Self> {
+        let raw = ((mode >> 18) & 0x1f) as u8;
+        if raw == 0 {
+            None
+        } else {
+            Some(Self::from_bits_truncate(raw))
+        }
+    }
+}
 
 /// Options that affect key encoding behaviour.
 ///
 /// These are determined by the terminal state (DEC modes) and user
 /// configuration, and are passed to [`InputMapper::map`] on each call.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct MappingOptions {
     /// DEC mode 1 — application cursor keys.
     ///
@@ -56,17 +107,43 @@ pub struct MappingOptions {
     /// Alt on Windows/Linux).  When `false`, Option composes Unicode
     /// characters via the macOS keyboard layout.
     pub macos_option_as_alt: bool,
+
+    /// Kitty keyboard protocol flags.
+    ///
+    /// When `Some(flags)` and at least one flag is set, keys are encoded
+    /// using the progressive CSI-u format.  When `None` or all flags
+    /// are zero, the classic xterm encoding is used.
+    pub kitty_flags: Option<KittyKeyboardFlags>,
+}
+
+impl Default for MappingOptions {
+    fn default() -> Self {
+        Self {
+            app_cursor: false,
+            macos_option_as_alt: false,
+            kitty_flags: None,
+        }
+    }
 }
 
 impl MappingOptions {
-    /// Default options: both flags off.
+    /// Default options: all flags off, Kitty disabled.
     pub const fn new() -> Self {
         Self {
             app_cursor: false,
             macos_option_as_alt: false,
+            kitty_flags: None,
         }
     }
+
+    /// Convenience: enable Kitty keyboard with the given flags.
+    pub fn with_kitty(mut self, flags: KittyKeyboardFlags) -> Self {
+        self.kitty_flags = Some(flags);
+        self
+    }
 }
+
+// ── InputMapper ───────────────────────────────────────────────────────
 
 /// Maps egui input events to terminal byte sequences.
 pub struct InputMapper;
@@ -82,14 +159,49 @@ impl InputMapper {
     /// Returns `None` if the event should be ignored (e.g. it was
     /// already consumed by egui).
     pub fn map(event: &egui::Event, opts: &MappingOptions) -> Option<Vec<u8>> {
+        // ── Kitty encoding path ─────────────────────────────────────
+        // When the Kitty keyboard protocol is active, all Key events
+        // (including presses, repeats, and releases) are routed through
+        // the progressive CSI-u encoder.  Text events are still passed
+        // through as raw UTF-8 unless REPORT_ALL_KEYS_AS_ESCAPE_CODES
+        // is set (in which case they are also intercepted).
+        if let Some(kitty_flags) = opts.kitty_flags {
+            if kitty_flags != KittyKeyboardFlags::NONE {
+                if let egui::Event::Key {
+                    key,
+                    physical_key: pk,
+                    pressed,
+                    repeat,
+                    modifiers,
+                    ..
+                } = event
+                {
+                    return encode_kitty(
+                        *key,
+                        *pk,
+                        *pressed,
+                        *repeat,
+                        *modifiers,
+                        kitty_flags,
+                        opts,
+                    );
+                }
+                // In REPORT_ALL mode we also encode Text events as CSI u.
+                if kitty_flags.contains(KittyKeyboardFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES) {
+                    if let egui::Event::Text(text) = event {
+                        return encode_kitty_text(text, kitty_flags, opts);
+                    }
+                }
+            }
+        }
+
+        // ── Legacy (xterm) encoding path ────────────────────────────
         match event {
             egui::Event::Text(text) => {
                 // Printable text — send the UTF-8 bytes directly.
                 if text.is_empty() {
                     return None;
                 }
-                // Filter out control characters that egui sometimes
-                // delivers as text.
                 let has_printable =
                     text.chars().any(|c| !c.is_control() && c != '\n' && c != '\r');
                 if !has_printable {
@@ -100,7 +212,7 @@ impl InputMapper {
 
             egui::Event::Key {
                 key,
-                physical_key,
+                physical_key: _,
                 pressed: true,
                 modifiers,
                 ..
@@ -147,7 +259,6 @@ impl InputMapper {
                     // ── Escape ─────────────────────────────────────────
                     Key::Escape => {
                         if alt {
-                            // Alt+Esc — some terminals send ESC ESC
                             Some(b"\x1b\x1b".to_vec())
                         } else {
                             Some(vec![0x1b])
@@ -193,152 +304,119 @@ impl InputMapper {
                     Key::F10 => Some(tilde_seq_raw(21, mod_idx)),
                     Key::F11 => Some(tilde_seq_raw(23, mod_idx)),
                     Key::F12 => Some(tilde_seq_raw(24, mod_idx)),
+                    Key::F13 => Some(tilde_seq_raw(57376, mod_idx)),
+                    Key::F14 => Some(tilde_seq_raw(57377, mod_idx)),
+                    Key::F15 => Some(tilde_seq_raw(57378, mod_idx)),
+                    Key::F16 => Some(tilde_seq_raw(57379, mod_idx)),
+                    Key::F17 => Some(tilde_seq_raw(57380, mod_idx)),
+                    Key::F18 => Some(tilde_seq_raw(57381, mod_idx)),
+                    Key::F19 => Some(tilde_seq_raw(57382, mod_idx)),
+                    Key::F20 => Some(tilde_seq_raw(57383, mod_idx)),
 
-                    // ── Letters (A–Z), digits, symbols ────────────────
-                    _ => handle_ctrl_or_alt(key, physical_key.as_ref(), ctrl, alt, shift, opts),
-                }
-            }
-
-            egui::Event::Paste(text) => {
-                // Clipboard paste — send the UTF-8 bytes directly.
-                if text.is_empty() {
-                    None
-                } else {
-                    Some(text.as_bytes().to_vec())
-                }
-            }
-
-            egui::Event::Ime(ime_event) => {
-                // IME input (e.g. Chinese/Japanese/Korean IME composition).
-                match ime_event {
-                    // When the IME commits final text (user selected a candidate),
-                    // send the UTF-8 bytes to the PTY — same as Text events.
-                    egui::ImeEvent::Commit(text) => {
-                        if text.is_empty() {
-                            None
+                    // ── Space ──────────────────────────────────────────
+                    Key::Space => {
+                        if ctrl {
+                            Some(vec![0x00]) // Ctrl+Space → NUL
                         } else {
-                            Some(text.as_bytes().to_vec())
+                            None // handled by Event::Text
                         }
                     }
-                    // Preedit is intermediate composition state (still selecting
-                    // candidates); do not send to PTY.
-                    // Enabled/Disabled are IME activation state changes; ignored.
+
+                    // ── All other keys ────────────────────────────────
                     _ => None,
                 }
             }
 
-            // Event::Copy from egui-winit (Ctrl+C on Win/Linux, Cmd+C on macOS).
-            // When handle_shortcuts didn't consume it (no selection), send SIGINT
-            // on non-macOS.  On macOS, Cmd+C without selection does nothing.
-            egui::Event::Copy => {
-                #[cfg(target_os = "macos")]
-                {
-                    None
+            egui::Event::Paste(text) => {
+                // Bracketed paste mode is handled by the PTY layer; we
+                // just forward the raw paste data here.
+                if text.is_empty() {
+                    return None;
                 }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    Some(vec![0x03])
-                }
+                Some(text.as_bytes().to_vec())
             }
-            // Cut events should never reach a terminal; ignore them.
-            egui::Event::Cut => None,
 
             _ => None,
         }
+        .or_else(|| {
+            // ── Fallback: Ctrl+letter → C0 ───────────────────────────
+            // This must be after the explicit match so that keys handled
+            // above (Enter, Backspace, Tab, Escape, arrows, …) are NOT
+            // also sent as C0 codes.
+            legacy_ctrl_fallback(event, opts)
+        })
     }
 }
 
-// ── Helper functions ────────────────────────────────────────────────────
+// ── Legacy fallback ───────────────────────────────────────────────────
 
-/// Compute the CSI-u modifier index (1–8).
+/// Handle Ctrl+letter/digit/symbol that wasn't caught by the main match.
 ///
-/// The index is a 3-bit bitfield: 1 + shift*1 + alt*2 + ctrl*4.
-/// Value 1 (no modifiers) can be omitted in most sequences.
-#[inline]
-fn modifier_index(ctrl: bool, alt: bool, shift: bool) -> u8 {
-    1 + (shift as u8) + (alt as u8) * 2 + (ctrl as u8) * 4
-}
+/// This is intentionally a separate step so that keys like Enter and Tab
+/// produce their expected sequences rather than C0 codes.
+fn legacy_ctrl_fallback(event: &egui::Event, opts: &MappingOptions) -> Option<Vec<u8>> {
+    if let egui::Event::Key {
+        key,
+        physical_key,
+        pressed: true,
+        modifiers,
+        ..
+    } = event
+    {
+        let ctrl = modifiers.ctrl;
+        let alt = modifiers.alt;
+        let shift = modifiers.shift;
 
-/// Build a cursor/Home/End sequence.
-///
-/// When `mod_idx == 1` (no modifiers):
-/// - Normal mode: `\x1b[{letter}` (e.g. `\x1b[A`)
-/// - Application mode (`app_cursor = true`): `\x1bO{letter}` (e.g. `\x1bOA`)
-///
-/// When modifiers are present the CSI form `\x1b[1;{mod}{letter}` is
-/// used regardless of application mode.
-
-/// Handle Ctrl+key and Alt+key for letters, digits, and symbols.
-///
-/// `physical_key` is the key at its physical keyboard position (ignoring
-/// layout), used as a fallback on non-Latin keyboard layouts where the
-/// logical key may not map to an ASCII letter (e.g. Cyrillic layouts
-/// where the Ctrl+C physical position produces a non-Latin logical key).
-fn handle_ctrl_or_alt(
-    key: &Key,
-    physical_key: Option<&Key>,
-    ctrl: bool,
-    alt: bool,
-    shift: bool,
-    opts: &MappingOptions,
-) -> Option<Vec<u8>> {
-    // Ctrl+key
-    if ctrl && !alt {
-        // Ctrl+letter (A–Z) → C0 control codes 0x01–0x1a
-        if let Some(code) = key_to_ctrl_code(key) {
-            return Some(vec![code]);
-        }
-        // Try physical key fallback for non-Latin keyboard layouts.
-        // On Russian etc. the logical key may not be A–Z even though
-        // the physical key position is correct.
-        if let Some(pk) = physical_key {
-            if pk != key {
-                if let Some(code) = key_to_ctrl_code(pk) {
-                    return Some(vec![code]);
-                }
+        if ctrl && !alt {
+            // Ctrl+letter → C0 control code (0x01–0x1a)
+            if let Some(code) = key_to_ctrl_code(key) {
+                return Some(vec![code]);
             }
-        }
-        // Ctrl+digit / Ctrl+symbol → extended C0 codes
-        if let Some(code) = key_to_ctrl_extended(key) {
-            return Some(vec![code]);
-        }
-        // Try physical key fallback for extended codes too.
-        if let Some(pk) = physical_key {
-            if pk != key {
-                if let Some(code) = key_to_ctrl_extended(pk) {
-                    return Some(vec![code]);
-                }
-            }
-        }
-    }
-
-    // Alt+key → ESC + character
-    //
-    // On macOS, Option by default composes Unicode characters rather
-    // than acting as Alt.  The `macos_option_as_alt` option (from the
-    // user config) overrides this so that Option can be used as Alt
-    // just like on Windows/Linux.
-    if alt && !ctrl {
-        let handle_alt = if cfg!(target_os = "macos") {
-            opts.macos_option_as_alt
-        } else {
-            true
-        };
-        if handle_alt {
-            if let Some(mut byte) = key_to_ascii(key) {
-                if shift {
-                    byte = byte.to_ascii_uppercase();
-                }
-                return Some(vec![0x1b, byte]);
-            }
-            // Try physical key fallback for Alt too.
+            // Try physical key fallback for non-Latin layouts.
             if let Some(pk) = physical_key {
                 if pk != key {
-                    if let Some(mut byte) = key_to_ascii(pk) {
-                        if shift {
-                            byte = byte.to_ascii_uppercase();
+                    if let Some(code) = key_to_ctrl_code(pk) {
+                        return Some(vec![code]);
+                    }
+                }
+            }
+            // Ctrl+digit / Ctrl+symbol → extended C0 codes
+            if let Some(code) = key_to_ctrl_extended(key) {
+                return Some(vec![code]);
+            }
+            // Try physical key fallback for extended codes too.
+            if let Some(pk) = physical_key {
+                if pk != key {
+                    if let Some(code) = key_to_ctrl_extended(pk) {
+                        return Some(vec![code]);
+                    }
+                }
+            }
+        }
+
+        // Alt+key → ESC + character
+        if alt && !ctrl {
+            let handle_alt = if cfg!(target_os = "macos") {
+                opts.macos_option_as_alt
+            } else {
+                true
+            };
+            if handle_alt {
+                if let Some(mut byte) = key_to_ascii(key) {
+                    if shift {
+                        byte = byte.to_ascii_uppercase();
+                    }
+                    return Some(vec![0x1b, byte]);
+                }
+                // Try physical key fallback for Alt too.
+                if let Some(pk) = physical_key {
+                    if pk != key {
+                        if let Some(mut byte) = key_to_ascii(pk) {
+                            if shift {
+                                byte = byte.to_ascii_uppercase();
+                            }
+                            return Some(vec![0x1b, byte]);
                         }
-                        return Some(vec![0x1b, byte]);
                     }
                 }
             }
@@ -346,4 +424,186 @@ fn handle_ctrl_or_alt(
     }
 
     None
+}
+
+// ── Kitty encoding ────────────────────────────────────────────────────
+
+/// Encode a Key event using the Kitty keyboard protocol.
+///
+/// This is the main entry point for the progressive CSI-u encoding.
+/// The behaviour is controlled by the [`KittyKeyboardFlags`] bitmask.
+fn encode_kitty(
+    key: Key,
+    physical_key: Option<Key>,
+    pressed: bool,
+    repeat: bool,
+    modifiers: egui::Modifiers,
+    flags: KittyKeyboardFlags,
+    _opts: &MappingOptions,
+) -> Option<Vec<u8>> {
+    let ctrl = modifiers.ctrl;
+    let alt = modifiers.alt;
+    let shift = modifiers.shift;
+    let mods = kitty_mod_idx(ctrl, alt, shift);
+
+    // ── Release events ────────────────────────────────────────────────
+    // Without REPORT_EVENT_TYPES we ignore all non-press events.
+    if !pressed {
+        if !flags.contains(KittyKeyboardFlags::REPORT_EVENT_TYPES) {
+            return None;
+        }
+        // Enter, backspace, and tab do NOT report release events unless
+        // REPORT_ALL_KEYS_AS_ESCAPE_CODES is also set.
+        if !flags.contains(KittyKeyboardFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES) {
+            match key {
+                Key::Enter | Key::Backspace | Key::Tab => return None,
+                _ => {}
+            }
+        }
+    }
+
+    // ── Legacy fallback for unmodified Enter/Tab/Backspace ────────────
+    // Without REPORT_ALL, these keys send their simple bytes when
+    // no modifiers are held.  This lets the user interact with the shell
+    // normally even if the protocol was left active by a crashed program.
+    if pressed && !flags.contains(KittyKeyboardFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES) {
+        if mods == 1 {
+            match key {
+                Key::Enter => return Some(vec![b'\r']),
+                Key::Tab => return Some(vec![b'\t']),
+                Key::Backspace => return Some(vec![0x7f]),
+                _ => {}
+            }
+        }
+
+        // Unmodified printable characters: let Event::Text handle them.
+        if mods == 1 && is_printable_key(&key) {
+            return None;
+        }
+    }
+
+    // ── Determine event type ──────────────────────────────────────────
+    let event_type = if flags.contains(KittyKeyboardFlags::REPORT_EVENT_TYPES) {
+        if !pressed {
+            Some(3u8) // release
+        } else if repeat {
+            Some(2u8) // repeat
+        } else {
+            None // press — default, omitted from output
+        }
+    } else {
+        None
+    };
+
+    // ── Look up in functional key table ───────────────────────────────
+    let (key_code, terminator) = if let Some(entry) = kitty_lookup(&key) {
+        (entry.code, entry.terminator)
+    } else {
+        // Not a functional key.  Use the Unicode code point.
+        let cp = logical_codepoint(&key, physical_key)?;
+        (cp, Terminator::U)
+    };
+
+    // ── Alternates ────────────────────────────────────────────────────
+    let alternates = if flags.contains(KittyKeyboardFlags::REPORT_ALTERNATE_KEYS) {
+        ascii_alternates(key, physical_key)
+            .map(|(s, u)| [Some(s), Some(u)])
+            .unwrap_or([None, None])
+    } else {
+        [None, None]
+    };
+
+    // ── Associated text ───────────────────────────────────────────────
+    let text_codepoints = if flags.contains(KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT) && pressed
+    {
+        associated_text_codepoints(&key)
+    } else {
+        vec![]
+    };
+
+    // ── Build sequence ────────────────────────────────────────────────
+    Some(kitty_seq(
+        key_code,
+        terminator,
+        mods,
+        event_type,
+        &alternates,
+        &text_codepoints,
+    ))
+}
+
+/// Encode a Text event as a Kitty CSI-u sequence.
+///
+/// Used when `REPORT_ALL_KEYS_AS_ESCAPE_CODES` is set and the
+/// application receives a text/IME commit event.
+fn encode_kitty_text(
+    text: &str,
+    _flags: KittyKeyboardFlags,
+    _opts: &MappingOptions,
+) -> Option<Vec<u8>> {
+    if text.is_empty() {
+        return None;
+    }
+
+    // Extract the first printable codepoint.
+    let cp = text.chars().find(|c| !c.is_control())?;
+    let cp_u32 = cp as u32;
+
+    // Simple encoding: \x1b[{cp};1u (press, no alternates)
+    Some(csi_u_simple(cp_u32, 1))
+}
+
+/// Returns `true` if `key` is a printable character (letter, digit,
+/// punctuation) that egui delivers through `Event::Text`.
+fn is_printable_key(key: &Key) -> bool {
+    matches!(
+        key,
+        Key::A | Key::B | Key::C | Key::D | Key::E | Key::F | Key::G
+            | Key::H | Key::I | Key::J | Key::K | Key::L | Key::M
+            | Key::N | Key::O | Key::P | Key::Q | Key::R | Key::S
+            | Key::T | Key::U | Key::V | Key::W | Key::X | Key::Y | Key::Z
+            | Key::Num0 | Key::Num1 | Key::Num2 | Key::Num3 | Key::Num4
+            | Key::Num5 | Key::Num6 | Key::Num7 | Key::Num8 | Key::Num9
+            | Key::Space
+            | Key::Minus | Key::Equals | Key::Comma | Key::Period
+            | Key::Slash | Key::Backslash | Key::Semicolon | Key::Quote
+            | Key::Backtick | Key::OpenBracket | Key::CloseBracket
+            | Key::Colon | Key::Plus | Key::Pipe | Key::Questionmark
+            | Key::Exclamationmark | Key::OpenCurlyBracket
+            | Key::CloseCurlyBracket
+    )
+}
+
+/// Get the logical (unshifted) Unicode code point for a key.
+///
+/// Used as the primary key code in Kitty CSI-u sequences.  Per the
+/// protocol the primary code is **always** the unshifted/base value;
+/// the Shift modifier is conveyed only via the modifier field.
+fn logical_codepoint(
+    key: &Key,
+    physical_key: Option<Key>,
+) -> Option<u32> {
+    // Prefer the physical key position over the logical key when they
+    // differ, because the physical key represents the unshifted
+    // character on the keyboard.
+    let base_key = physical_key.filter(|pk| pk != key).unwrap_or(*key);
+
+    if let Some(byte) = key_to_ascii(&base_key) {
+        // Always use the raw (lowercase for letters) value — the
+        // Shift state is reflected only in the modifier field.
+        return Some(byte as u32);
+    }
+
+    None
+}
+
+/// Compute the associated text code points for a key.
+///
+/// For simple ASCII keys this is just the character itself.
+/// For composed/modified keys it would be the resulting Unicode
+/// text, but egui does not provide that through `Event::Key`.
+fn associated_text_codepoints(key: &Key) -> Vec<u32> {
+    key_to_ascii(key)
+        .map(|b| vec![b as u32])
+        .unwrap_or_default()
 }

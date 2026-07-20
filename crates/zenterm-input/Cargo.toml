@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 zenterm-core = { path = "../zenterm-core" }
 egui = "0.34"
+bitflags = "2"

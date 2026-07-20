@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 zenterm-core = { path = "../zenterm-core" }
+zenterm-input = { path = "../zenterm-input" }
 alacritty_terminal = "0.26"
 vte = { version = "0.15", features = ["ansi"] }
 memchr = { version = "2", default-features = false }

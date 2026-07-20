@@ -41,6 +41,7 @@ impl ZentermApp {
                 let opts = MappingOptions {
                     app_cursor: mode.contains(TermMode::APP_CURSOR),
                     macos_option_as_alt: self.config.window.macos_option_as_alt,
+                    kitty_flags: session.terminal.kitty_keyboard_flags(),
                 };
 
                 // Map event to PTY bytes (handles Commit, Text, Key, Paste).
