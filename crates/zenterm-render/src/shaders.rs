@@ -162,13 +162,14 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
     }
 
     if (in.flags == 1u) {
-        // MASK glyph — R=G=B=alpha. Use single coverage value.
+        // MASK glyph — grayscale coverage in R.  Output pure foreground
+        // colour with coverage as alpha; the GPU's alpha blending does
+        //   fg * α + bg * (1-α)
+        // for correct single-stage blending (matching Alacritty & Wezterm).
         let alpha = texel.r;
-        let r = linear_to_srgb(bg_r + (fg_r - bg_r) * alpha);
-        let g = linear_to_srgb(bg_g + (fg_g - bg_g) * alpha);
-        let b = linear_to_srgb(bg_b + (fg_b - bg_b) * alpha);
-        // Propagate partial coverage to alpha so the background image
-        // shows through at glyph edges instead of the theme bg colour.
+        let r = linear_to_srgb(fg_r);
+        let g = linear_to_srgb(fg_g);
+        let b = linear_to_srgb(fg_b);
         let a = in.fg_color.a * alpha;
         return vec4<f32>(r, g, b, a);
     }
