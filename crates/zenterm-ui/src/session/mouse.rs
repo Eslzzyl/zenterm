@@ -4,7 +4,36 @@ use std::time::Instant;
 
 use alacritty_terminal::term::TermMode;
 
+use zenterm_term::Terminal;
+
 use super::types::{TerminalSession, SCROLLBAR_WIDTH, SCROLLBAR_MIN_THUMB_HEIGHT};
+
+// ── Selection helpers ───────────────────────────────────────────────────
+
+/// Selection boundary threshold (Ghostty-style).
+///
+/// When the pointer falls in the right `(1.0 - SELECTION_THRESHOLD)` portion
+/// of a cell, the selection boundary is placed at the leading edge of the
+/// *next* cell.  A threshold of 0.6 means the first 60% of a cell belongs to
+/// that cell, and the remaining 40% is treated as "lean forward" toward the
+/// next cell.  This makes click-drag selection feel more natural at cell
+/// boundaries.
+const SELECTION_THRESHOLD: f32 = 0.6;
+
+/// If `(row, col)` points to a spacer cell (the trailing half of a wide
+/// CJK / emoji character), return the column of the leading (real) cell.
+/// Otherwise return `col` unchanged.
+fn snap_col(terminal: &mut Terminal, row: usize, col: usize) -> usize {
+    if col == 0 {
+        return col;
+    }
+    let grid = terminal.visible_cells();
+    if grid.cell(row, col).map_or(false, |c| c.is_spacer) {
+        col - 1
+    } else {
+        col
+    }
+}
 
 impl TerminalSession {
     /// Update `hover_cell` from the current egui pointer position.
@@ -24,10 +53,12 @@ impl TerminalSession {
             self.cell_width,
             self.cell_height,
         );
-        let new_hover = pos
+        let mut new_hover = pos
             .filter(|pos| cell_rect.contains(*pos))
             .and_then(|pos| {
-                let col = ((pos.x - cell_rect.left()) * ppp / self.cell_width) as usize;
+                let col_f =
+                    (pos.x - cell_rect.left()) * ppp / self.cell_width;
+                let col = (col_f + (1.0 - SELECTION_THRESHOLD)) as usize;
                 let row = ((pos.y - cell_rect.top()) * ppp / self.cell_height) as usize;
                 let cols = self.terminal.size().cols as usize;
                 let rows = self.terminal.size().rows as usize;
@@ -42,6 +73,13 @@ impl TerminalSession {
                     None
                 }
             });
+
+        // Snap hover cell from spacer (right half of CJK / emoji wide chars)
+        // back to the leading cell so URL hover-underline works over the
+        // entire glyph.
+        if let Some((row, col)) = new_hover {
+            new_hover = Some((row, snap_col(&mut self.terminal, row, col)));
+        }
         log::trace!(
             "compute_hover: old={:?} new={:?}",
             self.hover_cell,
@@ -161,8 +199,14 @@ impl TerminalSession {
         // ── Pointer → cell coordinate helpers ──────────────────────────
         // NOTE: cw/ch are in physical pixels, but pos is in logical points.
         // Multiply by ppp to convert before dividing.
+        //
+        // Column is computed with a Ghostty-style threshold: clicking in the
+        // right `(1 - SELECTION_THRESHOLD)` portion of a cell nudges the
+        // boundary to the next cell.  Callers must also apply `snap_col()` to
+        // snap back from spacer cells (CJK wide chars).
         let pixel_to_cell = |pos: egui::Pos2| -> Option<(usize, usize)> {
-            let col = ((pos.x - cell_area.left()) * ppp / cw) as usize;
+            let col_f = (pos.x - cell_area.left()) * ppp / cw;
+            let col = (col_f + (1.0 - SELECTION_THRESHOLD)) as usize;
             let row = ((pos.y - cell_area.top()) * ppp / ch) as usize;
             if col < cols && row < rows {
                 Some((row, col))
@@ -173,8 +217,9 @@ impl TerminalSession {
 
         // Clamped version: returns the nearest cell even when outside the area.
         let pixel_to_cell_clamped = |pos: egui::Pos2| -> (usize, usize) {
-            let col = ((pos.x - cell_area.left()) * ppp / cw).round() as usize;
-            let row = ((pos.y - cell_area.top()) * ppp / ch).round() as usize;
+            let col_f = (pos.x - cell_area.left()) * ppp / cw;
+            let col = (col_f + (1.0 - SELECTION_THRESHOLD)) as usize;
+            let row = ((pos.y - cell_area.top()) * ppp / ch) as usize;
             (row.min(rows.saturating_sub(1)), col.min(cols.saturating_sub(1)))
         };
 
@@ -198,6 +243,7 @@ impl TerminalSession {
         if response.drag_started() {
             if let Some(pos) = response.interact_pointer_pos() {
                 if let Some((row, col)) = pixel_to_cell(pos) {
+                    let col = snap_col(&mut self.terminal, row, col);
                     if mouse_reporting {
                         let btn = 0 | mod_bits; // left button
                         self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
@@ -226,6 +272,7 @@ impl TerminalSession {
             if mouse_reporting {
                 if let Some(pos) = pointer_pos {
                     if let Some((row, col)) = pixel_to_cell(pos) {
+                        let col = snap_col(&mut self.terminal, row, col);
                         self.send_sgr_mouse(row, col, 32 | mod_bits, false);
                     }
                 }
@@ -233,25 +280,27 @@ impl TerminalSession {
                 if let Some(pos) = pointer_pos {
                     // Normal: pointer inside the cell grid → update selection.
                     if let Some((row, col)) = pixel_to_cell(pos) {
+                        let col = snap_col(&mut self.terminal, row, col);
                         self.terminal.update_selection(row, col);
                         self.terminal_dirty = true;
                     } else {
                         // Edge-scroll: pointer is outside the cell grid.
                         let rel_y = pos.y - cell_area.top();
                         let clamped = pixel_to_cell_clamped(pos);
+                        let col = snap_col(&mut self.terminal, clamped.0, clamped.1);
                         if rel_y < 0.0 {
                             // Above top → scroll up.
                             let dist = -rel_y;
                             let lines = (dist * ppp / ch).ceil().max(1.0) as i32;
                             self.terminal.scroll_display(lines);
-                            self.terminal.update_selection(0, clamped.1);
+                            self.terminal.update_selection(0, col);
                         } else {
                             // Below bottom → scroll down.
                             let dist = pos.y - cell_area.bottom();
                             let lines = (dist * ppp / ch).ceil().max(1.0) as i32;
                             self.terminal.scroll_display(-lines);
                             self.terminal
-                                .update_selection(rows.saturating_sub(1), clamped.1);
+                                .update_selection(rows.saturating_sub(1), col);
                         }
                         self.terminal_dirty = true;
                     }
@@ -264,6 +313,7 @@ impl TerminalSession {
             if mouse_reporting {
                 if let Some(pos) = response.interact_pointer_pos() {
                     if let Some((row, col)) = pixel_to_cell(pos) {
+                        let col = snap_col(&mut self.terminal, row, col);
                         let btn = 2 | mod_bits; // right button
                         self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
                         self.sgr_mouse_buttons.push(btn);
@@ -278,6 +328,7 @@ impl TerminalSession {
             if mouse_reporting {
                 if let Some(pos) = response.interact_pointer_pos() {
                     if let Some((row, col)) = pixel_to_cell(pos) {
+                        let col = snap_col(&mut self.terminal, row, col);
                         let btn = 1 | mod_bits; // middle button
                         self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
                         self.sgr_mouse_buttons.push(btn);
@@ -469,6 +520,7 @@ impl TerminalSession {
                     .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos()))
                 {
                     if let Some((row, col)) = pixel_to_cell(pos) {
+                        let col = snap_col(&mut self.terminal, row, col);
                         // Use the last tracked button for the release encoding;
                         // fall back to left button (0) if nothing is tracked.
                         let base = self.sgr_mouse_buttons.last().copied().unwrap_or(0);
@@ -502,6 +554,7 @@ impl TerminalSession {
         if response.clicked() && mouse_reporting {
             if let Some(pos) = response.interact_pointer_pos() {
                 if let Some((row, col)) = pixel_to_cell(pos) {
+                    let col = snap_col(&mut self.terminal, row, col);
                     let btn = 0 | mod_bits; // left button
                     self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
                     self.send_sgr_mouse(row, col, btn, false); // press
@@ -519,6 +572,7 @@ impl TerminalSession {
                 if ctrl {
                     if let Some(pos) = response.interact_pointer_pos() {
                         if let Some((row, col)) = pixel_to_cell(pos) {
+                            let col = snap_col(&mut self.terminal, row, col);
                             let line = self.terminal.line_text(row);
                             let finder = linkify::LinkFinder::new();
                             for link in finder.links(&line) {
@@ -552,6 +606,7 @@ impl TerminalSession {
                 let pos = ui.ctx().input(|i| i.pointer.hover_pos());
                 if let Some(pos) = pos {
                     if let Some((row, col)) = pixel_to_cell(pos) {
+                        let col = snap_col(&mut self.terminal, row, col);
                         if self.last_sgr_motion_pos != Some((row, col)) {
                             // Base button: 32 (motion flag) + last tracked
                             // base button, or 32 if nothing is pressed (pure
