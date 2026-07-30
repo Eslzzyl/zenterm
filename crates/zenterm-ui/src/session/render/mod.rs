@@ -325,7 +325,6 @@ impl TerminalSession {
                 y_off,
                 x_scale,
                 y_scale,
-                self.window_opacity,
             );
         }
 
@@ -466,7 +465,6 @@ impl TerminalSession {
                         &mut self.cached_bg,
                         &mut self.cached_glyph_per_atlas,
                         &mut self.cached_deco,
-                        self.window_opacity,
                     );
                     last_checked_run_end = outcome.last_checked;
                     if outcome.has_new_glyphs {
@@ -533,7 +531,6 @@ impl TerminalSession {
                         y_off,
                         x_scale,
                         y_scale,
-                        self.window_opacity,
                     );
                 }
 

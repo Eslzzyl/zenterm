@@ -89,17 +89,6 @@ impl ZentermApp {
         self.last_system_dark = system_dark;
         self.default_bg = theme_bg_to_color32(&self.theme);
 
-        // Propagate window opacity to all sessions so the terminal
-        // background quad alpha and the egui rect_filled alpha both
-        // reflect the new transparency level.
-        if changes.window {
-            let opacity = self.config.window.opacity;
-            for (_, session) in self.sessions.iter_mut() {
-                session.window_opacity = opacity;
-                session.terminal_dirty = true;
-            }
-        }
-
         if changes.colors {
             let scheme = ColorScheme::from_theme(&self.theme);
             for (_, session) in self.sessions.iter_mut() {
@@ -148,7 +137,7 @@ impl ZentermApp {
 
         // Handle background image changes.
         // Only re-decode the image when the path itself changes.
-        // Opacity and fit-mode changes are read live from config
+        // Image opacity and fit-mode changes are read live from config
         // in emit_background_quad() and do not require a reload.
         if changes.background {
             let _t0 = std::time::Instant::now();
@@ -191,7 +180,7 @@ impl ZentermApp {
                 }
             } else {
                 log::debug!(
-                    "bg: config change (opacity/mode only, no reload) {:?}",
+                    "bg: config change (image opacity/mode only, no reload) {:?}",
                     _t0.elapsed()
                 );
             }

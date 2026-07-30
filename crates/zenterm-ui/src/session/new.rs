@@ -59,7 +59,6 @@ impl TerminalSession {
         atlas: Arc<SharedGlyphAtlas>,
         callback: CallbackHandle,
         egui_ctx: egui::Context,
-        window_opacity: f32,
     ) -> Self {
         // Create a wakeup callback that the PTY reader thread calls
         // after each successful read.  This is the core of the event-
@@ -126,7 +125,6 @@ impl TerminalSession {
             highlight_cursor_line: false,
             badge_format: None,
             default_bg,
-            window_opacity,
             cached_bg: Vec::new(),
             cached_glyph_per_atlas: Vec::new(),
             cached_deco: Vec::new(),

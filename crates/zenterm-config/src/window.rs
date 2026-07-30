@@ -24,14 +24,6 @@ pub struct WindowConfig {
     #[serde(default = "default_title")]
     pub title: String,
 
-    /// Background opacity (0.0 = fully transparent, 1.0 = fully opaque).
-    #[serde(default = "default_opacity")]
-    pub opacity: f32,
-
-    /// macOS-only: request background blur behind the window.
-    #[serde(default)]
-    pub blur: bool,
-
     /// Show window decorations (title bar + borders).
     #[serde(default = "default_decorations")]
     pub decorations: bool,
@@ -68,8 +60,6 @@ impl Default for WindowConfig {
             dimensions: WindowDimensions::default(),
             padding: WindowPadding::default(),
             title: default_title(),
-            opacity: default_opacity(),
-            blur: false,
             decorations: default_decorations(),
             startup_mode: StartupMode::default(),
             macos_option_as_alt: false,
@@ -90,17 +80,13 @@ impl WindowConfig {
         //   - dimensions (initial window sizing)
         //   - decorations (native window chrome)
         //   - startup_mode (windowed/maximized/fullscreen)
-        // Padding, title, opacity, and blur can be changed at runtime.
+        // Padding and title can be changed at runtime.
         false
     }
 }
 
 fn default_title() -> String {
     "Zenterm".into()
-}
-
-fn default_opacity() -> f32 {
-    1.0
 }
 
 fn default_decorations() -> bool {

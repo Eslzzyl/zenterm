@@ -42,8 +42,8 @@ pub mod glyph_type {
     /// Used for Kitty / iTerm / Sixel image placement.
     pub const IMAGE: u32 = 4;
     /// Full-viewport background image quad — sampled from background_atlas
-    /// (@group(1)), blended with theme background colour using uniforms
-    /// packed in fg_color.a (image_opacity) and bg_color (window_opacity + colour).
+    /// (@group(1)), blended with theme background colour using image_opacity
+    /// packed in fg_color.a and the theme colour packed in bg_color.
     pub const BACKGROUND: u32 = 5;
 }
 

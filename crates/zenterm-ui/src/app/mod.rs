@@ -175,7 +175,6 @@ impl ZentermApp {
             atlas.clone(),
             callback.clone(),
             egui_ctx.clone(),
-            config.window.opacity,
         );
         // `TerminalSession::new` already sets a reasonable initial title
         // via `detect_shell_name()`.  No override needed.
@@ -231,7 +230,6 @@ impl ZentermApp {
                 atlas.clone(),
                 callback.clone(),
                 egui_ctx.clone(),
-                config.window.opacity,
             );
             sessions.insert(*sid, s);
         }
@@ -313,7 +311,8 @@ impl ZentermApp {
 
 impl eframe::App for ZentermApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0]
+        let bg = self.theme.background;
+        [bg.r(), bg.g(), bg.b(), 1.0]
     }
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
@@ -549,7 +548,6 @@ impl ZentermApp {
         }
 
         let img_opacity = self.config.background.image_opacity;
-        let win_opacity = self.config.window.opacity;
         let bg = self.theme.background;
 
         // Compute viewport aspect ratio from the actual terminal area.
@@ -645,7 +643,7 @@ impl ZentermApp {
             glyph_size: [0.0; 2],
             glyph_offset: [0.0; 2],
             fg_color: [1.0, 1.0, 1.0, img_opacity],
-            bg_color: [bg.r(), bg.g(), bg.b(), win_opacity],
+            bg_color: [bg.r(), bg.g(), bg.b(), 1.0],
             flags: glyph_type::BACKGROUND,
         });
     }

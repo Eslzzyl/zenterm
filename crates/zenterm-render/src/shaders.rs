@@ -107,10 +107,8 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
     if (in.flags == 5u) {
         // BACKGROUND — full-viewport quad behind all terminal content.
         // fg_color.a = image_opacity (blend between image and theme bg)
-        // bg_color.a = window_opacity (overall window transparency)
         // bg_color.rgb = theme background colour
         let i_opacity = in.fg_color.a;
-        let w_opacity = in.bg_color.a;
         let texel = textureSample(background_atlas, bg_sampler, in.uv);
         // background_atlas is Rgba8UnormSrgb; textureSample() returns
         // LINEAR-space values (hardware auto-decodes sRGB→linear).
@@ -122,12 +120,14 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
         let blended_r = bg_r + (img_r - bg_r) * i_opacity;
         let blended_g = bg_g + (img_g - bg_g) * i_opacity;
         let blended_b = bg_b + (img_b - bg_b) * i_opacity;
-        // Apply window opacity and convert back to sRGB.
-        let a = w_opacity;
-        let r = linear_to_srgb(blended_r) * a;
-        let g = linear_to_srgb(blended_g) * a;
-        let b = linear_to_srgb(blended_b) * a;
-        return vec4<f32>(r, g, b, a);
+        // The window surface is opaque; image_opacity only controls the
+        // image/theme blend inside the terminal.
+        return vec4<f32>(
+            linear_to_srgb(blended_r),
+            linear_to_srgb(blended_g),
+            linear_to_srgb(blended_b),
+            1.0,
+        );
     }
 
     if (in.flags == 3u) {

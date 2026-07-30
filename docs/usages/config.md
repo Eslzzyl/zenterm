@@ -18,8 +18,6 @@ Controls the appearance and initial size of the terminal window.
 | `dimensions` | `{ columns, lines }` | `{ columns = 80, lines = 24 }` | Initial terminal size in cells (not pixels). The window is sized to fit this grid at the configured font size. |
 | `padding` | `{ x, y }` | `{ x = 0, y = 0 }` | Inner padding between the window edge and the terminal grid, in logical pixels at 1× DPI. |
 | `title` | `string` | `"Zenterm"` | Window title. The terminal can override this via OSC 0 / OSC 2 escape sequences. |
-| `opacity` | `float` | `1.0` | Background opacity (`0.0` = fully transparent, `1.0` = fully opaque). On compositing window managers (macOS, Linux with compositor) values < 1.0 make the desktop visible behind the terminal. |
-| `blur` | `bool` | `false` | macOS only: request background blur behind the terminal window. Ignored on other platforms. |
 | `decorations` | `bool` | `true` | Show window decorations (title bar + borders). |
 | `startup_mode` | `string` | `"Windowed"` | Initial window state. One of: `"Windowed"`, `"Maximized"`, `"Fullscreen"`. |
 
@@ -30,8 +28,6 @@ Controls the appearance and initial size of the terminal window.
 dimensions = { columns = 120, lines = 40 }
 padding = { x = 4, y = 4 }
 title = "Terminal"
-opacity = 0.95
-blur = true
 decorations = true
 startup_mode = "Maximized"
 ```
@@ -408,7 +404,6 @@ These shortcuts are currently hardcoded and not yet overridable via config:
 dimensions = { columns = 120, lines = 40 }
 padding = { x = 4, y = 4 }
 title = "Zenterm"
-opacity = 1.0
 decorations = true
 startup_mode = "Windowed"
 

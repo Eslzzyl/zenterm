@@ -80,7 +80,7 @@ pub struct ConfigChanges {
     pub keyboard: bool,
     pub ui: bool,
 
-    /// Background image / opacity / mode changed.
+    /// Background image or image rendering options changed.
     pub background: bool,
 
     /// `true` when any changed section **requires an application

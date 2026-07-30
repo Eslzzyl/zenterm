@@ -294,19 +294,6 @@ fn render_window_section(ui: &mut egui::Ui, w: &mut WindowConfig) {
         "Vertical padding in logical pixels",
     );
     settings_widgets::text_setting(ui, "Title", &mut w.title, "Window title");
-    settings_widgets::slider_setting(
-        ui,
-        "Opacity",
-        &mut w.opacity,
-        0.0..=1.0,
-        "Background opacity (0=transparent, 1=opaque)",
-    );
-    settings_widgets::bool_setting(
-        ui,
-        "Blur",
-        &mut w.blur,
-        "macOS only: request background blur",
-    );
     settings_widgets::bool_setting(
         ui,
         "Decorations",
