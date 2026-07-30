@@ -317,7 +317,7 @@ impl eframe::App for ZentermApp {
         [0.0, 0.0, 0.0, 0.0]
     }
 
-    fn update(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // 0. Theme sync.
         self.sync_theme(ctx);
 
@@ -370,33 +370,6 @@ impl eframe::App for ZentermApp {
                 session.terminal_dirty = true;
                 ctx.request_repaint_after(Duration::from_millis(session.blink_interval));
             }
-        }
-
-        // 4. Render the main UI (terminal, tabs, sidebar) — only when
-        //    something has actually changed.
-        //
-        // In the event-driven architecture we avoid rendering on every
-        // frame.  Instead, we check for pending work:
-        //   - `terminal_dirty`: at least one session has new terminal
-        //     content (PTY data, cursor blink, input, config change)
-        //   - `layout_dirty`: the dock/tab layout changed (session
-        //     created, closed, or workspace switched)
-        //
-        // If nothing is dirty we skip the CentralPanel entirely, which
-        // means:
-        //   - `clear_instances` / `clear_atlas_ranges` are NOT called
-        //   - `bump_instance_gen` is NOT called → GPU instance gen
-        //     stays unchanged → GPU `prepare()` skips buffer upload
-        //   - egui still paints whatever its immediate-mode UI produces
-        //     (the empty CentralPanel draws nothing, but other panels
-        //     like the settings window continue to work)
-        let needs_render = self.layout_dirty
-            || self.sessions.values().any(|s| s.terminal_dirty);
-        if needs_render {
-            #[allow(deprecated)]
-            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
-                self.ui(ui, frame);
-            });
         }
 
         // 4.5. Enable IME when the terminal has keyboard focus (no egui
