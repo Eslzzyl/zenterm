@@ -80,13 +80,23 @@ pub fn assign_image_to_cells(
     max_cols: usize,
     max_rows: usize,
 ) -> PlacementResult {
-    let padding_left = params.cell_padding_left.min(cell_pixel_w.saturating_sub(1) as u16);
-    let padding_top = params.cell_padding_top.min(cell_pixel_h.saturating_sub(1) as u16);
+    let padding_left = params
+        .cell_padding_left
+        .min(cell_pixel_w.saturating_sub(1) as u16);
+    let padding_top = params
+        .cell_padding_top
+        .min(cell_pixel_h.saturating_sub(1) as u16);
 
     let src_x = params.source_x.unwrap_or(0);
     let src_y = params.source_y.unwrap_or(0);
-    let draw_w = params.source_w.unwrap_or(image_width.saturating_sub(src_x)).min(image_width.saturating_sub(src_x));
-    let draw_h = params.source_h.unwrap_or(image_height.saturating_sub(src_y)).min(image_height.saturating_sub(src_y));
+    let draw_w = params
+        .source_w
+        .unwrap_or(image_width.saturating_sub(src_x))
+        .min(image_width.saturating_sub(src_x));
+    let draw_h = params
+        .source_h
+        .unwrap_or(image_height.saturating_sub(src_y))
+        .min(image_height.saturating_sub(src_y));
 
     // Compute cell span.
     let (full_cells_w, _rem_w) = params.columns.map(|c| (c, 0)).unwrap_or_else(|| {
@@ -102,10 +112,14 @@ pub fn assign_image_to_cells(
     });
 
     // Ceiling division for partial cells.
-    let width_in_cells = if draw_w == 0 { 1 } else {
+    let width_in_cells = if draw_w == 0 {
+        1
+    } else {
         ((draw_w + cell_pixel_w - 1) / cell_pixel_w) as usize
     };
-    let height_in_cells = if draw_h == 0 { 1 } else {
+    let height_in_cells = if draw_h == 0 {
+        1
+    } else {
         ((draw_h + cell_pixel_h - 1) / cell_pixel_h) as usize
     };
 
@@ -126,15 +140,21 @@ pub fn assign_image_to_cells(
     let start_xpos = src_x as f32 / image_width as f32;
     let start_ypos = src_y as f32 / image_height as f32;
 
-    let x_delta_divisor = params.columns.map(|cols| {
-        (cols * cell_pixel_w as usize) as u32 * image_width / draw_w
-    }).unwrap_or(image_width);
-    let y_delta_divisor = params.rows.map(|rows| {
-        (rows * cell_pixel_h as usize) as u32 * image_height / draw_h
-    }).unwrap_or(image_height);
+    let x_delta_divisor = params
+        .columns
+        .map(|cols| (cols * cell_pixel_w as usize) as u32 * image_width / draw_w)
+        .unwrap_or(image_width);
+    let y_delta_divisor = params
+        .rows
+        .map(|rows| (rows * cell_pixel_h as usize) as u32 * image_height / draw_h)
+        .unwrap_or(image_height);
 
     let mut cells = Vec::with_capacity(width_in_cells * height_in_cells);
-    let mut remain_y = if params.rows.is_some() { draw_h } else { target_pixel_h as u32 };
+    let mut remain_y = if params.rows.is_some() {
+        draw_h
+    } else {
+        target_pixel_h as u32
+    };
 
     for row_offset in 0..height_in_cells {
         let padding_bottom = cell_pixel_h.saturating_sub(remain_y) as u16;
@@ -142,10 +162,16 @@ pub fn assign_image_to_cells(
         remain_y = remain_y.saturating_sub(cell_pixel_h);
 
         let mut xpos = start_xpos;
-        let mut remain_x = if params.columns.is_some() { draw_w } else { target_pixel_w as u32 };
+        let mut remain_x = if params.columns.is_some() {
+            draw_w
+        } else {
+            target_pixel_w as u32
+        };
         let grid_y = cursor_row + row_offset;
 
-        if grid_y >= max_rows { break; }
+        if grid_y >= max_rows {
+            break;
+        }
 
         for col_offset in 0..width_in_cells {
             let padding_right = cell_pixel_w.saturating_sub(remain_x) as u16;
@@ -153,7 +179,9 @@ pub fn assign_image_to_cells(
             remain_x = remain_x.saturating_sub(cell_pixel_w);
 
             let grid_x = cursor_col + col_offset;
-            if grid_x >= max_cols { break; }
+            if grid_x >= max_cols {
+                break;
+            }
 
             let top_left = TextureCoordinate::new(xpos, start_ypos + row_offset as f32 * y_delta);
             let bottom_right = TextureCoordinate::new(

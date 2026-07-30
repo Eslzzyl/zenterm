@@ -22,7 +22,10 @@ fn main() -> eframe::Result<()> {
             cfg
         }
         Err(e) => {
-            log::error!("config: error loading {:?} — using defaults: {e}", Config::path(),);
+            log::error!(
+                "config: error loading {:?} — using defaults: {e}",
+                Config::path(),
+            );
             Config::default()
         }
     };
@@ -54,9 +57,7 @@ fn main() -> eframe::Result<()> {
                             required_limits: wgpu::Limits::default(),
                             memory_hints: wgpu::MemoryHints::MemoryUsage,
                             trace: wgpu::Trace::Off,
-                            experimental_features: unsafe {
-                                wgpu::ExperimentalFeatures::enabled()
-                            },
+                            experimental_features: unsafe { wgpu::ExperimentalFeatures::enabled() },
                         }
                     }),
                 },

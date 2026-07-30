@@ -187,7 +187,8 @@ impl CallbackTrait for TerminalWgpuCallback {
                     update.slots.len(),
                 );
 
-                let atlas_changed = update.slots.len() as u32 != self.current_slot_count.load(Ordering::Relaxed);
+                let atlas_changed =
+                    update.slots.len() as u32 != self.current_slot_count.load(Ordering::Relaxed);
 
                 // Ensure we have GPU textures + views for every slot.
                 {
@@ -327,7 +328,10 @@ impl CallbackTrait for TerminalWgpuCallback {
                 }
             }
         } else {
-            log::trace!("callback prepare: instances unchanged (gen {}), skipping upload", last_gen);
+            log::trace!(
+                "callback prepare: instances unchanged (gen {}), skipping upload",
+                last_gen
+            );
         }
 
         vec![]
@@ -384,8 +388,13 @@ impl CallbackTrait for CallbackHandle {
         egui_encoder: &mut wgpu::CommandEncoder,
         callback_resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        self.inner
-            .prepare(device, queue, screen_descriptor, egui_encoder, callback_resources)
+        self.inner.prepare(
+            device,
+            queue,
+            screen_descriptor,
+            egui_encoder,
+            callback_resources,
+        )
     }
 
     fn finish_prepare(

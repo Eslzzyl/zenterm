@@ -26,10 +26,10 @@ use egui::Context;
 
 use zenterm_config::Config;
 use zenterm_core::SubpixelLayout;
-use zenterm_core::theme::{Theme, ThemePreference, THEME_DARK};
+use zenterm_core::theme::{THEME_DARK, Theme, ThemePreference};
+use zenterm_render::BackgroundImageData;
 use zenterm_render::callback::{CallbackHandle, SharedRenderState, TerminalWgpuCallback};
 use zenterm_render::glyph_type;
-use zenterm_render::BackgroundImageData;
 use zenterm_term::ColorScheme;
 
 use crate::glyph_cache::SharedGlyphAtlas;
@@ -309,7 +309,6 @@ impl ZentermApp {
 
         app
     }
-
 }
 
 impl eframe::App for ZentermApp {
@@ -448,15 +447,17 @@ impl eframe::App for ZentermApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // ── Config error toast (top banner) ──────────────────────────
         if let Some(msg) = self.error_toast.clone() {
-            egui::Panel::top("config_error").resizable(false).show_inside(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::RED, "⚠ Config error");
-                    ui.label(msg);
-                    if ui.button("×").clicked() {
-                        self.error_toast = None;
-                    }
+            egui::Panel::top("config_error")
+                .resizable(false)
+                .show_inside(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(egui::Color32::RED, "⚠ Config error");
+                        ui.label(msg);
+                        if ui.button("×").clicked() {
+                            self.error_toast = None;
+                        }
+                    });
                 });
-            });
         }
 
         // Clear the shared instance buffer and atlas ranges at the
@@ -501,7 +502,8 @@ impl eframe::App for ZentermApp {
         self.gpu.bump_instance_gen();
     }
 
-    fn on_exit(&mut self) {        self.persist_layout_now();
+    fn on_exit(&mut self) {
+        self.persist_layout_now();
         // Save any pending config changes (window size, settings, etc.)
         // immediately so the next session starts with the correct state.
         if self.config_dirty {
@@ -527,7 +529,12 @@ impl ZentermApp {
         // If the flags aren't set yet, check whether an async decode
         // has completed (background_data will be populated by the thread).
         if !self.background_image_loaded {
-            let guard = self.gpu.shared.background_data.lock().expect("background_data lock");
+            let guard = self
+                .gpu
+                .shared
+                .background_data
+                .lock()
+                .expect("background_data lock");
             if let Some(ref bg) = *guard {
                 let sz = (bg.width, bg.height);
                 drop(guard);
@@ -579,7 +586,8 @@ impl ZentermApp {
                         let vp_ar = vp_w / vp_h;
                         if image_ar > vp_ar {
                             // Image is wider → letterbox top/bottom.
-                            let h_frac = vp_ar / image_ar;                            let clip_h = 2.0 * h_frac;
+                            let h_frac = vp_ar / image_ar;
+                            let clip_h = 2.0 * h_frac;
                             let off_y = (2.0 - clip_h) * 0.5;
                             ([-1.0, 1.0 - off_y], [2.0, clip_h], [0.0, 0.0], [1.0, 1.0])
                         } else {
@@ -600,13 +608,26 @@ impl ZentermApp {
                             // Image larger than viewport → center and crop.
                             let crop_x = if cw > 2.0 { (cw - 2.0) / cw * 0.5 } else { 0.0 };
                             let crop_y = if ch > 2.0 { (ch - 2.0) / ch * 0.5 } else { 0.0 };
-                            let end_x = if cw > 2.0 { 1.0 - (cw - 2.0) / cw * 0.5 } else { 1.0 };
-                            let end_y = if ch > 2.0 { 1.0 - (ch - 2.0) / ch * 0.5 } else { 1.0 };
+                            let end_x = if cw > 2.0 {
+                                1.0 - (cw - 2.0) / cw * 0.5
+                            } else {
+                                1.0
+                            };
+                            let end_y = if ch > 2.0 {
+                                1.0 - (ch - 2.0) / ch * 0.5
+                            } else {
+                                1.0
+                            };
                             ([-1.0, 1.0], [2.0, 2.0], [crop_x, crop_y], [end_x, end_y])
                         } else {
                             let off_x = (2.0 - cw) * 0.5;
                             let off_y = (2.0 - ch) * 0.5;
-                            ([-1.0 + off_x, 1.0 - off_y], [cw, ch], [0.0, 0.0], [1.0, 1.0])
+                            (
+                                [-1.0 + off_x, 1.0 - off_y],
+                                [cw, ch],
+                                [0.0, 0.0],
+                                [1.0, 1.0],
+                            )
                         }
                     }
                 }
@@ -639,7 +660,12 @@ impl ZentermApp {
         // Clear flags immediately — show theme bg while async load runs.
         self.background_image_loaded = false;
         self.loaded_bg_image_size = None;
-        *self.gpu.shared.background_data.lock().expect("background_data lock") = None;
+        *self
+            .gpu
+            .shared
+            .background_data
+            .lock()
+            .expect("background_data lock") = None;
 
         let path = path.to_owned();
         let shared = self.gpu.shared.clone();
@@ -657,7 +683,11 @@ impl ZentermApp {
                 let rgba = img.into_rgba8();
                 log::debug!("bg: into_rgba8 took {:?}", _t2.elapsed());
                 let (w, h) = rgba.dimensions();
-                Some(BackgroundImageData { data: rgba.into_raw(), width: w, height: h })
+                Some(BackgroundImageData {
+                    data: rgba.into_raw(),
+                    width: w,
+                    height: h,
+                })
             })();
 
             match result {

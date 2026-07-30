@@ -175,7 +175,11 @@ fn parse_iterm_file(parts: &[&str]) -> Option<ITermProprietary> {
     for (idx, s) in parts.iter().enumerate() {
         let param = if idx == 0 {
             // First element: strip "File=" prefix.
-            if s.len() >= 5 { &s[5..] } else { return None; }
+            if s.len() >= 5 {
+                &s[5..]
+            } else {
+                return None;
+            }
         } else {
             s
         };

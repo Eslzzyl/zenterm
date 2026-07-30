@@ -1,8 +1,8 @@
 //! Terminal session construction.
 
 use std::path::Path;
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 
 use zenterm_core::size::TermSize;
 use zenterm_render::callback::CallbackHandle;

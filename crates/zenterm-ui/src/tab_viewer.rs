@@ -128,7 +128,9 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         let (cell_rect, response) = ui.allocate_exact_size(ui.available_size(), sense);
         log::trace!(
             "[dbg] tab_viewer: calling handle_mouse for tab={:?}, active={:?}, rect={:?}, event_count={}",
-            tab, self.active_session_id, cell_rect,
+            tab,
+            self.active_session_id,
+            cell_rect,
             ui.ctx().input(|i| i.events.len()),
         );
         session.handle_mouse(ui, cell_rect, size_px, &response);
@@ -145,7 +147,9 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         if !self.background_active {
             let bg_with_opacity = {
                 let c = session.default_bg;
-                let a = (c.a() as f32 * session.window_opacity).round().clamp(0.0, 255.0) as u8;
+                let a = (c.a() as f32 * session.window_opacity)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
                 egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), a)
             };
             ui.painter().rect_filled(cell_rect, 0.0, bg_with_opacity);
@@ -179,7 +183,8 @@ impl<'a> TabViewer for TabViewerContext<'a> {
                 (sel.b() * 255.0).round().clamp(0.0, 255.0) as u8,
                 (sel.a() * 255.0).round().clamp(0.0, 255.0) as u8,
             );
-            ui.painter().rect_stroke(cell_rect, 0.0, Stroke::new(1.0, accent), StrokeKind::Inside);
+            ui.painter()
+                .rect_stroke(cell_rect, 0.0, Stroke::new(1.0, accent), StrokeKind::Inside);
         }
     }
 

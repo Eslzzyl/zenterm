@@ -93,26 +93,14 @@ pub fn slider_setting(
 // ── Drag values ────────────────────────────────────────────────────────
 
 /// A labelled drag-value for `f32`.
-pub fn drag_f32(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut f32,
-    speed: f32,
-    description: &str,
-) {
+pub fn drag_f32(ui: &mut egui::Ui, label: &str, value: &mut f32, speed: f32, description: &str) {
     row(ui, label, description, |ui| {
         ui.add(egui::DragValue::new(value).speed(speed).max_decimals(2));
     });
 }
 
 /// A labelled drag-value for `u64`.
-pub fn drag_u64(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut u64,
-    speed: f32,
-    description: &str,
-) {
+pub fn drag_u64(ui: &mut egui::Ui, label: &str, value: &mut u64, speed: f32, description: &str) {
     row(ui, label, description, |ui| {
         ui.add(egui::DragValue::new(value).speed(speed).max_decimals(0));
     });
@@ -121,17 +109,9 @@ pub fn drag_u64(
 // ── Text ───────────────────────────────────────────────────────────────
 
 /// A labelled single-line text input.
-pub fn text_setting(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut String,
-    description: &str,
-) {
+pub fn text_setting(ui: &mut egui::Ui, label: &str, value: &mut String, description: &str) {
     row(ui, label, description, |ui| {
-        let resp = ui.add(
-            egui::TextEdit::singleline(value)
-                .desired_width(180.0),
-        );
+        let resp = ui.add(egui::TextEdit::singleline(value).desired_width(180.0));
         if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             resp.surrender_focus();
         }
@@ -292,10 +272,5 @@ fn hex_to_rgba(s: Option<&str>) -> Option<[f32; 4]> {
     let r = u8::from_str_radix(&s[1..3], 16).ok()?;
     let g = u8::from_str_radix(&s[3..5], 16).ok()?;
     let b = u8::from_str_radix(&s[5..7], 16).ok()?;
-    Some([
-        r as f32 / 255.0,
-        g as f32 / 255.0,
-        b as f32 / 255.0,
-        1.0,
-    ])
+    Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0])
 }

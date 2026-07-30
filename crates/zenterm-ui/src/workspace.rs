@@ -30,7 +30,11 @@ fn default_workspace_name() -> String {
     let shell = std::env::var("SHELL")
         .or_else(|_| std::env::var("ComSpec"))
         .unwrap_or_else(|_| {
-            if cfg!(windows) { "cmd.exe".into() } else { "default".into() }
+            if cfg!(windows) {
+                "cmd.exe".into()
+            } else {
+                "default".into()
+            }
         });
 
     Path::new(&shell)
@@ -268,7 +272,9 @@ impl WorkspaceManager {
 
         // Migrate tabs into the target workspace.
         for tab_id in tabs {
-            self.workspaces[migrate_to].dock.push_to_focused_leaf(tab_id);
+            self.workspaces[migrate_to]
+                .dock
+                .push_to_focused_leaf(tab_id);
             self.workspaces[migrate_to].mark_changed();
         }
 
@@ -276,7 +282,8 @@ impl WorkspaceManager {
 
         // Fix the active workspace pointer.
         if self.active_workspace_id == id {
-            self.active_workspace_id = self.workspaces
+            self.active_workspace_id = self
+                .workspaces
                 .get(migrate_to.min(self.workspaces.len() - 1))
                 .unwrap()
                 .id;

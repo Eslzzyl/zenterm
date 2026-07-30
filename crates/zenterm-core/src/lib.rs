@@ -19,7 +19,7 @@ pub use damage::DamageSet;
 pub use error::Error;
 pub use position::TermPos;
 pub use size::TermSize;
-pub use theme::{Theme, ThemePreference, THEME_DARK, THEME_LIGHT};
+pub use theme::{THEME_DARK, THEME_LIGHT, Theme, ThemePreference};
 
 // ── iTerm2 proprietary escape codes (OSC 1337) ──────────────────────────
 
@@ -403,8 +403,7 @@ impl SubpixelLayout {
     #[cfg(windows)]
     fn detect_windows() -> Self {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SystemParametersInfoW, SPI_GETFONTSMOOTHINGORIENTATION,
-            FE_FONTSMOOTHINGORIENTATIONBGR,
+            FE_FONTSMOOTHINGORIENTATIONBGR, SPI_GETFONTSMOOTHINGORIENTATION, SystemParametersInfoW,
         };
 
         let mut orientation: u32 = 0;

@@ -59,25 +59,25 @@ pub(super) fn key_to_ctrl_code(key: &Key) -> Option<u8> {
 pub(super) fn key_to_ctrl_extended(key: &Key) -> Option<u8> {
     match key {
         Key::Space => Some(0x00),
-        Key::Num2 => Some(0x00),  // NUL
-        Key::Num3 => Some(0x1b),  // ESC
-        Key::Num4 => Some(0x1c),  // FS
-        Key::Num5 => Some(0x1d),  // GS
-        Key::Num6 => Some(0x1e),  // RS
-        Key::Num7 => Some(0x1f),  // US
-        Key::Num8 => Some(0x7f),  // DEL
-        Key::Num9 => Some(0x39),  // '9' (passthrough)
-        Key::Num0 => Some(0x30),  // '0' (passthrough)
-        Key::Num1 => Some(0x31),  // '1' (passthrough)
+        Key::Num2 => Some(0x00), // NUL
+        Key::Num3 => Some(0x1b), // ESC
+        Key::Num4 => Some(0x1c), // FS
+        Key::Num5 => Some(0x1d), // GS
+        Key::Num6 => Some(0x1e), // RS
+        Key::Num7 => Some(0x1f), // US
+        Key::Num8 => Some(0x7f), // DEL
+        Key::Num9 => Some(0x39), // '9' (passthrough)
+        Key::Num0 => Some(0x30), // '0' (passthrough)
+        Key::Num1 => Some(0x31), // '1' (passthrough)
 
-        Key::Slash => Some(0x1f),          // Ctrl+/ → US
-        Key::Questionmark => Some(0x7f),   // Ctrl+? → DEL
-        Key::Backslash => Some(0x1c),      // Ctrl+\ → FS
-        Key::Pipe => Some(0x1c),           // Ctrl+| → FS
-        Key::CloseBracket => Some(0x1d),   // Ctrl+] → GS
+        Key::Slash => Some(0x1f),             // Ctrl+/ → US
+        Key::Questionmark => Some(0x7f),      // Ctrl+? → DEL
+        Key::Backslash => Some(0x1c),         // Ctrl+\ → FS
+        Key::Pipe => Some(0x1c),              // Ctrl+| → FS
+        Key::CloseBracket => Some(0x1d),      // Ctrl+] → GS
         Key::CloseCurlyBracket => Some(0x1d), // Ctrl+} → GS
-        Key::OpenBracket => Some(0x1b),    // Ctrl+[ → ESC
-        Key::OpenCurlyBracket => Some(0x1b), // Ctrl+{ → ESC
+        Key::OpenBracket => Some(0x1b),       // Ctrl+[ → ESC
+        Key::OpenCurlyBracket => Some(0x1b),  // Ctrl+{ → ESC
         Key::Backtick => None,
         Key::Minus => None,
         Key::Equals => None,

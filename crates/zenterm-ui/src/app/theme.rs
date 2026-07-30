@@ -5,13 +5,13 @@
 //! UI chrome (side panel, tab bar, settings) feels cohesive with the
 //! terminal theme.
 
-use egui::{Context, Stroke, CornerRadius, Color32, Visuals};
+use egui::{Color32, Context, CornerRadius, Stroke, Visuals};
 
 use zenterm_core::theme::Theme;
 use zenterm_term::ColorScheme;
 
-use crate::workspace::WorkspaceManager;
 use super::ZentermApp;
+use crate::workspace::WorkspaceManager;
 
 // ── Global egui style builder ─────────────────────────────────────────
 
@@ -60,12 +60,16 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
         Color32::from_rgb(245, 245, 245)
     };
 
-    let base = if dark_mode { Visuals::dark() } else { Visuals::light() };
+    let base = if dark_mode {
+        Visuals::dark()
+    } else {
+        Visuals::light()
+    };
 
     let visuals = Visuals {
         dark_mode,
-        panel_fill: ext_bg,             // matches tab-bar background
-        extreme_bg_color: ext_bg,       // used by the tab bar
+        panel_fill: ext_bg,       // matches tab-bar background
+        extreme_bg_color: ext_bg, // used by the tab bar
         window_fill: surface,
         faint_bg_color: if dark_mode {
             Color32::from_rgb(22, 22, 22)
@@ -84,7 +88,9 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
         },
         selection: egui::style::Selection {
             bg_fill: Color32::from_rgba_premultiplied(
-                accent.r(), accent.g(), accent.b(),
+                accent.r(),
+                accent.g(),
+                accent.b(),
                 if dark_mode { 55 } else { 40 },
             ),
             stroke: Stroke::new(1.0, text_color),
@@ -241,11 +247,7 @@ fn extract_workspace_essence(title: &str) -> String {
 
     // ① If the title looks like a path, take the last (non-empty) component.
     if t.contains('/') || t.contains('\\') {
-        if let Some(last) = t
-            .split(&['/', '\\'][..])
-            .filter(|s| !s.is_empty())
-            .last()
-        {
+        if let Some(last) = t.split(&['/', '\\'][..]).filter(|s| !s.is_empty()).last() {
             // Also strip common file extensions for cleanliness.
             let cleaned = if let Some((stem, _ext)) = last.rsplit_once('.') {
                 if stem.len() > 1 { stem } else { last }
@@ -288,4 +290,3 @@ fn rgba_to_color32(c: &zenterm_core::color::Rgba) -> egui::Color32 {
         (c.a() * 255.0).round().clamp(0.0, 255.0) as u8,
     )
 }
-

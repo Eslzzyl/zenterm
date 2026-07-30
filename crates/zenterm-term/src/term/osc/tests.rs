@@ -1,1194 +1,1191 @@
-use super::*;
 use super::conemu::parse_osc99_metadata;
 use super::iterm::parse_iterm_dimension;
 use super::util::base64_encode;
+use super::*;
 use zenterm_core::{
-    ITermDimension, ITermFileData, ITermProprietary, ITermUnicodeVersionOp,
-    Progress, SemanticClick, SemanticPrompt, SemanticPromptKind,
+    ITermDimension, ITermFileData, ITermProprietary, ITermUnicodeVersionOp, Progress,
+    SemanticClick, SemanticPrompt, SemanticPromptKind,
 };
 
 // ── scan_oscs ───────────────────────────────────────────────────
 
-    #[test]
-    fn single_osc7_bel() {
-        let bytes = b"\x1b]7;file://localhost/Users/me\x07";
-        let oscs = scan_oscs(bytes);
-        assert_eq!(oscs.len(), 1);
-        assert_eq!(oscs[0].number, 7);
-        assert_eq!(oscs[0].payload, "file://localhost/Users/me");
-    }
-
-    #[test]
-    fn single_osc7_st() {
-        let bytes = b"\x1b]7;file://h/p\x1b\\";
-        let oscs = scan_oscs(bytes);
-        assert_eq!(oscs.len(), 1);
-        assert_eq!(oscs[0].number, 7);
-        assert_eq!(oscs[0].payload, "file://h/p");
-    }
-
-    #[test]
-    fn osc9_notification() {
-        let bytes = b"\x1b]9;hello world\x07";
-        let oscs = scan_oscs(bytes);
-        assert_eq!(oscs.len(), 1);
-        assert_eq!(oscs[0].number, 9);
-        assert_eq!(oscs[0].payload, "hello world");
-    }
-
-    #[test]
-    fn osc777_notification() {
-        let bytes = b"\x1b]777;notify;title;body\x07";
-        let oscs = scan_oscs(bytes);
-        assert_eq!(oscs.len(), 1);
-        assert_eq!(oscs[0].number, 777);
-        assert_eq!(oscs[0].payload, "notify;title;body");
-    }
-
-    #[test]
-    fn conemu_progress() {
-        let bytes = b"\x1b]9;4;0\x1b\\";
-        let oscs = scan_oscs(bytes);
-        assert_eq!(oscs.len(), 1);
-        assert_eq!(oscs[0].number, 9);
-        assert_eq!(oscs[0].payload, "4;0");
-    }
-
-    #[test]
-    fn multiple_oscs() {
-        let bytes = b"\x1b]7;file:///home\x07\x1b]9;hi\x07\x1b]777;notify;;\x07";
-        let oscs = scan_oscs(bytes);
-        assert_eq!(oscs.len(), 3);
-        assert_eq!(oscs[0].number, 7);
-        assert_eq!(oscs[1].number, 9);
-        assert_eq!(oscs[2].number, 777);
-    }
-
-    #[test]
-    fn interleaved_with_other_escape_sequences() {
-        let bytes = b"hello\x1b[31mred\x1b[0m\x1b]7;file://x/y\x07done";
-        let oscs = scan_oscs(bytes);
-        assert_eq!(oscs.len(), 1);
-        assert_eq!(oscs[0].number, 7);
-        assert_eq!(oscs[0].payload, "file://x/y");
-    }
-
-    #[test]
-    fn unterminated_returns_none() {
-        let bytes = b"\x1b]7;file://x/y";
-        let oscs = scan_oscs(bytes);
-        assert!(oscs.is_empty());
-    }
-
-    #[test]
-    fn prefers_earliest_terminator() {
-        // ST appears before BEL.
-        let bytes = b"\x1b]7;file://host/path\x1b\\trailing\x07garbage";
-        let oscs = scan_oscs(bytes);
-        assert_eq!(oscs.len(), 1);
-        assert_eq!(oscs[0].payload, "file://host/path");
-
-        // BEL appears before ST.
-        let bytes = b"\x1b]7;file://host/path\x07\x1b\\trailing";
-        let oscs = scan_oscs(bytes);
-        assert_eq!(oscs.len(), 1);
-        assert_eq!(oscs[0].payload, "file://host/path");
-    }
-
-    #[test]
-    fn no_osc_returns_empty() {
-        let bytes = b"just normal bytes";
-        let oscs = scan_oscs(bytes);
-        assert!(oscs.is_empty());
-    }
-
-    #[test]
-    fn esc_in_payload_skips_stray() {
-        // Stray ESC inside payload should be skipped, not treated as ST.
-        let bytes = b"\x1b]7;file\x1b/path\x07";
-        let oscs = scan_oscs(bytes);
-        assert_eq!(oscs.len(), 1);
-        assert_eq!(oscs[0].payload, "file\x1b/path");
-    }
-
-    // ── parse_conemu_progress ───────────────────────────────────────
-
-    #[test]
-    fn conemu_none() {
-        assert_eq!(parse_conemu_progress("4;0"), Some(Progress::None));
-    }
-
-    #[test]
-    fn conemu_percentage() {
-        assert_eq!(parse_conemu_progress("4;1;42"), Some(Progress::Percentage(42)));
-    }
-
-    #[test]
-    fn conemu_error() {
-        assert_eq!(parse_conemu_progress("4;2;99"), Some(Progress::Error(99)));
-    }
-
-    #[test]
-    fn conemu_indeterminate() {
-        assert_eq!(parse_conemu_progress("4;3"), Some(Progress::Indeterminate));
-    }
-
-    #[test]
-    fn conemu_paused_is_none() {
-        assert_eq!(parse_conemu_progress("4;4"), Some(Progress::None));
-    }
-
-    #[test]
-    fn conemu_percentage_clamped() {
-        assert_eq!(parse_conemu_progress("4;1;150"), Some(Progress::Percentage(100)));
-    }
-
-    #[test]
-    fn conemu_not_a_progress() {
-        assert_eq!(parse_conemu_progress("hello"), None);
-    }
-
-    #[test]
-    fn conemu_unknown_state() {
-        assert_eq!(parse_conemu_progress("4;9"), None);
-    }
-
-    // ── parse_osc133 ────────────────────────────────────────────────
-
-    #[test]
-    fn osc133_fresh_line() {
-        assert_eq!(parse_osc133("L"), Some(SemanticPrompt::FreshLine));
-    }
-
-    #[test]
-    fn osc133_fresh_line_with_params_is_error() {
-        assert_eq!(parse_osc133("L;extra"), None);
-    }
-
-    #[test]
-    fn osc133_prompt_start_a() {
-        assert_eq!(
-            parse_osc133("A"),
-            Some(SemanticPrompt::FreshLineAndStartPrompt {
-                aid: None,
-                cl: None,
-            })
-        );
-    }
-
-    #[test]
-    fn osc133_prompt_start_a_with_aid() {
-        assert_eq!(
-            parse_osc133("A;aid=42"),
-            Some(SemanticPrompt::FreshLineAndStartPrompt {
-                aid: Some("42".into()),
-                cl: None,
-            })
-        );
-    }
-
-    #[test]
-    fn osc133_prompt_start_a_with_cl() {
-        assert_eq!(
-            parse_osc133("A;cl=w"),
-            Some(SemanticPrompt::FreshLineAndStartPrompt {
-                aid: None,
-                cl: Some(SemanticClick::SmartVertical),
-            })
-        );
-    }
-
-    #[test]
-    fn osc133_prompt_start_a_with_aid_and_cl() {
-        assert_eq!(
-            parse_osc133("A;aid=99;cl=line"),
-            Some(SemanticPrompt::FreshLineAndStartPrompt {
-                aid: Some("99".into()),
-                cl: Some(SemanticClick::Line),
-            })
-        );
-    }
-
-    #[test]
-    fn osc133_prompt_start_a_unknown_key_ignored() {
-        assert_eq!(
-            parse_osc133("A;aid=1;foo=bar"),
-            Some(SemanticPrompt::FreshLineAndStartPrompt {
-                aid: Some("1".into()),
-                cl: None,
-            })
-        );
-    }
-
-    #[test]
-    fn osc133_prompt_start_b() {
-        assert_eq!(
-            parse_osc133("B"),
-            Some(SemanticPrompt::MarkEndOfPromptAndStartOfInputUntilNextMarker)
-        );
-    }
-
-    #[test]
-    fn osc133_prompt_start_b_with_params_is_error() {
-        assert_eq!(parse_osc133("B;aid=1"), None);
-    }
-
-    #[test]
-    fn osc133_input_start_c() {
-        assert_eq!(
-            parse_osc133("C"),
-            Some(SemanticPrompt::MarkEndOfInputAndStartOfOutput { aid: None })
-        );
-    }
-
-    #[test]
-    fn osc133_input_start_c_with_aid() {
-        assert_eq!(
-            parse_osc133("C;aid=7"),
-            Some(SemanticPrompt::MarkEndOfInputAndStartOfOutput {
-                aid: Some("7".into()),
-            })
-        );
-    }
-
-    #[test]
-    fn osc133_command_status_d() {
-        assert_eq!(
-            parse_osc133("D;0"),
-            Some(SemanticPrompt::CommandStatus {
-                status: 0,
-                aid: None,
-            })
-        );
-    }
-
-    #[test]
-    fn osc133_command_status_d_nonzero() {
-        assert_eq!(
-            parse_osc133("D;1"),
-            Some(SemanticPrompt::CommandStatus {
-                status: 1,
-                aid: None,
-            })
-        );
-    }
-
-    #[test]
-    fn osc133_command_status_d_with_aid() {
-        assert_eq!(
-            parse_osc133("D;0;aid=23"),
-            Some(SemanticPrompt::CommandStatus {
-                status: 0,
-                aid: Some("23".into()),
-            })
-        );
-    }
-
-    #[test]
-    fn osc133_command_status_d_with_aid_and_extra() {
-        // The spec allows extra key=value pairs (like err=...) which
-        // should be silently ignored.
-        assert_eq!(
-            parse_osc133("D;1;err=1;aid=23"),
-            Some(SemanticPrompt::CommandStatus {
-                status: 1,
-                aid: Some("23".into()),
-            })
-        );
-    }
-
-    #[test]
-    fn osc133_command_status_d_no_status_defaults_zero() {
-        assert_eq!(
-            parse_osc133("D"),
-            Some(SemanticPrompt::CommandStatus {
-                status: 0,
-                aid: None,
-            })
-        );
-    }
-
-    #[test]
-    fn osc133_continue_prompt_i() {
-        assert_eq!(
-            parse_osc133("I"),
-            Some(SemanticPrompt::MarkEndOfPromptAndStartOfInputUntilEndOfLine)
-        );
-    }
-
-    #[test]
-    fn osc133_continue_prompt_i_with_params_is_error() {
-        assert_eq!(parse_osc133("I;extra"), None);
-    }
-
-    #[test]
-    fn osc133_end_of_command_n() {
-        assert_eq!(
-            parse_osc133("N"),
-            Some(SemanticPrompt::MarkEndOfCommandWithFreshLine {
-                aid: None,
-                cl: None,
-            })
-        );
-    }
-
-    #[test]
-    fn osc133_end_of_command_n_with_aid() {
-        assert_eq!(
-            parse_osc133("N;aid=5"),
-            Some(SemanticPrompt::MarkEndOfCommandWithFreshLine {
-                aid: Some("5".into()),
-                cl: None,
-            })
-        );
-    }
-
-    #[test]
-    fn osc133_end_of_command_n_with_cl() {
-        assert_eq!(
-            parse_osc133("N;cl=m"),
-            Some(SemanticPrompt::MarkEndOfCommandWithFreshLine {
-                aid: None,
-                cl: Some(SemanticClick::MultipleLine),
-            })
-        );
-    }
-
-    #[test]
-    fn osc133_start_prompt_p_initial() {
-        assert_eq!(
-            parse_osc133("P;k=i"),
-            Some(SemanticPrompt::StartPrompt(SemanticPromptKind::Initial))
-        );
-    }
-
-    #[test]
-    fn osc133_start_prompt_p_right_side() {
-        assert_eq!(
-            parse_osc133("P;k=r"),
-            Some(SemanticPrompt::StartPrompt(SemanticPromptKind::RightSide))
-        );
-    }
-
-    #[test]
-    fn osc133_start_prompt_p_continuation() {
-        assert_eq!(
-            parse_osc133("P;k=c"),
-            Some(SemanticPrompt::StartPrompt(SemanticPromptKind::Continuation))
-        );
-    }
-
-    #[test]
-    fn osc133_start_prompt_p_secondary() {
-        assert_eq!(
-            parse_osc133("P;k=s"),
-            Some(SemanticPrompt::StartPrompt(SemanticPromptKind::Secondary))
-        );
-    }
-
-    #[test]
-    fn osc133_start_prompt_p_default_initial() {
-        // P without k= defaults to Initial.
-        assert_eq!(
-            parse_osc133("P"),
-            Some(SemanticPrompt::StartPrompt(SemanticPromptKind::Initial))
-        );
-    }
-
-    #[test]
-    fn osc133_start_prompt_p_unknown_kind_defaults_initial() {
-        assert_eq!(
-            parse_osc133("P;k=z"),
-            Some(SemanticPrompt::StartPrompt(SemanticPromptKind::Initial))
-        );
-    }
-
-    #[test]
-    fn osc133_unknown_command_is_none() {
-        assert_eq!(parse_osc133("Z"), None);
-        assert_eq!(parse_osc133("Q"), None);
-        assert_eq!(parse_osc133(""), None);
-    }
-
-    #[test]
-    fn osc133_all_cl_variants() {
-        assert_eq!(
-            parse_osc133("A;cl=line").unwrap(),
-            SemanticPrompt::FreshLineAndStartPrompt {
-                aid: None,
-                cl: Some(SemanticClick::Line),
-            }
-        );
-        assert_eq!(
-            parse_osc133("A;cl=m").unwrap(),
-            SemanticPrompt::FreshLineAndStartPrompt {
-                aid: None,
-                cl: Some(SemanticClick::MultipleLine),
-            }
-        );
-        assert_eq!(
-            parse_osc133("A;cl=v").unwrap(),
-            SemanticPrompt::FreshLineAndStartPrompt {
-                aid: None,
-                cl: Some(SemanticClick::ConservativeVertical),
-            }
-        );
-        assert_eq!(
-            parse_osc133("A;cl=w").unwrap(),
-            SemanticPrompt::FreshLineAndStartPrompt {
-                aid: None,
-                cl: Some(SemanticClick::SmartVertical),
-            }
-        );
-    }
-
-    #[test]
-    fn osc133_invalid_cl_is_none() {
-        assert_eq!(parse_osc133("A;cl=bad"), None);
-    }
-
-    // ── parse_osc99_metadata ─────────────────────────────────────────
-
-    #[test]
-    fn osc99_metadata_empty() {
-        let m = parse_osc99_metadata("");
-        assert!(m.is_empty());
-    }
-
-    #[test]
-    fn osc99_metadata_single_pair() {
-        let m = parse_osc99_metadata("i=42");
-        assert_eq!(m.get("i").unwrap(), "42");
-    }
-
-    #[test]
-    fn osc99_metadata_multiple_pairs() {
-        let m = parse_osc99_metadata("i=1:p=title:d=0");
-        assert_eq!(m.get("i").unwrap(), "1");
-        assert_eq!(m.get("p").unwrap(), "title");
-        assert_eq!(m.get("d").unwrap(), "0");
-    }
-
-    #[test]
-    fn osc99_metadata_empty_value() {
-        // i= with no value is allowed per spec (i= means unset identifier).
-        let m = parse_osc99_metadata("i=:p=body");
-        assert_eq!(m.get("i").unwrap(), "");
-        assert_eq!(m.get("p").unwrap(), "body");
-    }
-
-    #[test]
-    fn osc99_metadata_invalid_key_skipped() {
-        let m = parse_osc99_metadata("i=1:badkey=val:p=title");
-        // "badkey" is > 1 character, so it should be skipped.
-        assert_eq!(m.len(), 2);
-        assert_eq!(m.get("i").unwrap(), "1");
-        assert_eq!(m.get("p").unwrap(), "title");
-    }
-
-    #[test]
-    fn osc99_metadata_special_chars_in_value() {
-        // Values can contain: a-zA-Z0-9-_/+.,(){}[]*&^%$#@!`~
-        let m = parse_osc99_metadata("p=?");
-        assert_eq!(m.get("p").unwrap(), "?");
-    }
-
-    // ── KittyNotificationState ───────────────────────────────────────
-
-    #[test]
-    fn osc99_simple_notification() {
-        // ESC ] 99 ;; Hello world ST  →  simple notification
-        let mut state = KittyNotificationState::default();
-        let payload = ";Hello world";
-        let (notif, response) = state.handle_event(payload, "");
-        assert!(response.is_none());
-        let notif = notif.expect("should produce a notification");
-        assert_eq!(notif.title, "Hello world");
-        assert_eq!(notif.body, "");
-        assert!(notif.id.is_none());
-    }
-
-    #[test]
-    fn osc99_chunked_title_body() {
-        let mut state = KittyNotificationState::default();
-
-        // Chunk 1: title (not done)
-        let (n1, r1) = state.handle_event("i=1:d=0:p=title;Hello", "");
-        assert!(n1.is_none());
-        assert!(r1.is_none());
-
-        // Chunk 2: body (done → produces notification)
-        let (n2, r2) = state.handle_event("i=1:d=1:p=body;World", "");
-        assert!(r2.is_none());
-        let n2 = n2.expect("should produce notification on d=1");
-        assert_eq!(n2.title, "Hello");
-        assert_eq!(n2.body, "World");
-        assert_eq!(n2.id.as_deref(), Some("1"));
-    }
-
-    #[test]
-    fn osc99_chunked_body_then_title() {
-        let mut state = KittyNotificationState::default();
-
-        // Body first, then title.
-        let _ = state.handle_event("i=2:d=0:p=body;Body text", "");
-        let (n, _) = state.handle_event("i=2:d=1:p=title;Title text", "");
-        let n = n.expect("should produce notification");
-        assert_eq!(n.title, "Title text");
-        assert_eq!(n.body, "Body text");
-    }
-
-    #[test]
-    fn osc99_chunked_multiple_title_parts() {
-        let mut state = KittyNotificationState::default();
-
-        let _ = state.handle_event("i=3:d=0:p=title;Part ", "");
-        let (n, _) = state.handle_event("i=3:d=1:p=title;Two", "");
-        let n = n.expect("should produce notification");
-        assert_eq!(n.title, "Part Two");
-        assert_eq!(n.body, "");
-    }
-
-    #[test]
-    fn osc99_title_only_no_d_flag_implies_done() {
-        // When no `d` key is present, defaults to done=1.
-        let mut state = KittyNotificationState::default();
-        let (n, _) = state.handle_event("i=4:p=title;Just title", "");
-        let n = n.expect("should produce notification");
-        assert_eq!(n.title, "Just title");
-    }
-
-    #[test]
-    fn osc99_no_identifier_no_chunking() {
-        // Without an `i` identifier, every OSC 99 produces a standalone notification.
-        let mut state = KittyNotificationState::default();
-        let (n, _) = state.handle_event("p=title;Standalone", "");
-        let n = n.expect("should produce notification");
-        assert_eq!(n.title, "Standalone");
-    }
-
-    #[test]
-    fn osc99_update_existing() {
-        // Sending a new notification with the same `i` replaces the old one.
-        let mut state = KittyNotificationState::default();
-        let _ = state.handle_event("i=5:d=1:p=title;Old title", "");
-        let (n, _) = state.handle_event("i=5:d=1:p=title;New title", "");
-        let n = n.expect("should produce updated notification");
-        assert_eq!(n.title, "New title");
-    }
-
-    #[test]
-    fn osc99_close() {
-        let mut state = KittyNotificationState::default();
-        // Start a notification.
-        let _ = state.handle_event("i=6:d=0:p=title;Will be closed", "");
-        // Close it.
-        let (n, r) = state.handle_event("i=6:p=close;", "");
-        assert!(n.is_none());
-        assert!(r.is_none());
-        // Verify it's gone — a new chunk for id=6 should start fresh.
-        let (n2, _) = state.handle_event("i=6:d=1:p=title;Fresh start", "");
-        let n2 = n2.expect("should start fresh");
-        assert_eq!(n2.title, "Fresh start");
-    }
-
-    #[test]
-    fn osc99_query_response() {
-        let mut state = KittyNotificationState::default();
-        let (n, r) = state.handle_event("p=?;", "");
-        assert!(n.is_none());
-        let r = r.expect("query should produce a response");
-        assert!(r.starts_with("\x1b]99;"));
-        assert!(r.contains("p=?"));
-        assert!(r.ends_with("\x1b\\\\"));
-    }
-
-    #[test]
-    fn osc99_query_response_with_identifier() {
-        let mut state = KittyNotificationState::default();
-        let (_, r) = state.handle_event("i=abc:p=?;", "abc");
-        let r = r.expect("query should produce a response");
-        assert!(r.contains("i=abc"));
-    }
-
-    #[test]
-    fn osc99_alive_query() {
-        let mut state = KittyNotificationState::default();
-        // Create an in-flight notification.
-        let _ = state.handle_event("i=7:d=0:p=title;In flight", "");
-        let (n, r) = state.handle_event("i=8:p=alive;", "");
-        assert!(n.is_none());
-        let r = r.expect("alive query should produce a response");
-        assert!(r.contains("p=alive"));
-        assert!(r.contains("7")); // id=7 is alive
-    }
-
-    #[test]
-    fn osc99_empty_payload_no_notification() {
-        let mut state = KittyNotificationState::default();
-        let (n, r) = state.handle_event(";", "");
-        assert!(n.is_none());
-        assert!(r.is_none());
-    }
-
-    #[test]
-    fn osc99_unknown_payload_type_ignored() {
-        let mut state = KittyNotificationState::default();
-        let (n, r) = state.handle_event("i=9:d=1:p=unknown;Data", "");
-        assert!(n.is_none());
-        assert!(r.is_none());
-    }
-
-    #[test]
-    fn osc99_metadata_empty_after_semicolon() {
-        // `ESC ] 99 ;; body`  →  metadata is empty string
-        let mut state = KittyNotificationState::default();
-        let (n, _) = state.handle_event(";body only", "");
-        let n = n.expect("should produce notification");
-        assert_eq!(n.title, "body only");
-    }
-
-    #[test]
-    fn osc99_buttons_single() {
-        let mut state = KittyNotificationState::default();
-        let _ = state.handle_event("i=b1:d=0:p=title;Notification", "");
-        let (n, _) = state.handle_event("i=b1:d=1:p=buttons;OK", "");
-        let n = n.expect("should produce notification");
-        assert_eq!(n.buttons, vec!["OK"]);
-    }
-
-    #[test]
-    fn osc99_buttons_multiple() {
-        let mut state = KittyNotificationState::default();
-        // U+2028 is the LINE SEPARATOR character.
-        let buttons = "Yes\u{2028}No\u{2028}Maybe";
-        let _ = state.handle_event("i=b2:d=0:p=title;Choose", "");
-        let (n, _) = state.handle_event(
-            &format!("i=b2:d=1:p=buttons;{}", buttons), ""
-        );
-        let n = n.expect("should produce notification");
-        assert_eq!(n.buttons, vec!["Yes", "No", "Maybe"]);
-    }
-
-    #[test]
-    fn osc99_buttons_with_title_and_body() {
-        let mut state = KittyNotificationState::default();
-        let _ = state.handle_event("i=b3:d=0:p=title;Confirm", "");
-        let _ = state.handle_event("i=b3:d=0:p=buttons;Yes\u{2028}No", "");
-        let (n, _) = state.handle_event("i=b3:d=1:p=body;Do you want to continue?", "");
-        let n = n.expect("should produce notification");
-        assert_eq!(n.title, "Confirm");
-        assert_eq!(n.body, "Do you want to continue?");
-        assert_eq!(n.buttons, vec!["Yes", "No"]);
-    }
-
-    #[test]
-    fn osc99_timeout_w() {
-        let mut state = KittyNotificationState::default();
-        let (n, _) = state.handle_event("i=t1:d=1:p=title:w=5000;Timed", "");
-        let n = n.expect("should produce notification");
-        assert_eq!(n.timeout_ms, 5000);
-        assert_eq!(n.title, "Timed");
-    }
-
-    #[test]
-    fn osc99_timeout_default() {
-        let mut state = KittyNotificationState::default();
-        let (n, _) = state.handle_event("i=t2:d=1:p=title;No timeout", "");
-        let n = n.expect("should produce notification");
-        assert_eq!(n.timeout_ms, -1);
-    }
-
-    #[test]
-    fn osc99_timeout_never() {
-        let mut state = KittyNotificationState::default();
-        let (n, _) = state.handle_event("i=t3:d=1:p=title:w=0;Persistent", "");
-        let n = n.expect("should produce notification");
-        assert_eq!(n.timeout_ms, 0);
-    }
-
-    #[test]
-    fn osc99_icon_data_and_cache_key() {
-        let mut state = KittyNotificationState::default();
-        // Send icon data with g= and e=1.
-        let icon_b64 = base64_encode(b"fake-png-bytes");
-        let _ = state.handle_event(
-            &format!("i=ic1:d=0:p=icon:g=abc123:e=1;{}", icon_b64), ""
-        );
-        // Now send the title with d=1 to trigger the notification.
-        let (n, _) = state.handle_event("i=ic1:d=1:p=title;With icon", "");
-        let n = n.expect("should produce notification");
-        assert_eq!(n.icon_cache_key.as_deref(), Some("abc123"));
-        assert_eq!(n.icon_data, b"fake-png-bytes");
-    }
-
-    #[test]
-    fn osc99_icon_cache_reuse() {
-        let mut state = KittyNotificationState::default();
-        // First: cache icon data under g=uuid1.
-        let icon_b64 = base64_encode(b"icon-data-for-uuid1");
-        let _ = state.handle_event(
-            &format!("i=ic2:d=0:p=icon:g=uuid1:e=1;{}", icon_b64), ""
-        );
-        // Title with d=1 triggers the notification, but no inline icon.
-        let (n2, _) = state.handle_event("i=ic2:d=1:p=title:g=uuid1;From cache", "");
-        let n2 = n2.expect("should produce notification");
-        // It should have the cached icon data.
-        assert_eq!(n2.icon_data, b"icon-data-for-uuid1");
-        assert_eq!(n2.icon_cache_key.as_deref(), Some("uuid1"));
-    }
-
-    #[test]
-    fn osc99_notification_types() {
-        let mut state = KittyNotificationState::default();
-        // t= values must be base64-encoded per spec.
-        let t_emacs = base64_encode(b"emacs");
-        let t_email = base64_encode(b"email");
-        let _ = state.handle_event(
-            &format!("i=nt1:d=0:p=title:t={};Typed", t_emacs), ""
-        );
-        let (n, _) = state.handle_event(
-            &format!("i=nt1:d=1:p=body:t={};Content", t_email), ""
-        );
-        let n = n.expect("should produce notification");
-        assert!(n.notification_types.contains(&"emacs".to_string()));
-        assert!(n.notification_types.contains(&"email".to_string()));
-    }
-
-    #[test]
-    fn osc99_full_notification_fields() {
-        let mut state = KittyNotificationState::default();
-        let icon_b64 = base64_encode(b"icon-bytes");
-        let t_important = base64_encode(b"important");
-        // First chunk: icon data.
-        let _ = state.handle_event(&format!(
-            "i=full:d=0:p=icon:g=cache1:e=1;{}", icon_b64
-        ), "");
-        // Second chunk: title with all metadata.
-        let _ = state.handle_event(
-            &format!("i=full:d=0:p=title:u=2:o=unfocused:f={}:s={}:n={}:t={}:w=3000:c=1;Urgent title",
-                base64_encode(b"myapp"),
-                base64_encode(b"silent"),
-                base64_encode(b"dialog-warning"),
-                t_important,
-            ), ""
-        );
-        let _ = state.handle_event("i=full:d=0:p=body;Urgent body", "");
-        // Final chunk: buttons with d=1.
-        let (n, _) = state.handle_event(
-            "i=full:d=1:p=buttons;Ack\u{2028}Snooze", ""
-        );
-        let n = n.expect("should produce notification");
-        assert_eq!(n.title, "Urgent title");
-        assert_eq!(n.body, "Urgent body");
-        assert_eq!(n.urgency, zenterm_core::KittyUrgency::Critical);
-        assert_eq!(n.occasion, zenterm_core::KittyOccasion::Unfocused);
-        assert_eq!(n.timeout_ms, 3000);
-        assert!(n.close_report);
-        assert_eq!(n.buttons, vec!["Ack", "Snooze"]);
-        assert!(!n.icon_data.is_empty());
-        assert_eq!(n.icon_cache_key.as_deref(), Some("cache1"));
-        assert!(n.notification_types.contains(&"important".to_string()));
-        assert_eq!(n.app_name.as_deref(), Some("myapp"));
-        assert_eq!(n.sound.as_deref(), Some("silent"));
-        assert!(n.icon_names.contains(&"dialog-warning".to_string()));
-    }
-
-    // ── OSC 1337 / iTerm2 proprietary ─────────────────────────────────
-
-    #[test]
-    fn iterm_set_mark() {
-        let result = parse_iterm_proprietary("SetMark");
-        assert_eq!(result, Some(ITermProprietary::SetMark));
-    }
-
-    #[test]
-    fn iterm_steal_focus() {
-        let result = parse_iterm_proprietary("StealFocus");
-        assert_eq!(result, Some(ITermProprietary::StealFocus));
-    }
-
-    #[test]
-    fn iterm_clear_scrollback() {
-        let result = parse_iterm_proprietary("ClearScrollback");
-        assert_eq!(result, Some(ITermProprietary::ClearScrollback));
-    }
-
-    #[test]
-    fn iterm_current_dir() {
-        let result = parse_iterm_proprietary("CurrentDir=/Users/me/code");
-        assert_eq!(
-            result,
-            Some(ITermProprietary::CurrentDir("/Users/me/code".into()))
-        );
-    }
-
-    #[test]
-    fn iterm_current_dir_with_equals() {
-        // Paths may contain = (unlikely but possible).
-        let result = parse_iterm_proprietary("CurrentDir=/path/with=char");
-        assert_eq!(
-            result,
-            Some(ITermProprietary::CurrentDir("/path/with=char".into()))
-        );
-    }
-
-    #[test]
-    fn iterm_set_profile() {
-        let result = parse_iterm_proprietary("SetProfile=myprofile");
-        assert_eq!(
-            result,
-            Some(ITermProprietary::SetProfile("myprofile".into()))
-        );
-    }
-
-    #[test]
-    fn iterm_highlight_cursor_line_yes() {
-        let result = parse_iterm_proprietary("HighlightCursorLine=yes");
-        assert_eq!(
-            result,
-            Some(ITermProprietary::HighlightCursorLine(true))
-        );
-    }
-
-    #[test]
-    fn iterm_highlight_cursor_line_no() {
-        let result = parse_iterm_proprietary("HighlightCursorLine=no");
-        assert_eq!(
-            result,
-            Some(ITermProprietary::HighlightCursorLine(false))
-        );
-    }
-
-    #[test]
-    fn iterm_request_cell_size() {
-        let result = parse_iterm_proprietary("ReportCellSize");
-        assert_eq!(result, Some(ITermProprietary::RequestCellSize));
-    }
-
-    #[test]
-    fn iterm_report_cell_size_response() {
-        let result = parse_iterm_proprietary("ReportCellSize=12.0;15.5");
-        assert_eq!(
-            result,
-            Some(ITermProprietary::ReportCellSize {
-                height_pixels: 12.0,
-                width_pixels: 15.5,
-                scale: None,
-            })
-        );
-    }
-
-    #[test]
-    fn iterm_report_cell_size_response_with_scale() {
-        let result = parse_iterm_proprietary("ReportCellSize=12.0;15.5;2.0");
-        assert_eq!(
-            result,
-            Some(ITermProprietary::ReportCellSize {
-                height_pixels: 12.0,
-                width_pixels: 15.5,
-                scale: Some(2.0),
-            })
-        );
-    }
-
-    #[test]
-    fn iterm_copy_base64() {
-        let result = parse_iterm_proprietary("Copy=;aGVsbG8=");
-        assert_eq!(result, Some(ITermProprietary::Copy("hello".into())));
-    }
-
-    #[test]
-    fn iterm_set_badge_format() {
-        let result = parse_iterm_proprietary("SetBadgeFormat=;aGVsbG8=");
-        assert_eq!(
-            result,
-            Some(ITermProprietary::SetBadgeFormat("hello".into()))
-        );
-    }
-
-    #[test]
-    fn iterm_report_variable() {
-        let name_b64 = base64_encode(b"session.name");
-        let result = parse_iterm_proprietary(&format!("ReportVariable={name_b64}"));
-        assert_eq!(
-            result,
-            Some(ITermProprietary::ReportVariable("session.name".into()))
-        );
-    }
-
-    #[test]
-    fn iterm_set_user_var() {
-        let val_b64 = base64_encode(b"hello");
-        let result = parse_iterm_proprietary(&format!("SetUserVar=foo={val_b64}"));
-        assert_eq!(
-            result,
-            Some(ITermProprietary::SetUserVar {
-                name: "foo".into(),
-                value: "hello".into(),
-            })
-        );
-    }
-
-    #[test]
-    fn iterm_unicode_version_set() {
-        let result = parse_iterm_proprietary("UnicodeVersion=9");
-        assert_eq!(
-            result,
-            Some(ITermProprietary::UnicodeVersion(
-                ITermUnicodeVersionOp::Set(9)
-            ))
-        );
-    }
-
-    #[test]
-    fn iterm_unicode_version_push() {
-        let result = parse_iterm_proprietary("UnicodeVersion=push");
-        assert_eq!(
-            result,
-            Some(ITermProprietary::UnicodeVersion(
-                ITermUnicodeVersionOp::Push(None)
-            ))
-        );
-    }
-
-    #[test]
-    fn iterm_unicode_version_push_with_label() {
-        let result = parse_iterm_proprietary("UnicodeVersion=push mylabel");
-        assert_eq!(
-            result,
-            Some(ITermProprietary::UnicodeVersion(
-                ITermUnicodeVersionOp::Push(Some("mylabel".into()))
-            ))
-        );
-    }
-
-    #[test]
-    fn iterm_unicode_version_pop() {
-        let result = parse_iterm_proprietary("UnicodeVersion=pop");
-        assert_eq!(
-            result,
-            Some(ITermProprietary::UnicodeVersion(
-                ITermUnicodeVersionOp::Pop(None)
-            ))
-        );
-    }
-
-    #[test]
-    fn iterm_file_no_args() {
-        // ESC ] 1337 ; File = : aGVsbG8 = ST
-        let result = parse_iterm_proprietary("File=:aGVsbG8=");
-        let expected = ITermProprietary::File(ITermFileData {
-            name: None,
-            size: None,
-            width: ITermDimension::Automatic,
-            height: ITermDimension::Automatic,
-            preserve_aspect_ratio: true,
-            inline: false,
-            do_not_move_cursor: false,
-            data: b"hello".to_vec(),
-        });
-        assert_eq!(result, Some(expected));
-    }
-
-    #[test]
-    fn iterm_file_with_name() {
-        // ESC ] 1337 ; File = name = bXluYW1l : aGVsbG8 = ST
-        let result = parse_iterm_proprietary("File=name=bXluYW1l:aGVsbG8=");
-        let expected = ITermProprietary::File(ITermFileData {
-            name: Some("myname".into()),
-            size: None,
-            width: ITermDimension::Automatic,
-            height: ITermDimension::Automatic,
-            preserve_aspect_ratio: true,
-            inline: false,
-            do_not_move_cursor: false,
-            data: b"hello".to_vec(),
-        });
-        assert_eq!(result, Some(expected));
-    }
-
-    #[test]
-    fn iterm_file_with_size_and_name() {
-        // ESC ] 1337 ; File = size = 123 ; name = bXluYW1l : aGVsbG8 = ST
-        let result = parse_iterm_proprietary("File=size=123;name=bXluYW1l:aGVsbG8=");
-        let expected = ITermProprietary::File(ITermFileData {
-            name: Some("myname".into()),
-            size: Some(123),
-            width: ITermDimension::Automatic,
-            height: ITermDimension::Automatic,
-            preserve_aspect_ratio: true,
-            inline: false,
-            do_not_move_cursor: false,
-            data: b"hello".to_vec(),
-        });
-        assert_eq!(result, Some(expected));
-    }
-
-    #[test]
-    fn iterm_file_inline() {
-        // ESC ] 1337 ; File = inline = 1 : aGVsbG8 = ST
-        let result = parse_iterm_proprietary("File=inline=1:aGVsbG8=");
-        let expected = ITermProprietary::File(ITermFileData {
-            name: None,
-            size: None,
-            width: ITermDimension::Automatic,
-            height: ITermDimension::Automatic,
-            preserve_aspect_ratio: true,
-            inline: true,
-            do_not_move_cursor: false,
-            data: b"hello".to_vec(),
-        });
-        assert_eq!(result, Some(expected));
-    }
-
-    #[test]
-    fn iterm_file_inline_with_dimensions() {
-        // ESC ] 1337 ; File = inline = 1 ; width = 100 px ; height = 50% : aGVsbG8 = ST
-        let result = parse_iterm_proprietary(
-            "File=inline=1;width=100px;height=50%:aGVsbG8=",
-        );
-        let expected = ITermProprietary::File(ITermFileData {
-            name: None,
-            size: None,
-            width: ITermDimension::Pixels(100),
-            height: ITermDimension::Percent(50),
-            preserve_aspect_ratio: true,
-            inline: true,
-            do_not_move_cursor: false,
-            data: b"hello".to_vec(),
-        });
-        assert_eq!(result, Some(expected));
-    }
-
-    #[test]
-    fn iterm_file_inline_with_preserve_aspect_ratio_disabled() {
-        let result = parse_iterm_proprietary("File=inline=1;preserveAspectRatio=0:aGVsbG8=");
-        let expected = ITermProprietary::File(ITermFileData {
-            name: None,
-            size: None,
-            width: ITermDimension::Automatic,
-            height: ITermDimension::Automatic,
-            preserve_aspect_ratio: false,
-            inline: true,
-            do_not_move_cursor: false,
-            data: b"hello".to_vec(),
-        });
-        assert_eq!(result, Some(expected));
-    }
-
-    #[test]
-    fn iterm_file_do_not_move_cursor() {
-        let result = parse_iterm_proprietary("File=inline=1;doNotMoveCursor=1:aGVsbG8=");
-        let expected = ITermProprietary::File(ITermFileData {
-            name: None,
-            size: None,
-            width: ITermDimension::Automatic,
-            height: ITermDimension::Automatic,
-            preserve_aspect_ratio: true,
-            inline: true,
-            do_not_move_cursor: true,
-            data: b"hello".to_vec(),
-        });
-        assert_eq!(result, Some(expected));
-    }
-
-    #[test]
-    fn iterm_copy_to_clipboard_skipped() {
-        // CopyToClipboard and EndCopy are explicitly skipped per user agreement.
-        let result = parse_iterm_proprietary("CopyToClipboard=rule");
-        assert_eq!(result, None);
-        let result = parse_iterm_proprietary("EndCopy");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn iterm_unknown_command_returns_none() {
-        let result = parse_iterm_proprietary("NonExistentCommand");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn iterm_file_missing_data_returns_none() {
-        // Without any `:`, the data part is missing → None.
-        let result = parse_iterm_proprietary("File=name=test");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn iterm_dimension_auto() {
-        assert_eq!(parse_iterm_dimension("auto"), Some(ITermDimension::Automatic));
-    }
-
-    #[test]
-    fn iterm_dimension_pixels() {
-        assert_eq!(parse_iterm_dimension("100px"), Some(ITermDimension::Pixels(100)));
-    }
-
-    #[test]
-    fn iterm_dimension_percent() {
-        assert_eq!(parse_iterm_dimension("50%"), Some(ITermDimension::Percent(50)));
-    }
-
-    #[test]
-    fn iterm_dimension_cells() {
-        assert_eq!(parse_iterm_dimension("8c"), Some(ITermDimension::Cells(8)));
-    }
-
-    #[test]
-    fn iterm_dimension_plain_number() {
-        assert_eq!(parse_iterm_dimension("10"), Some(ITermDimension::Cells(10)));
-    }
-
-    #[test]
-    fn iterm_dimension_invalid() {
-        assert_eq!(parse_iterm_dimension("invalid"), None);
-    }
-
-    #[test]
-    fn iterm_scan_oscs_dispatches_1337() {
-        // Verify that scan_oscs correctly captures OSC 1337 sequences.
-        let bytes = b"\x1b]1337;SetMark\x07";
-        let oscs = scan_oscs(bytes);
-        assert_eq!(oscs.len(), 1);
-        assert_eq!(oscs[0].number, 1337);
-        assert_eq!(oscs[0].payload, "SetMark");
-    }
-
-    #[test]
-    fn iterm_scan_oscs_1337_with_payload() {
-        let bytes = b"\x1b]1337;CurrentDir=/home/user\x07";
-        let oscs = scan_oscs(bytes);
-        assert_eq!(oscs.len(), 1);
-        assert_eq!(oscs[0].number, 1337);
-        assert_eq!(oscs[0].payload, "CurrentDir=/home/user");
-    }
-
-    #[test]
-    fn iterm_scan_oscs_1337_file() {
-        let bytes = b"\x1b]1337;File=name=bXluYW1l:aGVsbG8=\x07";
-        let oscs = scan_oscs(bytes);
-        assert_eq!(oscs.len(), 1);
-        assert_eq!(oscs[0].number, 1337);
-        assert_eq!(oscs[0].payload, "File=name=bXluYW1l:aGVsbG8=");
-    }
-
-    #[test]
-    fn iterm_scan_oscs_1337_with_st_terminator() {
-        let bytes = b"\x1b]1337;ClearScrollback\x1b\\";
-        let oscs = scan_oscs(bytes);
-        assert_eq!(oscs.len(), 1);
-        assert_eq!(oscs[0].number, 1337);
-        assert_eq!(oscs[0].payload, "ClearScrollback");
-    }
-
-    #[test]
-    fn iterm_scan_oscs_1337_among_other_oscs() {
-        let bytes = b"\x1b]7;file:///home\x07\x1b]1337;StealFocus\x07\x1b]9;hello\x07";
-        let oscs = scan_oscs(bytes);
-        assert_eq!(oscs.len(), 3);
-        assert_eq!(oscs[0].number, 7);
-        assert_eq!(oscs[1].number, 1337);
-        assert_eq!(oscs[1].payload, "StealFocus");
-        assert_eq!(oscs[2].number, 9);
-    }
+#[test]
+fn single_osc7_bel() {
+    let bytes = b"\x1b]7;file://localhost/Users/me\x07";
+    let oscs = scan_oscs(bytes);
+    assert_eq!(oscs.len(), 1);
+    assert_eq!(oscs[0].number, 7);
+    assert_eq!(oscs[0].payload, "file://localhost/Users/me");
+}
+
+#[test]
+fn single_osc7_st() {
+    let bytes = b"\x1b]7;file://h/p\x1b\\";
+    let oscs = scan_oscs(bytes);
+    assert_eq!(oscs.len(), 1);
+    assert_eq!(oscs[0].number, 7);
+    assert_eq!(oscs[0].payload, "file://h/p");
+}
+
+#[test]
+fn osc9_notification() {
+    let bytes = b"\x1b]9;hello world\x07";
+    let oscs = scan_oscs(bytes);
+    assert_eq!(oscs.len(), 1);
+    assert_eq!(oscs[0].number, 9);
+    assert_eq!(oscs[0].payload, "hello world");
+}
+
+#[test]
+fn osc777_notification() {
+    let bytes = b"\x1b]777;notify;title;body\x07";
+    let oscs = scan_oscs(bytes);
+    assert_eq!(oscs.len(), 1);
+    assert_eq!(oscs[0].number, 777);
+    assert_eq!(oscs[0].payload, "notify;title;body");
+}
+
+#[test]
+fn conemu_progress() {
+    let bytes = b"\x1b]9;4;0\x1b\\";
+    let oscs = scan_oscs(bytes);
+    assert_eq!(oscs.len(), 1);
+    assert_eq!(oscs[0].number, 9);
+    assert_eq!(oscs[0].payload, "4;0");
+}
+
+#[test]
+fn multiple_oscs() {
+    let bytes = b"\x1b]7;file:///home\x07\x1b]9;hi\x07\x1b]777;notify;;\x07";
+    let oscs = scan_oscs(bytes);
+    assert_eq!(oscs.len(), 3);
+    assert_eq!(oscs[0].number, 7);
+    assert_eq!(oscs[1].number, 9);
+    assert_eq!(oscs[2].number, 777);
+}
+
+#[test]
+fn interleaved_with_other_escape_sequences() {
+    let bytes = b"hello\x1b[31mred\x1b[0m\x1b]7;file://x/y\x07done";
+    let oscs = scan_oscs(bytes);
+    assert_eq!(oscs.len(), 1);
+    assert_eq!(oscs[0].number, 7);
+    assert_eq!(oscs[0].payload, "file://x/y");
+}
+
+#[test]
+fn unterminated_returns_none() {
+    let bytes = b"\x1b]7;file://x/y";
+    let oscs = scan_oscs(bytes);
+    assert!(oscs.is_empty());
+}
+
+#[test]
+fn prefers_earliest_terminator() {
+    // ST appears before BEL.
+    let bytes = b"\x1b]7;file://host/path\x1b\\trailing\x07garbage";
+    let oscs = scan_oscs(bytes);
+    assert_eq!(oscs.len(), 1);
+    assert_eq!(oscs[0].payload, "file://host/path");
+
+    // BEL appears before ST.
+    let bytes = b"\x1b]7;file://host/path\x07\x1b\\trailing";
+    let oscs = scan_oscs(bytes);
+    assert_eq!(oscs.len(), 1);
+    assert_eq!(oscs[0].payload, "file://host/path");
+}
+
+#[test]
+fn no_osc_returns_empty() {
+    let bytes = b"just normal bytes";
+    let oscs = scan_oscs(bytes);
+    assert!(oscs.is_empty());
+}
+
+#[test]
+fn esc_in_payload_skips_stray() {
+    // Stray ESC inside payload should be skipped, not treated as ST.
+    let bytes = b"\x1b]7;file\x1b/path\x07";
+    let oscs = scan_oscs(bytes);
+    assert_eq!(oscs.len(), 1);
+    assert_eq!(oscs[0].payload, "file\x1b/path");
+}
+
+// ── parse_conemu_progress ───────────────────────────────────────
+
+#[test]
+fn conemu_none() {
+    assert_eq!(parse_conemu_progress("4;0"), Some(Progress::None));
+}
+
+#[test]
+fn conemu_percentage() {
+    assert_eq!(
+        parse_conemu_progress("4;1;42"),
+        Some(Progress::Percentage(42))
+    );
+}
+
+#[test]
+fn conemu_error() {
+    assert_eq!(parse_conemu_progress("4;2;99"), Some(Progress::Error(99)));
+}
+
+#[test]
+fn conemu_indeterminate() {
+    assert_eq!(parse_conemu_progress("4;3"), Some(Progress::Indeterminate));
+}
+
+#[test]
+fn conemu_paused_is_none() {
+    assert_eq!(parse_conemu_progress("4;4"), Some(Progress::None));
+}
+
+#[test]
+fn conemu_percentage_clamped() {
+    assert_eq!(
+        parse_conemu_progress("4;1;150"),
+        Some(Progress::Percentage(100))
+    );
+}
+
+#[test]
+fn conemu_not_a_progress() {
+    assert_eq!(parse_conemu_progress("hello"), None);
+}
+
+#[test]
+fn conemu_unknown_state() {
+    assert_eq!(parse_conemu_progress("4;9"), None);
+}
+
+// ── parse_osc133 ────────────────────────────────────────────────
+
+#[test]
+fn osc133_fresh_line() {
+    assert_eq!(parse_osc133("L"), Some(SemanticPrompt::FreshLine));
+}
+
+#[test]
+fn osc133_fresh_line_with_params_is_error() {
+    assert_eq!(parse_osc133("L;extra"), None);
+}
+
+#[test]
+fn osc133_prompt_start_a() {
+    assert_eq!(
+        parse_osc133("A"),
+        Some(SemanticPrompt::FreshLineAndStartPrompt {
+            aid: None,
+            cl: None,
+        })
+    );
+}
+
+#[test]
+fn osc133_prompt_start_a_with_aid() {
+    assert_eq!(
+        parse_osc133("A;aid=42"),
+        Some(SemanticPrompt::FreshLineAndStartPrompt {
+            aid: Some("42".into()),
+            cl: None,
+        })
+    );
+}
+
+#[test]
+fn osc133_prompt_start_a_with_cl() {
+    assert_eq!(
+        parse_osc133("A;cl=w"),
+        Some(SemanticPrompt::FreshLineAndStartPrompt {
+            aid: None,
+            cl: Some(SemanticClick::SmartVertical),
+        })
+    );
+}
+
+#[test]
+fn osc133_prompt_start_a_with_aid_and_cl() {
+    assert_eq!(
+        parse_osc133("A;aid=99;cl=line"),
+        Some(SemanticPrompt::FreshLineAndStartPrompt {
+            aid: Some("99".into()),
+            cl: Some(SemanticClick::Line),
+        })
+    );
+}
+
+#[test]
+fn osc133_prompt_start_a_unknown_key_ignored() {
+    assert_eq!(
+        parse_osc133("A;aid=1;foo=bar"),
+        Some(SemanticPrompt::FreshLineAndStartPrompt {
+            aid: Some("1".into()),
+            cl: None,
+        })
+    );
+}
+
+#[test]
+fn osc133_prompt_start_b() {
+    assert_eq!(
+        parse_osc133("B"),
+        Some(SemanticPrompt::MarkEndOfPromptAndStartOfInputUntilNextMarker)
+    );
+}
+
+#[test]
+fn osc133_prompt_start_b_with_params_is_error() {
+    assert_eq!(parse_osc133("B;aid=1"), None);
+}
+
+#[test]
+fn osc133_input_start_c() {
+    assert_eq!(
+        parse_osc133("C"),
+        Some(SemanticPrompt::MarkEndOfInputAndStartOfOutput { aid: None })
+    );
+}
+
+#[test]
+fn osc133_input_start_c_with_aid() {
+    assert_eq!(
+        parse_osc133("C;aid=7"),
+        Some(SemanticPrompt::MarkEndOfInputAndStartOfOutput {
+            aid: Some("7".into()),
+        })
+    );
+}
+
+#[test]
+fn osc133_command_status_d() {
+    assert_eq!(
+        parse_osc133("D;0"),
+        Some(SemanticPrompt::CommandStatus {
+            status: 0,
+            aid: None,
+        })
+    );
+}
+
+#[test]
+fn osc133_command_status_d_nonzero() {
+    assert_eq!(
+        parse_osc133("D;1"),
+        Some(SemanticPrompt::CommandStatus {
+            status: 1,
+            aid: None,
+        })
+    );
+}
+
+#[test]
+fn osc133_command_status_d_with_aid() {
+    assert_eq!(
+        parse_osc133("D;0;aid=23"),
+        Some(SemanticPrompt::CommandStatus {
+            status: 0,
+            aid: Some("23".into()),
+        })
+    );
+}
+
+#[test]
+fn osc133_command_status_d_with_aid_and_extra() {
+    // The spec allows extra key=value pairs (like err=...) which
+    // should be silently ignored.
+    assert_eq!(
+        parse_osc133("D;1;err=1;aid=23"),
+        Some(SemanticPrompt::CommandStatus {
+            status: 1,
+            aid: Some("23".into()),
+        })
+    );
+}
+
+#[test]
+fn osc133_command_status_d_no_status_defaults_zero() {
+    assert_eq!(
+        parse_osc133("D"),
+        Some(SemanticPrompt::CommandStatus {
+            status: 0,
+            aid: None,
+        })
+    );
+}
+
+#[test]
+fn osc133_continue_prompt_i() {
+    assert_eq!(
+        parse_osc133("I"),
+        Some(SemanticPrompt::MarkEndOfPromptAndStartOfInputUntilEndOfLine)
+    );
+}
+
+#[test]
+fn osc133_continue_prompt_i_with_params_is_error() {
+    assert_eq!(parse_osc133("I;extra"), None);
+}
+
+#[test]
+fn osc133_end_of_command_n() {
+    assert_eq!(
+        parse_osc133("N"),
+        Some(SemanticPrompt::MarkEndOfCommandWithFreshLine {
+            aid: None,
+            cl: None,
+        })
+    );
+}
+
+#[test]
+fn osc133_end_of_command_n_with_aid() {
+    assert_eq!(
+        parse_osc133("N;aid=5"),
+        Some(SemanticPrompt::MarkEndOfCommandWithFreshLine {
+            aid: Some("5".into()),
+            cl: None,
+        })
+    );
+}
+
+#[test]
+fn osc133_end_of_command_n_with_cl() {
+    assert_eq!(
+        parse_osc133("N;cl=m"),
+        Some(SemanticPrompt::MarkEndOfCommandWithFreshLine {
+            aid: None,
+            cl: Some(SemanticClick::MultipleLine),
+        })
+    );
+}
+
+#[test]
+fn osc133_start_prompt_p_initial() {
+    assert_eq!(
+        parse_osc133("P;k=i"),
+        Some(SemanticPrompt::StartPrompt(SemanticPromptKind::Initial))
+    );
+}
+
+#[test]
+fn osc133_start_prompt_p_right_side() {
+    assert_eq!(
+        parse_osc133("P;k=r"),
+        Some(SemanticPrompt::StartPrompt(SemanticPromptKind::RightSide))
+    );
+}
+
+#[test]
+fn osc133_start_prompt_p_continuation() {
+    assert_eq!(
+        parse_osc133("P;k=c"),
+        Some(SemanticPrompt::StartPrompt(
+            SemanticPromptKind::Continuation
+        ))
+    );
+}
+
+#[test]
+fn osc133_start_prompt_p_secondary() {
+    assert_eq!(
+        parse_osc133("P;k=s"),
+        Some(SemanticPrompt::StartPrompt(SemanticPromptKind::Secondary))
+    );
+}
+
+#[test]
+fn osc133_start_prompt_p_default_initial() {
+    // P without k= defaults to Initial.
+    assert_eq!(
+        parse_osc133("P"),
+        Some(SemanticPrompt::StartPrompt(SemanticPromptKind::Initial))
+    );
+}
+
+#[test]
+fn osc133_start_prompt_p_unknown_kind_defaults_initial() {
+    assert_eq!(
+        parse_osc133("P;k=z"),
+        Some(SemanticPrompt::StartPrompt(SemanticPromptKind::Initial))
+    );
+}
+
+#[test]
+fn osc133_unknown_command_is_none() {
+    assert_eq!(parse_osc133("Z"), None);
+    assert_eq!(parse_osc133("Q"), None);
+    assert_eq!(parse_osc133(""), None);
+}
+
+#[test]
+fn osc133_all_cl_variants() {
+    assert_eq!(
+        parse_osc133("A;cl=line").unwrap(),
+        SemanticPrompt::FreshLineAndStartPrompt {
+            aid: None,
+            cl: Some(SemanticClick::Line),
+        }
+    );
+    assert_eq!(
+        parse_osc133("A;cl=m").unwrap(),
+        SemanticPrompt::FreshLineAndStartPrompt {
+            aid: None,
+            cl: Some(SemanticClick::MultipleLine),
+        }
+    );
+    assert_eq!(
+        parse_osc133("A;cl=v").unwrap(),
+        SemanticPrompt::FreshLineAndStartPrompt {
+            aid: None,
+            cl: Some(SemanticClick::ConservativeVertical),
+        }
+    );
+    assert_eq!(
+        parse_osc133("A;cl=w").unwrap(),
+        SemanticPrompt::FreshLineAndStartPrompt {
+            aid: None,
+            cl: Some(SemanticClick::SmartVertical),
+        }
+    );
+}
+
+#[test]
+fn osc133_invalid_cl_is_none() {
+    assert_eq!(parse_osc133("A;cl=bad"), None);
+}
+
+// ── parse_osc99_metadata ─────────────────────────────────────────
+
+#[test]
+fn osc99_metadata_empty() {
+    let m = parse_osc99_metadata("");
+    assert!(m.is_empty());
+}
+
+#[test]
+fn osc99_metadata_single_pair() {
+    let m = parse_osc99_metadata("i=42");
+    assert_eq!(m.get("i").unwrap(), "42");
+}
+
+#[test]
+fn osc99_metadata_multiple_pairs() {
+    let m = parse_osc99_metadata("i=1:p=title:d=0");
+    assert_eq!(m.get("i").unwrap(), "1");
+    assert_eq!(m.get("p").unwrap(), "title");
+    assert_eq!(m.get("d").unwrap(), "0");
+}
+
+#[test]
+fn osc99_metadata_empty_value() {
+    // i= with no value is allowed per spec (i= means unset identifier).
+    let m = parse_osc99_metadata("i=:p=body");
+    assert_eq!(m.get("i").unwrap(), "");
+    assert_eq!(m.get("p").unwrap(), "body");
+}
+
+#[test]
+fn osc99_metadata_invalid_key_skipped() {
+    let m = parse_osc99_metadata("i=1:badkey=val:p=title");
+    // "badkey" is > 1 character, so it should be skipped.
+    assert_eq!(m.len(), 2);
+    assert_eq!(m.get("i").unwrap(), "1");
+    assert_eq!(m.get("p").unwrap(), "title");
+}
+
+#[test]
+fn osc99_metadata_special_chars_in_value() {
+    // Values can contain: a-zA-Z0-9-_/+.,(){}[]*&^%$#@!`~
+    let m = parse_osc99_metadata("p=?");
+    assert_eq!(m.get("p").unwrap(), "?");
+}
+
+// ── KittyNotificationState ───────────────────────────────────────
+
+#[test]
+fn osc99_simple_notification() {
+    // ESC ] 99 ;; Hello world ST  →  simple notification
+    let mut state = KittyNotificationState::default();
+    let payload = ";Hello world";
+    let (notif, response) = state.handle_event(payload, "");
+    assert!(response.is_none());
+    let notif = notif.expect("should produce a notification");
+    assert_eq!(notif.title, "Hello world");
+    assert_eq!(notif.body, "");
+    assert!(notif.id.is_none());
+}
+
+#[test]
+fn osc99_chunked_title_body() {
+    let mut state = KittyNotificationState::default();
+
+    // Chunk 1: title (not done)
+    let (n1, r1) = state.handle_event("i=1:d=0:p=title;Hello", "");
+    assert!(n1.is_none());
+    assert!(r1.is_none());
+
+    // Chunk 2: body (done → produces notification)
+    let (n2, r2) = state.handle_event("i=1:d=1:p=body;World", "");
+    assert!(r2.is_none());
+    let n2 = n2.expect("should produce notification on d=1");
+    assert_eq!(n2.title, "Hello");
+    assert_eq!(n2.body, "World");
+    assert_eq!(n2.id.as_deref(), Some("1"));
+}
+
+#[test]
+fn osc99_chunked_body_then_title() {
+    let mut state = KittyNotificationState::default();
+
+    // Body first, then title.
+    let _ = state.handle_event("i=2:d=0:p=body;Body text", "");
+    let (n, _) = state.handle_event("i=2:d=1:p=title;Title text", "");
+    let n = n.expect("should produce notification");
+    assert_eq!(n.title, "Title text");
+    assert_eq!(n.body, "Body text");
+}
+
+#[test]
+fn osc99_chunked_multiple_title_parts() {
+    let mut state = KittyNotificationState::default();
+
+    let _ = state.handle_event("i=3:d=0:p=title;Part ", "");
+    let (n, _) = state.handle_event("i=3:d=1:p=title;Two", "");
+    let n = n.expect("should produce notification");
+    assert_eq!(n.title, "Part Two");
+    assert_eq!(n.body, "");
+}
+
+#[test]
+fn osc99_title_only_no_d_flag_implies_done() {
+    // When no `d` key is present, defaults to done=1.
+    let mut state = KittyNotificationState::default();
+    let (n, _) = state.handle_event("i=4:p=title;Just title", "");
+    let n = n.expect("should produce notification");
+    assert_eq!(n.title, "Just title");
+}
+
+#[test]
+fn osc99_no_identifier_no_chunking() {
+    // Without an `i` identifier, every OSC 99 produces a standalone notification.
+    let mut state = KittyNotificationState::default();
+    let (n, _) = state.handle_event("p=title;Standalone", "");
+    let n = n.expect("should produce notification");
+    assert_eq!(n.title, "Standalone");
+}
+
+#[test]
+fn osc99_update_existing() {
+    // Sending a new notification with the same `i` replaces the old one.
+    let mut state = KittyNotificationState::default();
+    let _ = state.handle_event("i=5:d=1:p=title;Old title", "");
+    let (n, _) = state.handle_event("i=5:d=1:p=title;New title", "");
+    let n = n.expect("should produce updated notification");
+    assert_eq!(n.title, "New title");
+}
+
+#[test]
+fn osc99_close() {
+    let mut state = KittyNotificationState::default();
+    // Start a notification.
+    let _ = state.handle_event("i=6:d=0:p=title;Will be closed", "");
+    // Close it.
+    let (n, r) = state.handle_event("i=6:p=close;", "");
+    assert!(n.is_none());
+    assert!(r.is_none());
+    // Verify it's gone — a new chunk for id=6 should start fresh.
+    let (n2, _) = state.handle_event("i=6:d=1:p=title;Fresh start", "");
+    let n2 = n2.expect("should start fresh");
+    assert_eq!(n2.title, "Fresh start");
+}
+
+#[test]
+fn osc99_query_response() {
+    let mut state = KittyNotificationState::default();
+    let (n, r) = state.handle_event("p=?;", "");
+    assert!(n.is_none());
+    let r = r.expect("query should produce a response");
+    assert!(r.starts_with("\x1b]99;"));
+    assert!(r.contains("p=?"));
+    assert!(r.ends_with("\x1b\\\\"));
+}
+
+#[test]
+fn osc99_query_response_with_identifier() {
+    let mut state = KittyNotificationState::default();
+    let (_, r) = state.handle_event("i=abc:p=?;", "abc");
+    let r = r.expect("query should produce a response");
+    assert!(r.contains("i=abc"));
+}
+
+#[test]
+fn osc99_alive_query() {
+    let mut state = KittyNotificationState::default();
+    // Create an in-flight notification.
+    let _ = state.handle_event("i=7:d=0:p=title;In flight", "");
+    let (n, r) = state.handle_event("i=8:p=alive;", "");
+    assert!(n.is_none());
+    let r = r.expect("alive query should produce a response");
+    assert!(r.contains("p=alive"));
+    assert!(r.contains("7")); // id=7 is alive
+}
+
+#[test]
+fn osc99_empty_payload_no_notification() {
+    let mut state = KittyNotificationState::default();
+    let (n, r) = state.handle_event(";", "");
+    assert!(n.is_none());
+    assert!(r.is_none());
+}
+
+#[test]
+fn osc99_unknown_payload_type_ignored() {
+    let mut state = KittyNotificationState::default();
+    let (n, r) = state.handle_event("i=9:d=1:p=unknown;Data", "");
+    assert!(n.is_none());
+    assert!(r.is_none());
+}
+
+#[test]
+fn osc99_metadata_empty_after_semicolon() {
+    // `ESC ] 99 ;; body`  →  metadata is empty string
+    let mut state = KittyNotificationState::default();
+    let (n, _) = state.handle_event(";body only", "");
+    let n = n.expect("should produce notification");
+    assert_eq!(n.title, "body only");
+}
+
+#[test]
+fn osc99_buttons_single() {
+    let mut state = KittyNotificationState::default();
+    let _ = state.handle_event("i=b1:d=0:p=title;Notification", "");
+    let (n, _) = state.handle_event("i=b1:d=1:p=buttons;OK", "");
+    let n = n.expect("should produce notification");
+    assert_eq!(n.buttons, vec!["OK"]);
+}
+
+#[test]
+fn osc99_buttons_multiple() {
+    let mut state = KittyNotificationState::default();
+    // U+2028 is the LINE SEPARATOR character.
+    let buttons = "Yes\u{2028}No\u{2028}Maybe";
+    let _ = state.handle_event("i=b2:d=0:p=title;Choose", "");
+    let (n, _) = state.handle_event(&format!("i=b2:d=1:p=buttons;{}", buttons), "");
+    let n = n.expect("should produce notification");
+    assert_eq!(n.buttons, vec!["Yes", "No", "Maybe"]);
+}
+
+#[test]
+fn osc99_buttons_with_title_and_body() {
+    let mut state = KittyNotificationState::default();
+    let _ = state.handle_event("i=b3:d=0:p=title;Confirm", "");
+    let _ = state.handle_event("i=b3:d=0:p=buttons;Yes\u{2028}No", "");
+    let (n, _) = state.handle_event("i=b3:d=1:p=body;Do you want to continue?", "");
+    let n = n.expect("should produce notification");
+    assert_eq!(n.title, "Confirm");
+    assert_eq!(n.body, "Do you want to continue?");
+    assert_eq!(n.buttons, vec!["Yes", "No"]);
+}
+
+#[test]
+fn osc99_timeout_w() {
+    let mut state = KittyNotificationState::default();
+    let (n, _) = state.handle_event("i=t1:d=1:p=title:w=5000;Timed", "");
+    let n = n.expect("should produce notification");
+    assert_eq!(n.timeout_ms, 5000);
+    assert_eq!(n.title, "Timed");
+}
+
+#[test]
+fn osc99_timeout_default() {
+    let mut state = KittyNotificationState::default();
+    let (n, _) = state.handle_event("i=t2:d=1:p=title;No timeout", "");
+    let n = n.expect("should produce notification");
+    assert_eq!(n.timeout_ms, -1);
+}
+
+#[test]
+fn osc99_timeout_never() {
+    let mut state = KittyNotificationState::default();
+    let (n, _) = state.handle_event("i=t3:d=1:p=title:w=0;Persistent", "");
+    let n = n.expect("should produce notification");
+    assert_eq!(n.timeout_ms, 0);
+}
+
+#[test]
+fn osc99_icon_data_and_cache_key() {
+    let mut state = KittyNotificationState::default();
+    // Send icon data with g= and e=1.
+    let icon_b64 = base64_encode(b"fake-png-bytes");
+    let _ = state.handle_event(&format!("i=ic1:d=0:p=icon:g=abc123:e=1;{}", icon_b64), "");
+    // Now send the title with d=1 to trigger the notification.
+    let (n, _) = state.handle_event("i=ic1:d=1:p=title;With icon", "");
+    let n = n.expect("should produce notification");
+    assert_eq!(n.icon_cache_key.as_deref(), Some("abc123"));
+    assert_eq!(n.icon_data, b"fake-png-bytes");
+}
+
+#[test]
+fn osc99_icon_cache_reuse() {
+    let mut state = KittyNotificationState::default();
+    // First: cache icon data under g=uuid1.
+    let icon_b64 = base64_encode(b"icon-data-for-uuid1");
+    let _ = state.handle_event(&format!("i=ic2:d=0:p=icon:g=uuid1:e=1;{}", icon_b64), "");
+    // Title with d=1 triggers the notification, but no inline icon.
+    let (n2, _) = state.handle_event("i=ic2:d=1:p=title:g=uuid1;From cache", "");
+    let n2 = n2.expect("should produce notification");
+    // It should have the cached icon data.
+    assert_eq!(n2.icon_data, b"icon-data-for-uuid1");
+    assert_eq!(n2.icon_cache_key.as_deref(), Some("uuid1"));
+}
+
+#[test]
+fn osc99_notification_types() {
+    let mut state = KittyNotificationState::default();
+    // t= values must be base64-encoded per spec.
+    let t_emacs = base64_encode(b"emacs");
+    let t_email = base64_encode(b"email");
+    let _ = state.handle_event(&format!("i=nt1:d=0:p=title:t={};Typed", t_emacs), "");
+    let (n, _) = state.handle_event(&format!("i=nt1:d=1:p=body:t={};Content", t_email), "");
+    let n = n.expect("should produce notification");
+    assert!(n.notification_types.contains(&"emacs".to_string()));
+    assert!(n.notification_types.contains(&"email".to_string()));
+}
+
+#[test]
+fn osc99_full_notification_fields() {
+    let mut state = KittyNotificationState::default();
+    let icon_b64 = base64_encode(b"icon-bytes");
+    let t_important = base64_encode(b"important");
+    // First chunk: icon data.
+    let _ = state.handle_event(&format!("i=full:d=0:p=icon:g=cache1:e=1;{}", icon_b64), "");
+    // Second chunk: title with all metadata.
+    let _ = state.handle_event(
+        &format!(
+            "i=full:d=0:p=title:u=2:o=unfocused:f={}:s={}:n={}:t={}:w=3000:c=1;Urgent title",
+            base64_encode(b"myapp"),
+            base64_encode(b"silent"),
+            base64_encode(b"dialog-warning"),
+            t_important,
+        ),
+        "",
+    );
+    let _ = state.handle_event("i=full:d=0:p=body;Urgent body", "");
+    // Final chunk: buttons with d=1.
+    let (n, _) = state.handle_event("i=full:d=1:p=buttons;Ack\u{2028}Snooze", "");
+    let n = n.expect("should produce notification");
+    assert_eq!(n.title, "Urgent title");
+    assert_eq!(n.body, "Urgent body");
+    assert_eq!(n.urgency, zenterm_core::KittyUrgency::Critical);
+    assert_eq!(n.occasion, zenterm_core::KittyOccasion::Unfocused);
+    assert_eq!(n.timeout_ms, 3000);
+    assert!(n.close_report);
+    assert_eq!(n.buttons, vec!["Ack", "Snooze"]);
+    assert!(!n.icon_data.is_empty());
+    assert_eq!(n.icon_cache_key.as_deref(), Some("cache1"));
+    assert!(n.notification_types.contains(&"important".to_string()));
+    assert_eq!(n.app_name.as_deref(), Some("myapp"));
+    assert_eq!(n.sound.as_deref(), Some("silent"));
+    assert!(n.icon_names.contains(&"dialog-warning".to_string()));
+}
+
+// ── OSC 1337 / iTerm2 proprietary ─────────────────────────────────
+
+#[test]
+fn iterm_set_mark() {
+    let result = parse_iterm_proprietary("SetMark");
+    assert_eq!(result, Some(ITermProprietary::SetMark));
+}
+
+#[test]
+fn iterm_steal_focus() {
+    let result = parse_iterm_proprietary("StealFocus");
+    assert_eq!(result, Some(ITermProprietary::StealFocus));
+}
+
+#[test]
+fn iterm_clear_scrollback() {
+    let result = parse_iterm_proprietary("ClearScrollback");
+    assert_eq!(result, Some(ITermProprietary::ClearScrollback));
+}
+
+#[test]
+fn iterm_current_dir() {
+    let result = parse_iterm_proprietary("CurrentDir=/Users/me/code");
+    assert_eq!(
+        result,
+        Some(ITermProprietary::CurrentDir("/Users/me/code".into()))
+    );
+}
+
+#[test]
+fn iterm_current_dir_with_equals() {
+    // Paths may contain = (unlikely but possible).
+    let result = parse_iterm_proprietary("CurrentDir=/path/with=char");
+    assert_eq!(
+        result,
+        Some(ITermProprietary::CurrentDir("/path/with=char".into()))
+    );
+}
+
+#[test]
+fn iterm_set_profile() {
+    let result = parse_iterm_proprietary("SetProfile=myprofile");
+    assert_eq!(
+        result,
+        Some(ITermProprietary::SetProfile("myprofile".into()))
+    );
+}
+
+#[test]
+fn iterm_highlight_cursor_line_yes() {
+    let result = parse_iterm_proprietary("HighlightCursorLine=yes");
+    assert_eq!(result, Some(ITermProprietary::HighlightCursorLine(true)));
+}
+
+#[test]
+fn iterm_highlight_cursor_line_no() {
+    let result = parse_iterm_proprietary("HighlightCursorLine=no");
+    assert_eq!(result, Some(ITermProprietary::HighlightCursorLine(false)));
+}
+
+#[test]
+fn iterm_request_cell_size() {
+    let result = parse_iterm_proprietary("ReportCellSize");
+    assert_eq!(result, Some(ITermProprietary::RequestCellSize));
+}
+
+#[test]
+fn iterm_report_cell_size_response() {
+    let result = parse_iterm_proprietary("ReportCellSize=12.0;15.5");
+    assert_eq!(
+        result,
+        Some(ITermProprietary::ReportCellSize {
+            height_pixels: 12.0,
+            width_pixels: 15.5,
+            scale: None,
+        })
+    );
+}
+
+#[test]
+fn iterm_report_cell_size_response_with_scale() {
+    let result = parse_iterm_proprietary("ReportCellSize=12.0;15.5;2.0");
+    assert_eq!(
+        result,
+        Some(ITermProprietary::ReportCellSize {
+            height_pixels: 12.0,
+            width_pixels: 15.5,
+            scale: Some(2.0),
+        })
+    );
+}
+
+#[test]
+fn iterm_copy_base64() {
+    let result = parse_iterm_proprietary("Copy=;aGVsbG8=");
+    assert_eq!(result, Some(ITermProprietary::Copy("hello".into())));
+}
+
+#[test]
+fn iterm_set_badge_format() {
+    let result = parse_iterm_proprietary("SetBadgeFormat=;aGVsbG8=");
+    assert_eq!(
+        result,
+        Some(ITermProprietary::SetBadgeFormat("hello".into()))
+    );
+}
+
+#[test]
+fn iterm_report_variable() {
+    let name_b64 = base64_encode(b"session.name");
+    let result = parse_iterm_proprietary(&format!("ReportVariable={name_b64}"));
+    assert_eq!(
+        result,
+        Some(ITermProprietary::ReportVariable("session.name".into()))
+    );
+}
+
+#[test]
+fn iterm_set_user_var() {
+    let val_b64 = base64_encode(b"hello");
+    let result = parse_iterm_proprietary(&format!("SetUserVar=foo={val_b64}"));
+    assert_eq!(
+        result,
+        Some(ITermProprietary::SetUserVar {
+            name: "foo".into(),
+            value: "hello".into(),
+        })
+    );
+}
+
+#[test]
+fn iterm_unicode_version_set() {
+    let result = parse_iterm_proprietary("UnicodeVersion=9");
+    assert_eq!(
+        result,
+        Some(ITermProprietary::UnicodeVersion(
+            ITermUnicodeVersionOp::Set(9)
+        ))
+    );
+}
+
+#[test]
+fn iterm_unicode_version_push() {
+    let result = parse_iterm_proprietary("UnicodeVersion=push");
+    assert_eq!(
+        result,
+        Some(ITermProprietary::UnicodeVersion(
+            ITermUnicodeVersionOp::Push(None)
+        ))
+    );
+}
+
+#[test]
+fn iterm_unicode_version_push_with_label() {
+    let result = parse_iterm_proprietary("UnicodeVersion=push mylabel");
+    assert_eq!(
+        result,
+        Some(ITermProprietary::UnicodeVersion(
+            ITermUnicodeVersionOp::Push(Some("mylabel".into()))
+        ))
+    );
+}
+
+#[test]
+fn iterm_unicode_version_pop() {
+    let result = parse_iterm_proprietary("UnicodeVersion=pop");
+    assert_eq!(
+        result,
+        Some(ITermProprietary::UnicodeVersion(
+            ITermUnicodeVersionOp::Pop(None)
+        ))
+    );
+}
+
+#[test]
+fn iterm_file_no_args() {
+    // ESC ] 1337 ; File = : aGVsbG8 = ST
+    let result = parse_iterm_proprietary("File=:aGVsbG8=");
+    let expected = ITermProprietary::File(ITermFileData {
+        name: None,
+        size: None,
+        width: ITermDimension::Automatic,
+        height: ITermDimension::Automatic,
+        preserve_aspect_ratio: true,
+        inline: false,
+        do_not_move_cursor: false,
+        data: b"hello".to_vec(),
+    });
+    assert_eq!(result, Some(expected));
+}
+
+#[test]
+fn iterm_file_with_name() {
+    // ESC ] 1337 ; File = name = bXluYW1l : aGVsbG8 = ST
+    let result = parse_iterm_proprietary("File=name=bXluYW1l:aGVsbG8=");
+    let expected = ITermProprietary::File(ITermFileData {
+        name: Some("myname".into()),
+        size: None,
+        width: ITermDimension::Automatic,
+        height: ITermDimension::Automatic,
+        preserve_aspect_ratio: true,
+        inline: false,
+        do_not_move_cursor: false,
+        data: b"hello".to_vec(),
+    });
+    assert_eq!(result, Some(expected));
+}
+
+#[test]
+fn iterm_file_with_size_and_name() {
+    // ESC ] 1337 ; File = size = 123 ; name = bXluYW1l : aGVsbG8 = ST
+    let result = parse_iterm_proprietary("File=size=123;name=bXluYW1l:aGVsbG8=");
+    let expected = ITermProprietary::File(ITermFileData {
+        name: Some("myname".into()),
+        size: Some(123),
+        width: ITermDimension::Automatic,
+        height: ITermDimension::Automatic,
+        preserve_aspect_ratio: true,
+        inline: false,
+        do_not_move_cursor: false,
+        data: b"hello".to_vec(),
+    });
+    assert_eq!(result, Some(expected));
+}
+
+#[test]
+fn iterm_file_inline() {
+    // ESC ] 1337 ; File = inline = 1 : aGVsbG8 = ST
+    let result = parse_iterm_proprietary("File=inline=1:aGVsbG8=");
+    let expected = ITermProprietary::File(ITermFileData {
+        name: None,
+        size: None,
+        width: ITermDimension::Automatic,
+        height: ITermDimension::Automatic,
+        preserve_aspect_ratio: true,
+        inline: true,
+        do_not_move_cursor: false,
+        data: b"hello".to_vec(),
+    });
+    assert_eq!(result, Some(expected));
+}
+
+#[test]
+fn iterm_file_inline_with_dimensions() {
+    // ESC ] 1337 ; File = inline = 1 ; width = 100 px ; height = 50% : aGVsbG8 = ST
+    let result = parse_iterm_proprietary("File=inline=1;width=100px;height=50%:aGVsbG8=");
+    let expected = ITermProprietary::File(ITermFileData {
+        name: None,
+        size: None,
+        width: ITermDimension::Pixels(100),
+        height: ITermDimension::Percent(50),
+        preserve_aspect_ratio: true,
+        inline: true,
+        do_not_move_cursor: false,
+        data: b"hello".to_vec(),
+    });
+    assert_eq!(result, Some(expected));
+}
+
+#[test]
+fn iterm_file_inline_with_preserve_aspect_ratio_disabled() {
+    let result = parse_iterm_proprietary("File=inline=1;preserveAspectRatio=0:aGVsbG8=");
+    let expected = ITermProprietary::File(ITermFileData {
+        name: None,
+        size: None,
+        width: ITermDimension::Automatic,
+        height: ITermDimension::Automatic,
+        preserve_aspect_ratio: false,
+        inline: true,
+        do_not_move_cursor: false,
+        data: b"hello".to_vec(),
+    });
+    assert_eq!(result, Some(expected));
+}
+
+#[test]
+fn iterm_file_do_not_move_cursor() {
+    let result = parse_iterm_proprietary("File=inline=1;doNotMoveCursor=1:aGVsbG8=");
+    let expected = ITermProprietary::File(ITermFileData {
+        name: None,
+        size: None,
+        width: ITermDimension::Automatic,
+        height: ITermDimension::Automatic,
+        preserve_aspect_ratio: true,
+        inline: true,
+        do_not_move_cursor: true,
+        data: b"hello".to_vec(),
+    });
+    assert_eq!(result, Some(expected));
+}
+
+#[test]
+fn iterm_copy_to_clipboard_skipped() {
+    // CopyToClipboard and EndCopy are explicitly skipped per user agreement.
+    let result = parse_iterm_proprietary("CopyToClipboard=rule");
+    assert_eq!(result, None);
+    let result = parse_iterm_proprietary("EndCopy");
+    assert_eq!(result, None);
+}
+
+#[test]
+fn iterm_unknown_command_returns_none() {
+    let result = parse_iterm_proprietary("NonExistentCommand");
+    assert_eq!(result, None);
+}
+
+#[test]
+fn iterm_file_missing_data_returns_none() {
+    // Without any `:`, the data part is missing → None.
+    let result = parse_iterm_proprietary("File=name=test");
+    assert_eq!(result, None);
+}
+
+#[test]
+fn iterm_dimension_auto() {
+    assert_eq!(
+        parse_iterm_dimension("auto"),
+        Some(ITermDimension::Automatic)
+    );
+}
+
+#[test]
+fn iterm_dimension_pixels() {
+    assert_eq!(
+        parse_iterm_dimension("100px"),
+        Some(ITermDimension::Pixels(100))
+    );
+}
+
+#[test]
+fn iterm_dimension_percent() {
+    assert_eq!(
+        parse_iterm_dimension("50%"),
+        Some(ITermDimension::Percent(50))
+    );
+}
+
+#[test]
+fn iterm_dimension_cells() {
+    assert_eq!(parse_iterm_dimension("8c"), Some(ITermDimension::Cells(8)));
+}
+
+#[test]
+fn iterm_dimension_plain_number() {
+    assert_eq!(parse_iterm_dimension("10"), Some(ITermDimension::Cells(10)));
+}
+
+#[test]
+fn iterm_dimension_invalid() {
+    assert_eq!(parse_iterm_dimension("invalid"), None);
+}
+
+#[test]
+fn iterm_scan_oscs_dispatches_1337() {
+    // Verify that scan_oscs correctly captures OSC 1337 sequences.
+    let bytes = b"\x1b]1337;SetMark\x07";
+    let oscs = scan_oscs(bytes);
+    assert_eq!(oscs.len(), 1);
+    assert_eq!(oscs[0].number, 1337);
+    assert_eq!(oscs[0].payload, "SetMark");
+}
+
+#[test]
+fn iterm_scan_oscs_1337_with_payload() {
+    let bytes = b"\x1b]1337;CurrentDir=/home/user\x07";
+    let oscs = scan_oscs(bytes);
+    assert_eq!(oscs.len(), 1);
+    assert_eq!(oscs[0].number, 1337);
+    assert_eq!(oscs[0].payload, "CurrentDir=/home/user");
+}
+
+#[test]
+fn iterm_scan_oscs_1337_file() {
+    let bytes = b"\x1b]1337;File=name=bXluYW1l:aGVsbG8=\x07";
+    let oscs = scan_oscs(bytes);
+    assert_eq!(oscs.len(), 1);
+    assert_eq!(oscs[0].number, 1337);
+    assert_eq!(oscs[0].payload, "File=name=bXluYW1l:aGVsbG8=");
+}
+
+#[test]
+fn iterm_scan_oscs_1337_with_st_terminator() {
+    let bytes = b"\x1b]1337;ClearScrollback\x1b\\";
+    let oscs = scan_oscs(bytes);
+    assert_eq!(oscs.len(), 1);
+    assert_eq!(oscs[0].number, 1337);
+    assert_eq!(oscs[0].payload, "ClearScrollback");
+}
+
+#[test]
+fn iterm_scan_oscs_1337_among_other_oscs() {
+    let bytes = b"\x1b]7;file:///home\x07\x1b]1337;StealFocus\x07\x1b]9;hello\x07";
+    let oscs = scan_oscs(bytes);
+    assert_eq!(oscs.len(), 3);
+    assert_eq!(oscs[0].number, 7);
+    assert_eq!(oscs[1].number, 1337);
+    assert_eq!(oscs[1].payload, "StealFocus");
+    assert_eq!(oscs[2].number, 9);
+}

@@ -61,9 +61,7 @@ impl ImageData {
         let guard = self.inner.lock().expect("ImageData lock");
         match &*guard {
             ImageDataType::Rgba8 { data, .. } => data.len(),
-            ImageDataType::AnimRgba8 { frames, .. } => {
-                frames.iter().map(|f| f.len()).sum()
-            }
+            ImageDataType::AnimRgba8 { frames, .. } => frames.iter().map(|f| f.len()).sum(),
         }
     }
 }
@@ -134,7 +132,12 @@ impl ImageDataType {
     /// Construct a single RGBA frame, computing its content hash.
     pub fn new_rgba8(data: Vec<u8>, width: u32, height: u32) -> Self {
         let hash = compute_hash(&data);
-        Self::Rgba8 { data, width, height, hash }
+        Self::Rgba8 {
+            data,
+            width,
+            height,
+            hash,
+        }
     }
 
     /// Construct an animated image from existing RGBA frames.
@@ -147,7 +150,13 @@ impl ImageDataType {
         height: u32,
     ) -> Self {
         let hashes: Vec<[u8; 32]> = frames.iter().map(|f| compute_hash(f)).collect();
-        Self::AnimRgba8 { width, height, frames, durations, hashes }
+        Self::AnimRgba8 {
+            width,
+            height,
+            frames,
+            durations,
+            hashes,
+        }
     }
 
     pub fn hash(&self) -> [u8; 32] {

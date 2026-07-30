@@ -31,7 +31,31 @@ pub(crate) fn parse_conemu_progress(payload: &str) -> Option<Progress> {
 /// Characters: a-zA-Z0-9-_/+.,(){}[]*&^%$#@!`~
 fn is_valid_osc99_value_char(c: char) -> bool {
     c.is_ascii_alphanumeric()
-        || matches!(c, '?' | '-' | '_' | '/' | '+' | '.' | ',' | '(' | ')' | '{' | '}' | '[' | ']' | '*' | '&' | '^' | '%' | '$' | '#' | '@' | '!' | '`' | '~')
+        || matches!(
+            c,
+            '?' | '-'
+                | '_'
+                | '/'
+                | '+'
+                | '.'
+                | ','
+                | '('
+                | ')'
+                | '{'
+                | '}'
+                | '['
+                | ']'
+                | '*'
+                | '&'
+                | '^'
+                | '%'
+                | '$'
+                | '#'
+                | '@'
+                | '!'
+                | '`'
+                | '~'
+        )
 }
 
 /// The character set allowed in OSC 99 metadata keys (single a-zA-Z).
@@ -42,7 +66,8 @@ fn is_valid_osc99_key_char(c: char) -> bool {
 /// An identifier in the OSC 99 protocol: `[a-zA-Z0-9_-+.]` characters only.
 pub(super) fn is_valid_identifier(s: &str) -> bool {
     !s.is_empty()
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '.'))
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '.'))
 }
 
 /// Sanitize an identifier by removing characters not in the allowed set.
@@ -69,7 +94,11 @@ pub(super) fn parse_osc99_metadata(metadata: &str) -> HashMap<String, String> {
             // Validate key: single a-zA-Z character.
             if key.len() == 1 && is_valid_osc99_key_char(key.chars().next().unwrap()) {
                 // Validate value contains only allowed characters.
-                if value.is_empty() || value.chars().all(|c| is_valid_osc99_value_char(c) || c == '=') {
+                if value.is_empty()
+                    || value
+                        .chars()
+                        .all(|c| is_valid_osc99_value_char(c) || c == '=')
+                {
                     map.insert(key.to_string(), value.to_string());
                 }
             }

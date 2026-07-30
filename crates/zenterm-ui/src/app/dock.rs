@@ -7,9 +7,9 @@ use egui_dock::{DockArea, Style, TabAddAlign};
 
 use zenterm_term::ColorScheme;
 
+use super::ZentermApp;
 use crate::session::{SessionId, TerminalSession};
 use crate::tab_viewer::TabViewerContext;
-use super::ZentermApp;
 
 // ── Dock rendering ─────────────────────────────────────────────────────
 
@@ -27,12 +27,8 @@ impl ZentermApp {
             let width = self.config.ui.sidebar_width;
             let max_w = self.config.ui.sidebar_max_width;
             let panel = match pos {
-                zenterm_config::ui::SidebarPosition::Left => {
-                    egui::Panel::left("zenterm_sidebar")
-                }
-                zenterm_config::ui::SidebarPosition::Right => {
-                    egui::Panel::right("zenterm_sidebar")
-                }
+                zenterm_config::ui::SidebarPosition::Left => egui::Panel::left("zenterm_sidebar"),
+                zenterm_config::ui::SidebarPosition::Right => egui::Panel::right("zenterm_sidebar"),
             };
 
             // Snapshot all workspaces so the closure doesn't need
@@ -60,7 +56,7 @@ impl ZentermApp {
             panel
                 .resizable(true)
                 .default_size(width)
-                .min_size(width)       // default = minimum = can't go narrower
+                .min_size(width) // default = minimum = can't go narrower
                 .max_size(max_w)
                 .show_inside(ui, |ui| {
                     let mut queued_new_tab = false;
@@ -87,12 +83,8 @@ impl ZentermApp {
                     let events = crate::sidebar::render_sidebar(ui, &sidebar_data);
                     for event in events {
                         match event {
-                            crate::sidebar::SidebarEvent::NewShell => {
-                                queued_new_tab = true
-                            }
-                            crate::sidebar::SidebarEvent::NewWorkspace => {
-                                queued_new_ws = true
-                            }
+                            crate::sidebar::SidebarEvent::NewShell => queued_new_tab = true,
+                            crate::sidebar::SidebarEvent::NewWorkspace => queued_new_ws = true,
                             crate::sidebar::SidebarEvent::SwitchWorkspace(id) => {
                                 queued_switch_ws = Some(id)
                             }
@@ -111,13 +103,10 @@ impl ZentermApp {
 
                     // ── Apply queued actions ──────────────────────
                     if queued_new_ws {
-                        let active_session = self
-                            .active_session_id
-                            .and_then(|id| self.sessions.get(&id));
-                        let ws_name = Self::generate_workspace_name(
-                            &self.workspaces,
-                            active_session,
-                        );
+                        let active_session =
+                            self.active_session_id.and_then(|id| self.sessions.get(&id));
+                        let ws_name =
+                            Self::generate_workspace_name(&self.workspaces, active_session);
                         self.workspaces.create_workspace(ws_name);
                         // Also spawn a first tab in the new workspace.
                         let id = self.workspaces.new_session_id();
@@ -231,7 +220,12 @@ impl ZentermApp {
                 style.tab.tab_body.stroke = Stroke::NONE;
 
                 // Active tab — top corners rounded, bottom flat.
-                let top_round = CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 };
+                let top_round = CornerRadius {
+                    nw: 6,
+                    ne: 6,
+                    sw: 0,
+                    se: 0,
+                };
                 style.tab.active.corner_radius = top_round;
                 style.tab.active_with_kb_focus.corner_radius = top_round;
                 // Ensure all other states share the same top-right rounding
@@ -249,9 +243,9 @@ impl ZentermApp {
                 // Tab close button — × colour changes on hover but no
                 // background highlight (avoids shape mismatch with the
                 // tab's top-right corner rounding).
-                let weak_text = egui_visuals.weak_text_color.unwrap_or(
-                    egui_visuals.text_color().linear_multiply(0.55),
-                );
+                let weak_text = egui_visuals
+                    .weak_text_color
+                    .unwrap_or(egui_visuals.text_color().linear_multiply(0.55));
                 let text_bright = egui_visuals.strong_text_color();
                 style.buttons.close_tab_color = weak_text;
                 style.buttons.close_tab_active_color = text_bright;
@@ -284,10 +278,7 @@ impl ZentermApp {
                 // All sessions append cell instances to the shared
                 // buffer; clip-space coordinates are computed relative
                 // to this viewport so one draw call renders all tabs.
-                let cb = egui_wgpu::Callback::new_paint_callback(
-                    dock_rect,
-                    self.callback.clone(),
-                );
+                let cb = egui_wgpu::Callback::new_paint_callback(dock_rect, self.callback.clone());
                 ui.painter().add(cb);
 
                 // ── Transient resize overlay ─────────────────────────
@@ -317,9 +308,7 @@ impl ZentermApp {
                 // each session's viewport.
                 for (_, session) in self.sessions.iter() {
                     if let Some(ref template) = session.badge_format {
-                        let text = crate::session::render_badge(
-                            template, session,
-                        );
+                        let text = crate::session::render_badge(template, session);
                         if !text.is_empty() {
                             let ppp = ui.ctx().pixels_per_point();
                             let vp_rect = egui::Rect::from_min_size(
@@ -334,10 +323,7 @@ impl ZentermApp {
                             );
                             let font_size = (session.cell_height * 2.0).max(14.0);
                             ui.painter().text(
-                                egui::pos2(
-                                    vp_rect.right() - 8.0,
-                                    vp_rect.top() + 8.0,
-                                ),
+                                egui::pos2(vp_rect.right() - 8.0, vp_rect.top() + 8.0),
                                 egui::Align2::RIGHT_TOP,
                                 &text,
                                 egui::FontId::proportional(font_size),
@@ -359,10 +345,9 @@ impl ZentermApp {
                 .map(|s| s.title_effective())
                 .unwrap_or_default();
 
-            let mut buf: String = ui.ctx().data(|d| {
-                d.get_temp::<String>(buf_id)
-                    .unwrap_or(initial)
-            });
+            let mut buf: String = ui
+                .ctx()
+                .data(|d| d.get_temp::<String>(buf_id).unwrap_or(initial));
 
             let ctx = ui.ctx();
             let area_id = egui::Id::new(("tab_rename_area", rename_id.0));

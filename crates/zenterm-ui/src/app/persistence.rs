@@ -2,8 +2,8 @@
 
 use std::time::{Duration, Instant};
 
-use crate::layout_io::{PersistedLayout, PersistedWorkspace, SessionMeta, SCHEMA_VERSION};
 use super::ZentermApp;
+use crate::layout_io::{PersistedLayout, PersistedWorkspace, SCHEMA_VERSION, SessionMeta};
 
 impl ZentermApp {
     // ── Layout persistence ────────────────────────────────────────

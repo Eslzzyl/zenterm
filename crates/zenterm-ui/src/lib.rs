@@ -15,8 +15,8 @@
 //! - [`settings_widgets`] — reusable egui widgets for settings forms
 
 mod app;
-mod gpu;
 mod glyph_cache;
+mod gpu;
 mod layout_io;
 mod legacy;
 mod session;

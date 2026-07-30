@@ -7,7 +7,9 @@ use std::io::{BufReader, Read, Write};
 use std::sync::mpsc;
 use std::thread;
 
-use portable_pty::{Child, CommandBuilder, ExitStatus, MasterPty, NativePtySystem, PtySize, PtySystem};
+use portable_pty::{
+    Child, CommandBuilder, ExitStatus, MasterPty, NativePtySystem, PtySize, PtySystem,
+};
 
 use zenterm_core::{Error, Result, TermSize};
 
@@ -154,7 +156,10 @@ impl PtySession {
                                         // backpressure.  Under extreme throughput
                                         // (e.g. `cat /dev/urandom`) the terminal
                                         // can't render this data anyway.
-                                        log::trace!("pty-reader: channel full, dropping {} bytes", n);
+                                        log::trace!(
+                                            "pty-reader: channel full, dropping {} bytes",
+                                            n
+                                        );
                                     }
                                     Ok(_) => {}
                                 }

@@ -30,8 +30,8 @@
 //! during its own `update_cell_instances` call, and the central
 //! callback consumes the concatenated buffer in its `prepare()`.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use zenterm_render::callback::{FrameData, SharedRenderState};
 

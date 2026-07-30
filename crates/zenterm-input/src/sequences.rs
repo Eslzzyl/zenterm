@@ -101,13 +101,16 @@ pub(super) fn kitty_seq(
 ) -> Vec<u8> {
     match terminator {
         // 'u' and '~' use the full format with alternates, event, and text.
-        Terminator::U | Terminator::Tilde => {
-            kitty_seq_full(key_code, terminator, mods, event_type, alternates, text_codepoints)
-        }
+        Terminator::U | Terminator::Tilde => kitty_seq_full(
+            key_code,
+            terminator,
+            mods,
+            event_type,
+            alternates,
+            text_codepoints,
+        ),
         // Letters (A/B/C/D/H/F/P/Q/S) use the special (compact) format.
-        Terminator::Letter(final_byte) => {
-            kitty_seq_special(key_code, final_byte, mods, event_type)
-        }
+        Terminator::Letter(final_byte) => kitty_seq_special(key_code, final_byte, mods, event_type),
     }
 }
 
@@ -175,12 +178,7 @@ fn kitty_seq_full(
 /// Format: `\x1b[{key_code};{mods}{final_byte}`
 ///
 /// Unlike the full format, alternates and associated text are not supported.
-fn kitty_seq_special(
-    key_code: u32,
-    final_byte: u8,
-    mods: u8,
-    event_type: Option<u8>,
-) -> Vec<u8> {
+fn kitty_seq_special(key_code: u32, final_byte: u8, mods: u8, event_type: Option<u8>) -> Vec<u8> {
     // Special keys always have the form: \x1b[{key};{mods}{final}
     // Event type is appended as :event if present.
     let mut buf = String::new();
@@ -252,7 +250,9 @@ pub(super) fn ascii_alternates(key: Key, physical_key: Option<Key>) -> Option<(u
         // the shifted character.  Uppercase it because the logical key
         // may be lowercase even when Shift is pressed (egui normalises
         // letters to lowercase in the Key enum).
-        key_to_ascii(&key).map(|b| b.to_ascii_uppercase()).unwrap_or(unshifted)
+        key_to_ascii(&key)
+            .map(|b| b.to_ascii_uppercase())
+            .unwrap_or(unshifted)
     } else {
         // No physical/logical split — derive shifted from unshifted.
         if unshifted.is_ascii_lowercase() {
@@ -453,10 +453,10 @@ mod tests {
         // When physical key differs from logical (e.g. Russian layout),
         // the logical key gives the shifted value and the physical key
         // gives the unshifted value.
-        let (shifted, unshifted) =
-            ascii_alternates(Key::A, Some(Key::F)).unwrap();
+        let (shifted, unshifted) = ascii_alternates(Key::A, Some(Key::F)).unwrap();
         // shifted: logical Key::A → key_to_ascii=97 → to_ascii_uppercase=65 ('A')
         // unshifted: physical Key::F → key_to_ascii=102 ('f')
-        assert_eq!(shifted, 65);   // 'A'
+        assert_eq!(shifted, 65); // 'A'
         assert_eq!(unshifted, 102); // 'f'
-    }}
+    }
+}

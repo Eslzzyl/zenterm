@@ -138,11 +138,10 @@ impl Config {
             return Ok(Config::default());
         }
 
-        let content = fs::read_to_string(&path)
-            .map_err(|e| ConfigError::Io {
-                path: path.clone(),
-                source: e,
-            })?;
+        let content = fs::read_to_string(&path).map_err(|e| ConfigError::Io {
+            path: path.clone(),
+            source: e,
+        })?;
 
         let config: Config = toml::from_str(&content).map_err(|e| ConfigError::Parse {
             path: path.clone(),
@@ -186,13 +185,9 @@ impl Config {
             })?;
         }
 
-        let content =
-            toml::to_string_pretty(self).map_err(|e| ConfigError::Serialize(e))?;
+        let content = toml::to_string_pretty(self).map_err(|e| ConfigError::Serialize(e))?;
 
-        fs::write(&path, &content).map_err(|e| ConfigError::Io {
-            path,
-            source: e,
-        })?;
+        fs::write(&path, &content).map_err(|e| ConfigError::Io { path, source: e })?;
 
         Ok(())
     }

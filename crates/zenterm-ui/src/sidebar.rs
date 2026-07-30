@@ -122,8 +122,7 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
                     } else {
                         Color32::TRANSPARENT
                     };
-                    ui.painter()
-                        .rect_filled(card_rect, corner_radius, bg);
+                    ui.painter().rect_filled(card_rect, corner_radius, bg);
 
                     // Card border — use the same subtle stroke as windows.
                     let border_color = ui.visuals().window_stroke.color;
@@ -213,10 +212,7 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
             .map(|ws| ws.name.clone())
             .unwrap_or_default();
 
-        let mut buf: String = ui.data(|d| {
-            d.get_temp::<String>(buf_id)
-                .unwrap_or(initial_name)
-        });
+        let mut buf: String = ui.data(|d| d.get_temp::<String>(buf_id).unwrap_or(initial_name));
 
         let ctx = ui.ctx();
         let area_id = egui::Id::new("ws_rename_area");
@@ -240,24 +236,18 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
                         .request_focus();
 
                         ui.add_space(14.0);
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if ui.button("OK").clicked() {
-                                    if !buf.is_empty() {
-                                        events.push(SidebarEvent::RenameWorkspace(
-                                            ws_id,
-                                            buf.clone(),
-                                        ));
-                                    }
-                                    close_dialog(ui, ws_id);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("OK").clicked() {
+                                if !buf.is_empty() {
+                                    events.push(SidebarEvent::RenameWorkspace(ws_id, buf.clone()));
                                 }
-                                ui.add_space(8.0);
-                                if ui.button("Cancel").clicked() {
-                                    close_dialog(ui, ws_id);
-                                }
-                            },
-                        );
+                                close_dialog(ui, ws_id);
+                            }
+                            ui.add_space(8.0);
+                            if ui.button("Cancel").clicked() {
+                                close_dialog(ui, ws_id);
+                            }
+                        });
                     });
             });
     }

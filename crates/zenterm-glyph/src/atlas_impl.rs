@@ -13,13 +13,13 @@ use cosmic_text::{
     Wrap,
 };
 use etagere::AtlasAllocator;
-use swash::scale::image::Content as SwashContent;
 use swash::scale::ScaleContext;
+use swash::scale::image::Content as SwashContent;
 
 use zenterm_core::{Error, HintingMode, RenderMode, Result, SubpixelLayout};
 
 use crate::builtin;
-use crate::{AtlasSlot, GlyphContentType, GlyphEntry, GlyphAtlas, RunCacheKey, ShapedGlyph};
+use crate::{AtlasSlot, GlyphAtlas, GlyphContentType, GlyphEntry, RunCacheKey, ShapedGlyph};
 
 impl GlyphAtlas {
     /// Create a new glyph atlas with the given font size (in pixels),
@@ -51,7 +51,8 @@ impl GlyphAtlas {
         let metrics = Metrics::new(font_size, font_size);
 
         let initial_size: u32 = 512;
-        let allocator = AtlasAllocator::new(etagere::size2(initial_size as i32, initial_size as i32));
+        let allocator =
+            AtlasAllocator::new(etagere::size2(initial_size as i32, initial_size as i32));
         let texture_data = vec![0u8; (initial_size * initial_size * 4) as usize];
         let first_slot = AtlasSlot {
             allocator,
@@ -227,7 +228,12 @@ impl GlyphAtlas {
         log::info!(
             "[lig-diag] attrs features={} tags={:?}",
             attrs.font_features.features.len(),
-            attrs.font_features.features.iter().map(|f| std::str::from_utf8(f.tag.as_bytes()).unwrap_or("?")).collect::<Vec<_>>(),
+            attrs
+                .font_features
+                .features
+                .iter()
+                .map(|f| std::str::from_utf8(f.tag.as_bytes()).unwrap_or("?"))
+                .collect::<Vec<_>>(),
         );
         buf.set_text(text, &attrs, shaping, None);
         buf.shape_until_scroll(&mut self.font_system, true);
@@ -239,18 +245,23 @@ impl GlyphAtlas {
             for (si, span) in shape_line.spans.iter().enumerate() {
                 log::info!(
                     "[lig-diag]   span[{si}] words={} level={:?}",
-                    span.words.len(), span.level,
+                    span.words.len(),
+                    span.level,
                 );
                 for (wi, word) in span.words.iter().enumerate() {
                     let word_start = word.glyphs.first().map(|g| g.start).unwrap_or(0);
                     let word_end = word.glyphs.last().map(|g| g.end).unwrap_or(0);
                     let word_text = &text[word_start..word_end];
-                    let glyph_info: Vec<String> = word.glyphs.iter().map(|g| {
-                        format!("g_id={} {}..{}", g.glyph_id, g.start, g.end)
-                    }).collect();
+                    let glyph_info: Vec<String> = word
+                        .glyphs
+                        .iter()
+                        .map(|g| format!("g_id={} {}..{}", g.glyph_id, g.start, g.end))
+                        .collect();
                     log::info!(
                         "[lig-diag]     word[{wi}] blank={} text={word_text:?} glyphs={} {:?}",
-                        word.blank, word.glyphs.len(), glyph_info,
+                        word.blank,
+                        word.glyphs.len(),
+                        glyph_info,
                     );
                 }
             }
@@ -261,9 +272,7 @@ impl GlyphAtlas {
         let lines = buf.lines.len();
         let all_glyphs: Vec<&cosmic_text::LayoutGlyph> = if lines > 0 {
             match buf.lines[0].layout_opt() {
-                Some(runs) => {
-                    runs.iter().flat_map(|run| &run.glyphs).collect()
-                }
+                Some(runs) => runs.iter().flat_map(|run| &run.glyphs).collect(),
                 None => {
                     log::warn!(
                         "[lig-diag] shape_and_rasterize_run: layout_opt() is NONE \
@@ -320,7 +329,10 @@ impl GlyphAtlas {
 
             log::debug!(
                 "  glyph: start={} end={} num_cells={} advance={:.1}",
-                g.start, g.end, num_cells, advance,
+                g.start,
+                g.end,
+                num_cells,
+                advance,
             );
 
             // Physical glyph for swash rasterization.
@@ -351,7 +363,7 @@ impl GlyphAtlas {
             }
 
             shaped.push(ShapedGlyph {
-                char_range: g.start as usize .. g.end as usize,
+                char_range: g.start as usize..g.end as usize,
                 num_cells,
                 run_x_offset,
                 entry,
@@ -734,8 +746,7 @@ impl GlyphAtlas {
 
         // Scale from font design units to physical pixels.
         let ppem = self.font_size * self.pixels_per_point;
-        self.underline_thickness_px =
-            underline.thickness * ppem / metrics.units_per_em as f32;
+        self.underline_thickness_px = underline.thickness * ppem / metrics.units_per_em as f32;
 
         log::info!(
             "GlyphAtlas::underline_thickness: design={:.2} units/em={} ppem={:.2} => {:.2}px",
@@ -993,9 +1004,8 @@ impl GlyphAtlas {
             cell_ascent: self.cell_ascent,
             underline_thickness: self.underline_thickness_px,
         };
-        let glyph = builtin::render(c, &params).ok_or_else(|| {
-            Error::Glyph(format!("builtin render failed for U+{:04X}", c as u32))
-        })?;
+        let glyph = builtin::render(c, &params)
+            .ok_or_else(|| Error::Glyph(format!("builtin render failed for U+{:04X}", c as u32)))?;
 
         let width = glyph.width as i32;
         let height = glyph.height as i32;
@@ -1099,10 +1109,7 @@ impl GlyphAtlas {
         // pushes a new slot we retry the fresh slot, not the old full one.
         let (allocation, slot_idx) = loop {
             let idx = self.slots.len() - 1;
-            match self.slots[idx]
-                .allocator
-                .allocate(etagere::size2(iw, ih))
-            {
+            match self.slots[idx].allocator.allocate(etagere::size2(iw, ih)) {
                 Some(a) => break (a, idx),
                 None => self.grow_atlas()?,
             }
@@ -1133,7 +1140,8 @@ impl GlyphAtlas {
             content_type: GlyphContentType::Color,
             scale: 1.0,
         };
-        self.image_cache.insert(hash, (entry.clone(), allocation.id));
+        self.image_cache
+            .insert(hash, (entry.clone(), allocation.id));
         Ok(entry)
     }
 

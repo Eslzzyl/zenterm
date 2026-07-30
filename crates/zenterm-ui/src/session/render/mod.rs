@@ -20,11 +20,11 @@ use zenterm_glyph::GlyphContentType;
 use zenterm_render::glyph_type;
 use zenterm_render::{AtlasRange, CellInstance};
 
+use self::pass1::emit_background_quad;
+use self::pass3::emit_deco_for_cell;
 use super::shaping;
 use super::types::{TerminalSession, UrlSpan};
 use ligature::process_ligature_run;
-use self::pass1::emit_background_quad;
-use self::pass3::emit_deco_for_cell;
 
 impl TerminalSession {
     /// Rebuild the cell-instance buffers for this session's visible
@@ -37,11 +37,7 @@ impl TerminalSession {
     ///
     /// Returns `true` if any instances were produced (caller should
     /// bump the instance generation counter).
-    pub fn update_cell_instances(
-        &mut self,
-        origin_px: [f32; 2],
-        size_px: [f32; 2],
-    ) -> bool {
+    pub fn update_cell_instances(&mut self, origin_px: [f32; 2], size_px: [f32; 2]) -> bool {
         let vp_width_px = size_px[0];
         let vp_height_px = size_px[1];
         if vp_width_px <= 0.0 || vp_height_px <= 0.0 {
@@ -152,8 +148,7 @@ impl TerminalSession {
         let cursor_fg = cursor.cursor_fg;
         // cursor_col is set below once cols is available.
 
-        let blink_on = if cursor.style.blinking
-            && !matches!(cursor.style.shape, CursorShape::Block)
+        let blink_on = if cursor.style.blinking && !matches!(cursor.style.shape, CursorShape::Block)
         {
             // Time-based blink phase: toggle every blink_interval ms.
             // Uses `blink_epoch` as a fixed reference point so the phase
@@ -207,23 +202,24 @@ impl TerminalSession {
         }
         self.cached_deco.clear();
         if self.cached_bg.capacity() < instances_cap {
-            self.cached_bg.reserve(instances_cap - self.cached_bg.capacity());
+            self.cached_bg
+                .reserve(instances_cap - self.cached_bg.capacity());
         }
         if self.cached_deco.capacity() < instances_cap {
-            self.cached_deco.reserve(instances_cap - self.cached_deco.capacity());
+            self.cached_deco
+                .reserve(instances_cap - self.cached_deco.capacity());
         }
         if self.cached_image_below.capacity() < instances_cap {
-            self.cached_image_below.reserve(
-                instances_cap - self.cached_image_below.capacity(),
-            );
+            self.cached_image_below
+                .reserve(instances_cap - self.cached_image_below.capacity());
         }
         if self.cached_image_above.capacity() < instances_cap {
-            self.cached_image_above.reserve(
-                instances_cap - self.cached_image_above.capacity(),
-            );
+            self.cached_image_above
+                .reserve(instances_cap - self.cached_image_above.capacity());
         }
         if self.cached_deco.capacity() < instances_cap {
-            self.cached_deco.reserve(instances_cap - self.cached_deco.capacity());
+            self.cached_deco
+                .reserve(instances_cap - self.cached_deco.capacity());
         }
         // Shrink cached buffers when the grid shrinks significantly
         // (capacity > 2x needed) to avoid retaining large allocations
@@ -262,7 +258,11 @@ impl TerminalSession {
                     let end_col = line[..link.end()].chars().count();
                     log::debug!(
                         "url scan: row={} col={}-{} url={} line={:?}",
-                        r, start_col, end_col, link.as_str(), &line,
+                        r,
+                        start_col,
+                        end_col,
+                        link.as_str(),
+                        &line,
                     );
                     self.url_spans.push(UrlSpan {
                         row: r,
@@ -272,13 +272,23 @@ impl TerminalSession {
                     });
                 }
             }
-            log::debug!("url scan: {} spans, hover_cell={:?}", self.url_spans.len(), self.hover_cell);
+            log::debug!(
+                "url scan: {} spans, hover_cell={:?}",
+                self.url_spans.len(),
+                self.hover_cell
+            );
             // Find which URL (if any) the cursor is hovering over.
             self.hover_cell.and_then(|(hr, hc)| {
-                let matched = self.url_spans
+                let matched = self
+                    .url_spans
                     .iter()
                     .find(|span| span.row == hr && hc >= span.col_start && hc < span.col_end);
-                log::debug!("hover match: row={} col={} matched={:?}", hr, hc, matched.as_ref().map(|s| (s.row, s.col_start, s.col_end)));
+                log::debug!(
+                    "hover match: row={} col={} matched={:?}",
+                    hr,
+                    hc,
+                    matched.as_ref().map(|s| (s.row, s.col_start, s.col_end))
+                );
                 matched.map(|span| (span.row, span.col_end))
             })
         } else {
@@ -303,17 +313,21 @@ impl TerminalSession {
             // emit_background_quad function can skip if they match).
             emit_background_quad(
                 &mut self.cached_bg,
-                0,             // col
-                cursor_row,    // row
+                0,          // col
+                cursor_row, // row
                 self.cell_width,
                 self.cell_height,
-                cols as f32,   // num_cells — highlight spans full row width
+                cols as f32, // num_cells — highlight spans full row width
                 highlight,
                 default_bg,
                 false,
-                x_off, y_off, x_scale, y_scale,
+                x_off,
+                y_off,
+                x_scale,
+                y_scale,
                 self.window_opacity,
-            );        }
+            );
+        }
 
         for row in 0..rows {
             let mut col = 0;
@@ -321,7 +335,10 @@ impl TerminalSession {
             while col < cols {
                 let cell = match grid.cell(row, col) {
                     Some(c) => c,
-                    None => { col += 1; continue; },
+                    None => {
+                        col += 1;
+                        continue;
+                    }
                 };
 
                 let mut ch_char = cell.c;
@@ -341,8 +358,7 @@ impl TerminalSession {
 
                 let is_blank = ch_char == ' ';
                 let is_cursor = cursor_visible && row == cursor_row && col == cursor_col;
-                let is_block_cursor =
-                    is_cursor && matches!(cursor_shape, CursorShape::Block);
+                let is_block_cursor = is_cursor && matches!(cursor_shape, CursorShape::Block);
                 let is_sel = sel_range.as_ref().is_some_and(|range| {
                     let grid_line = (row as i32) - (display_offset as i32);
                     let pt = alacritty_terminal::index::Point::new(
@@ -373,8 +389,10 @@ impl TerminalSession {
                 };
 
                 let is_hidden = cell.hidden;
-                let has_deco = !matches!(cell.underline_style, zenterm_core::cell::UnderlineStyle::None)
-                    || cell.strikethrough
+                let has_deco = !matches!(
+                    cell.underline_style,
+                    zenterm_core::cell::UnderlineStyle::None
+                ) || cell.strikethrough
                     || is_preedit;
 
                 let run_start = col;
@@ -383,19 +401,26 @@ impl TerminalSession {
                 // ── URL hover underline ──────────────────────────────────
                 // Must be BEFORE the ligature branch, which can skip over
                 // multiple cells via `col = run_end; continue`.
-                log::debug!("url_check: hovered_url={:?} row={} col={} terminal_dirty={}",
-                    hovered_url, row, col, self.terminal_dirty);
+                log::debug!(
+                    "url_check: hovered_url={:?} row={} col={} terminal_dirty={}",
+                    hovered_url,
+                    row,
+                    col,
+                    self.terminal_dirty
+                );
                 if let Some((url_row, url_col_end)) = hovered_url {
                     if row == url_row && col < url_col_end {
-                        log::debug!("url_underline: emit row={} col={} end={}", row, col, url_col_end);
+                        log::debug!(
+                            "url_underline: emit row={} col={} end={}",
+                            row,
+                            col,
+                            url_col_end
+                        );
                         let thickness = 1.0_f32.max((ch * 0.06).round());
                         let deco_y = y_off + row as f32 * ch + baseline + 0.5;
                         let deco_x = x_off + col as f32 * cw;
                         self.cached_deco.push(CellInstance {
-                            clip_pos: [
-                                deco_x * x_scale - 1.0,
-                                1.0 - deco_y * y_scale,
-                            ],
+                            clip_pos: [deco_x * x_scale - 1.0, 1.0 - deco_y * y_scale],
                             uv_min: [0.0; 2],
                             uv_max: [0.0; 2],
                             clip_cell_size: [cw * x_scale, thickness * y_scale],
@@ -415,12 +440,29 @@ impl TerminalSession {
                     && run_end != last_checked_run_end;
                 if ligature_eligible {
                     let outcome = process_ligature_run(
-                        &mut atlas, &grid, row, run_start, run_end,
-                        cursor_visible, cursor_row, cursor_col,
-                        cursor_shape, cursor_bg, display_offset,
-                        sel_range.as_ref(), sel_bg, sel_fg,
-                        default_bg, baseline, cw, ch,
-                        x_off, y_off, x_scale, y_scale, cols,
+                        &mut atlas,
+                        &grid,
+                        row,
+                        run_start,
+                        run_end,
+                        cursor_visible,
+                        cursor_row,
+                        cursor_col,
+                        cursor_shape,
+                        cursor_bg,
+                        display_offset,
+                        sel_range.as_ref(),
+                        sel_bg,
+                        sel_fg,
+                        default_bg,
+                        baseline,
+                        cw,
+                        ch,
+                        x_off,
+                        y_off,
+                        x_scale,
+                        y_scale,
+                        cols,
                         &mut self.cached_bg,
                         &mut self.cached_glyph_per_atlas,
                         &mut self.cached_deco,
@@ -440,15 +482,17 @@ impl TerminalSession {
                                 let emit_start = run_start.max(0);
                                 let emit_end = outcome.run_end.min(url_col_end);
                                 for c in emit_start..emit_end {
-                                    log::debug!("url_underline: ligature-bypass row={} col={} end={}", row, c, url_col_end);
+                                    log::debug!(
+                                        "url_underline: ligature-bypass row={} col={} end={}",
+                                        row,
+                                        c,
+                                        url_col_end
+                                    );
                                     let thickness = 1.0_f32.max((ch * 0.06).round());
                                     let deco_y = y_off + row as f32 * ch + baseline + 0.5;
                                     let deco_x = x_off + c as f32 * cw;
                                     self.cached_deco.push(CellInstance {
-                                        clip_pos: [
-                                            deco_x * x_scale - 1.0,
-                                            1.0 - deco_y * y_scale,
-                                        ],
+                                        clip_pos: [deco_x * x_scale - 1.0, 1.0 - deco_y * y_scale],
                                         uv_min: [0.0; 2],
                                         uv_max: [0.0; 2],
                                         clip_cell_size: [cw * x_scale, thickness * y_scale],
@@ -477,11 +521,18 @@ impl TerminalSession {
                     let cell_bg = if is_sel { sel_bg } else { draw_bg };
                     emit_background_quad(
                         &mut self.cached_bg,
-                        col, row, cw, ch, num_cells,
+                        col,
+                        row,
+                        cw,
+                        ch,
+                        num_cells,
                         cell_bg,
                         default_bg,
                         is_block_cursor,
-                        x_off, y_off, x_scale, y_scale,
+                        x_off,
+                        y_off,
+                        x_scale,
+                        y_scale,
                         self.window_opacity,
                     );
                 }
@@ -490,8 +541,17 @@ impl TerminalSession {
                 if let Some(ref img) = cell.image {
                     if img.z_index < 0 {
                         emit_image_quad(
-                            &mut self.cached_image_below, &mut atlas, img, col, row,
-                            cw, ch, x_off, y_off, x_scale, y_scale,
+                            &mut self.cached_image_below,
+                            &mut atlas,
+                            img,
+                            col,
+                            row,
+                            cw,
+                            ch,
+                            x_off,
+                            y_off,
+                            x_scale,
+                            y_scale,
                         );
                         img_below_count += 1;
                     }
@@ -524,120 +584,118 @@ impl TerminalSession {
                                 entry.content_type,
                             )
                         } else {
-                            log::warn!(
-                                "glyph lookup failed for ch={ch_char:?}",
-                            );
+                            log::warn!("glyph lookup failed for ch={ch_char:?}",);
                             col += 1;
                             continue;
                         }
                     };
 
-                        let atlas_w = (ar.max.x - ar.min.x) as f32;
-                        let atlas_h = (ar.max.y - ar.min.y) as f32;
+                    let atlas_w = (ar.max.x - ar.min.x) as f32;
+                    let atlas_h = (ar.max.y - ar.min.y) as f32;
 
-                        let mut scaled_w = atlas_w * scale;
-                        let mut scaled_h = atlas_h * scale;
+                    let mut scaled_w = atlas_w * scale;
+                    let mut scaled_h = atlas_h * scale;
 
-                        let mut glyph_x_px =
-                            x_off + (col as f32 * cw + sbx).round();
-                        let mut glyph_y_px =
-                            y_off + (row as f32 * ch + (baseline - sby)).round();
+                    let mut glyph_x_px = x_off + (col as f32 * cw + sbx).round();
+                    let mut glyph_y_px = y_off + (row as f32 * ch + (baseline - sby)).round();
 
-                        let slot_size = atlas.slots[ai as usize].size as f32;
-                        let mut u_min =
-                            (ar.min.x as f32 + 0.5) / slot_size;
-                        let mut v_min =
-                            (ar.min.y as f32 + 0.5) / slot_size;
-                        let mut u_max =
-                            (ar.max.x as f32 - 0.5) / slot_size;
-                        let mut v_max =
-                            (ar.max.y as f32 - 0.5) / slot_size;
+                    let slot_size = atlas.slots[ai as usize].size as f32;
+                    let mut u_min = (ar.min.x as f32 + 0.5) / slot_size;
+                    let mut v_min = (ar.min.y as f32 + 0.5) / slot_size;
+                    let mut u_max = (ar.max.x as f32 - 0.5) / slot_size;
+                    let mut v_max = (ar.max.y as f32 - 0.5) / slot_size;
 
-                        let cell_left = x_off + col as f32 * cw;
-                        let cell_top = y_off + row as f32 * ch;
-                        let cell_right = cell_left + cw * num_cells;
-                        let cell_bottom = cell_top + ch;
+                    let cell_left = x_off + col as f32 * cw;
+                    let cell_top = y_off + row as f32 * ch;
+                    let cell_right = cell_left + cw * num_cells;
+                    let cell_bottom = cell_top + ch;
 
-                        let glyph_bot_px = glyph_y_px + scaled_h;
-                        let clipped_top = glyph_y_px.max(cell_top);
-                        let clipped_bot = glyph_bot_px.min(cell_bottom);
-                        let clipped_h = (clipped_bot - clipped_top).max(0.0);
-                        if clipped_h < scaled_h && scaled_h > 0.0 {
-                            let r_top = (clipped_top - glyph_y_px) / scaled_h;
-                            let r_bot = (clipped_bot - glyph_y_px) / scaled_h;
-                            let v_range = v_max - v_min;
-                            v_min = v_min + r_top * v_range;
-                            v_max = v_min + (r_bot - r_top) * v_range;
-                            glyph_y_px = clipped_top;
-                            scaled_h = clipped_h;
-                        }
-
-                        let glyph_right_px = glyph_x_px + scaled_w;
-                        let clipped_left = glyph_x_px.max(cell_left);
-                        let clipped_right = glyph_right_px.min(cell_right);
-                        let clipped_w = (clipped_right - clipped_left).max(0.0);
-                        if clipped_w < scaled_w && scaled_w > 0.0 {
-                            let r_left = (clipped_left - glyph_x_px) / scaled_w;
-                            let r_right = (clipped_right - glyph_x_px) / scaled_w;
-                            let u_range = u_max - u_min;
-                            u_min = u_min + r_left * u_range;
-                            u_max = u_min + (r_right - r_left) * u_range;
-                            glyph_x_px = clipped_left;
-                            scaled_w = clipped_w;
-                        }
-
-                        let (glyph_fg, glyph_bg) = if is_cursor && !is_block_cursor {
-                            // Underline / Beam cursor: the glyph itself
-                            // uses the cursor fill colour as a visual
-                            // indicator.
-                            (cursor_bg, cell.fg)
-                        } else if is_sel {
-                            (sel_fg.unwrap_or(draw_fg), sel_bg)
-                        } else {
-                            (draw_fg, draw_bg)
-                        };
-
-                        // Ensure per-atlas cache vec is large enough.
-                        let ai_usize = ai as usize;
-                        if ai_usize >= self.cached_glyph_per_atlas.len() {
-                            self.cached_glyph_per_atlas.resize_with(ai_usize + 1, Vec::new);
-                        }
-                        self.cached_glyph_per_atlas[ai_usize].push(CellInstance {
-                            clip_pos: [
-                                glyph_x_px * x_scale - 1.0,
-                                1.0 - glyph_y_px * y_scale,
-                            ],
-                            uv_min: [u_min, v_min],
-                            uv_max: [u_max, v_max],
-                            clip_cell_size: [scaled_w * x_scale, scaled_h * y_scale],
-                            glyph_size: [scaled_w, scaled_h],
-                            glyph_offset: [0.0, 0.0],
-                            fg_color: [
-                                glyph_fg.r(), glyph_fg.g(),
-                                glyph_fg.b(), 1.0,
-                            ],
-                            bg_color: [
-                                glyph_bg.r(), glyph_bg.g(),
-                                glyph_bg.b(), 1.0,
-                            ],
-                            flags: match ct {
-                                GlyphContentType::Subpixel => glyph_type::SUBPIXEL,
-                                GlyphContentType::Mask => glyph_type::MASK,
-                                GlyphContentType::Color => glyph_type::COLOR,
-                            },
-                        });
+                    let glyph_bot_px = glyph_y_px + scaled_h;
+                    let clipped_top = glyph_y_px.max(cell_top);
+                    let clipped_bot = glyph_bot_px.min(cell_bottom);
+                    let clipped_h = (clipped_bot - clipped_top).max(0.0);
+                    if clipped_h < scaled_h && scaled_h > 0.0 {
+                        let r_top = (clipped_top - glyph_y_px) / scaled_h;
+                        let r_bot = (clipped_bot - glyph_y_px) / scaled_h;
+                        let v_range = v_max - v_min;
+                        v_min = v_min + r_top * v_range;
+                        v_max = v_min + (r_bot - r_top) * v_range;
+                        glyph_y_px = clipped_top;
+                        scaled_h = clipped_h;
                     }
+
+                    let glyph_right_px = glyph_x_px + scaled_w;
+                    let clipped_left = glyph_x_px.max(cell_left);
+                    let clipped_right = glyph_right_px.min(cell_right);
+                    let clipped_w = (clipped_right - clipped_left).max(0.0);
+                    if clipped_w < scaled_w && scaled_w > 0.0 {
+                        let r_left = (clipped_left - glyph_x_px) / scaled_w;
+                        let r_right = (clipped_right - glyph_x_px) / scaled_w;
+                        let u_range = u_max - u_min;
+                        u_min = u_min + r_left * u_range;
+                        u_max = u_min + (r_right - r_left) * u_range;
+                        glyph_x_px = clipped_left;
+                        scaled_w = clipped_w;
+                    }
+
+                    let (glyph_fg, glyph_bg) = if is_cursor && !is_block_cursor {
+                        // Underline / Beam cursor: the glyph itself
+                        // uses the cursor fill colour as a visual
+                        // indicator.
+                        (cursor_bg, cell.fg)
+                    } else if is_sel {
+                        (sel_fg.unwrap_or(draw_fg), sel_bg)
+                    } else {
+                        (draw_fg, draw_bg)
+                    };
+
+                    // Ensure per-atlas cache vec is large enough.
+                    let ai_usize = ai as usize;
+                    if ai_usize >= self.cached_glyph_per_atlas.len() {
+                        self.cached_glyph_per_atlas
+                            .resize_with(ai_usize + 1, Vec::new);
+                    }
+                    self.cached_glyph_per_atlas[ai_usize].push(CellInstance {
+                        clip_pos: [glyph_x_px * x_scale - 1.0, 1.0 - glyph_y_px * y_scale],
+                        uv_min: [u_min, v_min],
+                        uv_max: [u_max, v_max],
+                        clip_cell_size: [scaled_w * x_scale, scaled_h * y_scale],
+                        glyph_size: [scaled_w, scaled_h],
+                        glyph_offset: [0.0, 0.0],
+                        fg_color: [glyph_fg.r(), glyph_fg.g(), glyph_fg.b(), 1.0],
+                        bg_color: [glyph_bg.r(), glyph_bg.g(), glyph_bg.b(), 1.0],
+                        flags: match ct {
+                            GlyphContentType::Subpixel => glyph_type::SUBPIXEL,
+                            GlyphContentType::Mask => glyph_type::MASK,
+                            GlyphContentType::Color => glyph_type::COLOR,
+                        },
+                    });
+                }
 
                 if has_deco || is_cursor {
                     emit_deco_for_cell(
                         &mut self.cached_deco,
-                        &grid, row, col, cols,
-                        cursor_visible, cursor_row, cursor_col,
-                        cursor_shape, cursor_bg, display_offset,
-                        sel_range.as_ref(), sel_bg, sel_fg,
-                        default_bg, baseline, ch, cw,
-                        x_off, y_off,
-                        x_scale, y_scale,
+                        &grid,
+                        row,
+                        col,
+                        cols,
+                        cursor_visible,
+                        cursor_row,
+                        cursor_col,
+                        cursor_shape,
+                        cursor_bg,
+                        display_offset,
+                        sel_range.as_ref(),
+                        sel_bg,
+                        sel_fg,
+                        default_bg,
+                        baseline,
+                        ch,
+                        cw,
+                        x_off,
+                        y_off,
+                        x_scale,
+                        y_scale,
                     );
                 }
 
@@ -646,10 +704,7 @@ impl TerminalSession {
                     let deco_y_px = y_off + row as f32 * ch + baseline + 1.0;
                     let deco_x_px = x_off + col as f32 * cw;
                     self.cached_deco.push(CellInstance {
-                        clip_pos: [
-                            deco_x_px * x_scale - 1.0,
-                            1.0 - deco_y_px * y_scale,
-                        ],
+                        clip_pos: [deco_x_px * x_scale - 1.0, 1.0 - deco_y_px * y_scale],
                         uv_min: [0.0; 2],
                         uv_max: [0.0; 2],
                         clip_cell_size: [cw * x_scale, thickness * y_scale],
@@ -665,8 +720,17 @@ impl TerminalSession {
                 if let Some(ref img) = cell.image {
                     if img.z_index >= 0 {
                         emit_image_quad(
-                            &mut self.cached_image_above, &mut atlas, img, col, row,
-                            cw, ch, x_off, y_off, x_scale, y_scale,
+                            &mut self.cached_image_above,
+                            &mut atlas,
+                            img,
+                            col,
+                            row,
+                            cw,
+                            ch,
+                            x_off,
+                            y_off,
+                            x_scale,
+                            y_scale,
                         );
                         img_above_count += 1;
                     }
@@ -679,7 +743,8 @@ impl TerminalSession {
         if img_below_count > 0 || img_above_count > 0 {
             log::trace!(
                 "[img] render frame: below={}, above={}, total_placements={}, dirty={}",
-                img_below_count, img_above_count,
+                img_below_count,
+                img_above_count,
                 self.terminal.image_placements_count(),
                 self.terminal_dirty,
             );
@@ -744,7 +809,6 @@ impl TerminalSession {
         self.terminal_dirty = false;
         true
     }
-
 }
 
 /// Emit a [`CellInstance`] for an [`ImageCell`] attached to a grid cell.
@@ -764,10 +828,19 @@ fn emit_image_quad(
     let (pixels, img_w, img_h, img_hash) = {
         let guard = img.data.data();
         match &*guard {
-            ImageDataType::Rgba8 { data, width, height, hash } => {
-                (data.clone(), *width, *height, *hash)
-            }
-            ImageDataType::AnimRgba8 { width, height, frames, hashes, .. } => {
+            ImageDataType::Rgba8 {
+                data,
+                width,
+                height,
+                hash,
+            } => (data.clone(), *width, *height, *hash),
+            ImageDataType::AnimRgba8 {
+                width,
+                height,
+                frames,
+                hashes,
+                ..
+            } => {
                 // Use the first frame for rendering (frame 0).
                 // FUTURE: cycle through frames based on timing.
                 (frames[0].clone(), *width, *height, hashes[0])

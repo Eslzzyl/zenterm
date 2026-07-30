@@ -102,7 +102,7 @@ fn apply_metadata(meta: &HashMap<String, String>, acc: &mut KittyAccumulator) {
                     match action.trim() {
                         "report" => acc.report_click = true,
                         "-report" => acc.report_click = false,
-                        "focus" => {} // Default behaviour, no action needed.
+                        "focus" => {}  // Default behaviour, no action needed.
                         "-focus" => {} // Would suppress focusing, skip.
                         _ => {}
                     }
@@ -169,8 +169,7 @@ impl KittyNotificationState {
             }
             Some("alive") => {
                 let id = meta.get("i").map(|s| s.as_str()).unwrap_or("0");
-                let active_ids: Vec<&str> =
-                    self.accumulators.keys().map(|s| s.as_str()).collect();
+                let active_ids: Vec<&str> = self.accumulators.keys().map(|s| s.as_str()).collect();
                 return (None, Some(Self::alive_response(id, &active_ids)));
             }
             Some("close") => {

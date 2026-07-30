@@ -16,9 +16,22 @@ use zenterm_core::image::{ImageData, ImageDataType};
 #[derive(Debug, Clone)]
 pub enum SixelData {
     Data(u8),
-    Repeat { repeat_count: u32, data: u8 },
-    DefineColorMapRGB { color_number: u16, r: u8, g: u8, b: u8 },
-    DefineColorMapHSL { color_number: u16, hue_angle: u16, lightness: u8, saturation: u8 },
+    Repeat {
+        repeat_count: u32,
+        data: u8,
+    },
+    DefineColorMapRGB {
+        color_number: u16,
+        r: u8,
+        g: u8,
+        b: u8,
+    },
+    DefineColorMapHSL {
+        color_number: u16,
+        hue_angle: u16,
+        lightness: u8,
+        saturation: u8,
+    },
     SelectColorMapEntry(u16),
     CarriageReturn,
     NewLine,
@@ -148,11 +161,21 @@ impl SixelBuilder {
             }
             b'#' => {
                 let color_number = self.params[0] as u16;
-                self.sixel.data.push(SixelData::SelectColorMapEntry(color_number));
+                self.sixel
+                    .data
+                    .push(SixelData::SelectColorMapEntry(color_number));
             }
             b'"' => {
-                let pan = if self.params[0] == -1 { 2 } else { self.params[0] };
-                let pad = if self.params[1] == -1 { 1 } else { self.params[1] };
+                let pan = if self.params[0] == -1 {
+                    2
+                } else {
+                    self.params[0]
+                };
+                let pad = if self.params[1] == -1 {
+                    1
+                } else {
+                    self.params[1]
+                };
                 let pixel_width = self.params[2];
                 let pixel_height = self.params[3];
                 self.sixel.pan = pan;
@@ -217,10 +240,20 @@ pub fn render_sixel(sixel: &Sixel) -> Result<Arc<ImageData>, String> {
                 x = 0;
                 y = y.saturating_add(6);
             }
-            SixelData::DefineColorMapRGB { color_number, r, g, b } => {
+            SixelData::DefineColorMapRGB {
+                color_number,
+                r,
+                g,
+                b,
+            } => {
                 color_map.insert(*color_number, (*r, *g, *b));
             }
-            SixelData::DefineColorMapHSL { color_number, hue_angle, saturation, lightness } => {
+            SixelData::DefineColorMapHSL {
+                color_number,
+                hue_angle,
+                saturation,
+                lightness,
+            } => {
                 let angle = (*hue_angle as f64) - 120.0;
                 let angle = if angle < 0. { 360.0 + angle } else { angle };
                 let c = csscolorparser::Color::from_hsla(
@@ -342,7 +375,9 @@ pub fn parse_dcs_params(bytes: &[u8]) -> Vec<i64> {
             params.push(current);
             current = 0;
         } else if bytes[i].is_ascii_digit() {
-            current = current.saturating_mul(10).saturating_add((bytes[i] - b'0') as i64);
+            current = current
+                .saturating_mul(10)
+                .saturating_add((bytes[i] - b'0') as i64);
         } else {
             break;
         }

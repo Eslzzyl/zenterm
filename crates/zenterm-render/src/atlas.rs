@@ -62,12 +62,7 @@ pub fn create_atlas_texture(
 /// The texture must have the same size as the glyph atlas.  This is
 /// cheaper than recreating the texture when only the pixel content
 /// changed (e.g. a few new glyphs were rasterised without a resize).
-pub fn update_atlas_texture(
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    size: u32,
-    data: &[u8],
-) {
+pub fn update_atlas_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, size: u32, data: &[u8]) {
     queue.write_texture(
         TexelCopyTextureInfo {
             texture,

@@ -182,28 +182,27 @@ impl TerminalRenderPass {
         });
 
         // ── @group(0): glyph atlas bind group layout ────────────────
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("terminal.bind_group_layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("terminal.bind_group_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
 
         // One bind group per texture view.
         let atlas_bind_groups: Vec<wgpu::BindGroup> = atlas_views
@@ -267,7 +266,11 @@ impl TerminalRenderPass {
         // layout to be bound for every draw call).
         let dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("terminal.background_dummy"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -276,32 +279,30 @@ impl TerminalRenderPass {
             view_formats: &[],
         });
         let dummy_view = dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let background_bind_group =
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("terminal.background_bind_group_dummy"),
-                layout: &background_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&dummy_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&bg_sampler),
-                    },
-                ],
-            });
+        let background_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("terminal.background_bind_group_dummy"),
+            layout: &background_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&dummy_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&bg_sampler),
+                },
+            ],
+        });
 
         // ── Pipeline layout (two bind group layouts) ────────────────
-        let pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("terminal.pipeline_layout"),
-                bind_group_layouts: &[
-                    Some(&bind_group_layout),
-                    Some(&background_bind_group_layout),
-                ],
-                immediate_size: 0,
-            });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("terminal.pipeline_layout"),
+            bind_group_layouts: &[
+                Some(&bind_group_layout),
+                Some(&background_bind_group_layout),
+            ],
+            immediate_size: 0,
+        });
 
         // Render pipeline with both vertex and instance buffer layouts.
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -431,7 +432,11 @@ impl TerminalRenderPass {
         let _t0 = std::time::Instant::now();
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("terminal.background"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -451,14 +456,22 @@ impl TerminalRenderPass {
         let padded = if padding > 0 {
             let mut buf = Vec::with_capacity(padded_size as usize);
             for row in 0..height as usize {
-                buf.extend_from_slice(&data[row * unpadded as usize..(row + 1) * unpadded as usize]);
+                buf.extend_from_slice(
+                    &data[row * unpadded as usize..(row + 1) * unpadded as usize],
+                );
                 buf.extend(std::iter::repeat(0u8).take(padding as usize));
             }
             buf
         } else {
             data.to_vec()
         };
-        log::debug!("bg: pad/copy {}x{} (pad={}) took {:?}", width, height, padding, _t1.elapsed());
+        log::debug!(
+            "bg: pad/copy {}x{} (pad={}) took {:?}",
+            width,
+            height,
+            padding,
+            _t1.elapsed()
+        );
         let _t2 = std::time::Instant::now();
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -473,7 +486,11 @@ impl TerminalRenderPass {
                 bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(height),
             },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
         );
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         log::debug!("bg: write_texture took {:?}", _t2.elapsed());
@@ -546,20 +563,13 @@ impl TerminalRenderPass {
                 self.max_instances
             );
             let truncated = &instances[..self.max_instances as usize];
-            queue.write_buffer(
-                &self.instance_buf,
-                0,
-                bytemuck::cast_slice(truncated),
-            );
-            self.num_instances.store(self.max_instances, Ordering::Release);
+            queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(truncated));
+            self.num_instances
+                .store(self.max_instances, Ordering::Release);
             return;
         }
         if count > 0 {
-            queue.write_buffer(
-                &self.instance_buf,
-                0,
-                bytemuck::cast_slice(instances),
-            );
+            queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(instances));
         }
         self.num_instances.store(count, Ordering::Release);
     }

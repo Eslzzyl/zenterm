@@ -13,13 +13,13 @@ use alacritty_terminal::vte::ansi::CursorShape;
 
 use zenterm_core::color::Rgba;
 use zenterm_glyph::GlyphContentType;
-use zenterm_render::glyph_type;
 use zenterm_render::CellInstance;
+use zenterm_render::glyph_type;
 use zenterm_term::GridView;
 
-use super::shaping;
 use super::pass1::emit_background_quad;
 use super::pass3::emit_deco_for_cell;
+use super::shaping;
 use crate::glyph_cache::GlyphAtlasGuard;
 
 /// Outcome of attempting to process a ligature run.
@@ -121,32 +121,43 @@ pub(crate) fn process_ligature_run(
                     for ccol in strip_col..cell_base {
                         emit_deco_for_cell(
                             deco_instances,
-                            grid, row, ccol, cols,
-                            cursor_visible, cursor_row, cursor_col,
-                            cursor_shape, cursor_bg, display_offset,
-                            sel_range, sel_bg, sel_fg,
-                            default_bg, baseline, ch, cw,
-                            x_off, y_off,
-                            x_scale, y_scale,
+                            grid,
+                            row,
+                            ccol,
+                            cols,
+                            cursor_visible,
+                            cursor_row,
+                            cursor_col,
+                            cursor_shape,
+                            cursor_bg,
+                            display_offset,
+                            sel_range,
+                            sel_bg,
+                            sel_fg,
+                            default_bg,
+                            baseline,
+                            ch,
+                            cw,
+                            x_off,
+                            y_off,
+                            x_scale,
+                            y_scale,
                         );
                     }
                     strip_col = cell_base;
                 }
 
-                let actual_num_cells = shaping::glyph_grid_num_cells(
-                    grid, row, run_start, &sg.char_range, cols,
-                );
+                let actual_num_cells =
+                    shaping::glyph_grid_num_cells(grid, row, run_start, &sg.char_range, cols);
                 for cell_offset in 0..actual_num_cells {
                     let cell_col = cell_base + cell_offset;
-                    let c = grid.cell(row, cell_col)
+                    let c = grid
+                        .cell(row, cell_col)
                         .unwrap_or_else(|| grid.cell(row, run_start).unwrap());
 
                     // ── Per-cell cursor / selection state ──
-                    let c_is_cursor = cursor_visible
-                        && row == cursor_row
-                        && cell_col == cursor_col;
-                    let c_is_block = c_is_cursor
-                        && matches!(cursor_shape, CursorShape::Block);
+                    let c_is_cursor = cursor_visible && row == cursor_row && cell_col == cursor_col;
+                    let c_is_block = c_is_cursor && matches!(cursor_shape, CursorShape::Block);
                     let c_is_sel = sel_range.is_some_and(|range| {
                         let grid_line = (row as i32) - (display_offset as i32);
                         let pt = alacritty_terminal::index::Point::new(
@@ -162,29 +173,27 @@ pub(crate) fn process_ligature_run(
                         (c.fg, c.bg)
                     };
                     let c_draw_fg = if c.dim {
-                        Rgba::new(
-                            c_fg.r() * 0.5,
-                            c_fg.g() * 0.5,
-                            c_fg.b() * 0.5,
-                            c_fg.a(),
-                        )
+                        Rgba::new(c_fg.r() * 0.5, c_fg.g() * 0.5, c_fg.b() * 0.5, c_fg.a())
                     } else {
                         c_fg
                     };
-                    let c_bg_color = if c_is_sel {
-                        sel_bg
-                    } else {
-                        c_bg
-                    };
+                    let c_bg_color = if c_is_sel { sel_bg } else { c_bg };
 
                     // ── Pass 1: background quad ──
                     emit_background_quad(
                         bg_instances,
-                        cell_col, row, cw, ch, 1.0,
+                        cell_col,
+                        row,
+                        cw,
+                        ch,
+                        1.0,
                         c_bg_color,
                         default_bg,
                         c_is_block,
-                        x_off, y_off, x_scale, y_scale,
+                        x_off,
+                        y_off,
+                        x_scale,
+                        y_scale,
                         opacity,
                     );
 
@@ -311,27 +320,35 @@ pub(crate) fn process_ligature_run(
                         clip_cell_size: [gqw, gqh],
                         glyph_size: [scaled_w, scaled_h],
                         glyph_offset: [gox, goy],
-                        fg_color: [
-                            glyph_fg.r(), glyph_fg.g(),
-                            glyph_fg.b(), 1.0,
-                        ],
-                        bg_color: [
-                            glyph_bg.r(), glyph_bg.g(),
-                            glyph_bg.b(), 1.0,
-                        ],
+                        fg_color: [glyph_fg.r(), glyph_fg.g(), glyph_fg.b(), 1.0],
+                        bg_color: [glyph_bg.r(), glyph_bg.g(), glyph_bg.b(), 1.0],
                         flags: gtype,
                     });
 
                     // ── Pass 3+4: decorations ──
                     emit_deco_for_cell(
                         deco_instances,
-                        grid, row, cell_col, cols,
-                        cursor_visible, cursor_row, cursor_col,
-                        cursor_shape, cursor_bg, display_offset,
-                        sel_range, sel_bg, sel_fg,
-                        default_bg, baseline, ch, cw,
-                        x_off, y_off,
-                        x_scale, y_scale,
+                        grid,
+                        row,
+                        cell_col,
+                        cols,
+                        cursor_visible,
+                        cursor_row,
+                        cursor_col,
+                        cursor_shape,
+                        cursor_bg,
+                        display_offset,
+                        sel_range,
+                        sel_bg,
+                        sel_fg,
+                        default_bg,
+                        baseline,
+                        ch,
+                        cw,
+                        x_off,
+                        y_off,
+                        x_scale,
+                        y_scale,
                     );
 
                     strip_col = cell_col + 1;
@@ -342,13 +359,27 @@ pub(crate) fn process_ligature_run(
             for ccol in strip_col..run_end {
                 emit_deco_for_cell(
                     deco_instances,
-                    grid, row, ccol, cols,
-                    cursor_visible, cursor_row, cursor_col,
-                    cursor_shape, cursor_bg, display_offset,
-                    sel_range, sel_bg, sel_fg,
-                    default_bg, baseline, ch, cw,
-                    x_off, y_off,
-                    x_scale, y_scale,
+                    grid,
+                    row,
+                    ccol,
+                    cols,
+                    cursor_visible,
+                    cursor_row,
+                    cursor_col,
+                    cursor_shape,
+                    cursor_bg,
+                    display_offset,
+                    sel_range,
+                    sel_bg,
+                    sel_fg,
+                    default_bg,
+                    baseline,
+                    ch,
+                    cw,
+                    x_off,
+                    y_off,
+                    x_scale,
+                    y_scale,
                 );
             }
 

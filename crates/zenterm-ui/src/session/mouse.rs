@@ -6,7 +6,7 @@ use alacritty_terminal::term::TermMode;
 
 use zenterm_term::Terminal;
 
-use super::types::{TerminalSession, SCROLLBAR_WIDTH, SCROLLBAR_MIN_THUMB_HEIGHT};
+use super::types::{SCROLLBAR_MIN_THUMB_HEIGHT, SCROLLBAR_WIDTH, TerminalSession};
 
 // ── Selection helpers ───────────────────────────────────────────────────
 
@@ -53,26 +53,28 @@ impl TerminalSession {
             self.cell_width,
             self.cell_height,
         );
-        let mut new_hover = pos
-            .filter(|pos| cell_rect.contains(*pos))
-            .and_then(|pos| {
-                let col_f =
-                    (pos.x - cell_rect.left()) * ppp / self.cell_width;
-                let col = (col_f + (1.0 - SELECTION_THRESHOLD)) as usize;
-                let row = ((pos.y - cell_rect.top()) * ppp / self.cell_height) as usize;
-                let cols = self.terminal.size().cols as usize;
-                let rows = self.terminal.size().rows as usize;
-                log::trace!(
-                    "compute_hover: col={} row={} cols={} rows={} cw={} ch={}",
-                    col, row, cols, rows, self.cell_width, self.cell_height,
-                );
-                if col < cols && row < rows {
-                    Some((row, col))
-                } else {
-                    log::trace!("compute_hover: cell ({},{}) out of bounds", row, col);
-                    None
-                }
-            });
+        let mut new_hover = pos.filter(|pos| cell_rect.contains(*pos)).and_then(|pos| {
+            let col_f = (pos.x - cell_rect.left()) * ppp / self.cell_width;
+            let col = (col_f + (1.0 - SELECTION_THRESHOLD)) as usize;
+            let row = ((pos.y - cell_rect.top()) * ppp / self.cell_height) as usize;
+            let cols = self.terminal.size().cols as usize;
+            let rows = self.terminal.size().rows as usize;
+            log::trace!(
+                "compute_hover: col={} row={} cols={} rows={} cw={} ch={}",
+                col,
+                row,
+                cols,
+                rows,
+                self.cell_width,
+                self.cell_height,
+            );
+            if col < cols && row < rows {
+                Some((row, col))
+            } else {
+                log::trace!("compute_hover: cell ({},{}) out of bounds", row, col);
+                None
+            }
+        });
 
         // Snap hover cell from spacer (right half of CJK / emoji wide chars)
         // back to the leading cell so URL hover-underline works over the
@@ -160,8 +162,12 @@ impl TerminalSession {
                 if response.clicked() {
                     let hist = self.terminal.history_size();
                     if hist > 0 {
-                        let (thumb, _) =
-                            Self::scrollbar_thumb_rect(sb_rect, self.terminal.size().rows as usize, hist, self.terminal.display_offset());
+                        let (thumb, _) = Self::scrollbar_thumb_rect(
+                            sb_rect,
+                            self.terminal.size().rows as usize,
+                            hist,
+                            self.terminal.display_offset(),
+                        );
                         if pos.y < thumb.top() {
                             self.terminal.scroll_display(rows as i32);
                         } else if pos.y > thumb.bottom() {
@@ -220,7 +226,10 @@ impl TerminalSession {
             let col_f = (pos.x - cell_area.left()) * ppp / cw;
             let col = (col_f + (1.0 - SELECTION_THRESHOLD)) as usize;
             let row = ((pos.y - cell_area.top()) * ppp / ch) as usize;
-            (row.min(rows.saturating_sub(1)), col.min(cols.saturating_sub(1)))
+            (
+                row.min(rows.saturating_sub(1)),
+                col.min(cols.saturating_sub(1)),
+            )
         };
 
         // ── Hover tracking (for URL underline) ──────────────────────────
@@ -264,10 +273,11 @@ impl TerminalSession {
         // Use the global pointer state to detect drags that continue outside
         // the terminal widget (edge-scroll).  `response.dragged()` may return
         // false once the pointer leaves the widget rect.
-        let is_dragging = response.dragged()
-            || ui.ctx().input(|i| i.pointer.is_decidedly_dragging());
+        let is_dragging =
+            response.dragged() || ui.ctx().input(|i| i.pointer.is_decidedly_dragging());
         if is_dragging {
-            let pointer_pos = response.interact_pointer_pos()
+            let pointer_pos = response
+                .interact_pointer_pos()
                 .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos()));
             if mouse_reporting {
                 if let Some(pos) = pointer_pos {
@@ -299,8 +309,7 @@ impl TerminalSession {
                             let dist = pos.y - cell_area.bottom();
                             let lines = (dist * ppp / ch).ceil().max(1.0) as i32;
                             self.terminal.scroll_display(-lines);
-                            self.terminal
-                                .update_selection(rows.saturating_sub(1), col);
+                            self.terminal.update_selection(rows.saturating_sub(1), col);
                         }
                         self.terminal_dirty = true;
                     }
@@ -360,7 +369,9 @@ impl TerminalSession {
         if pointer_in_terminal || self.scrollbar_dragging {
             log::info!(
                 "[dbg] wheel: enter processing, pointer_in_terminal={} scrollbar_dragging={} mouse_reporting={} num_events={}",
-                pointer_in_terminal, self.scrollbar_dragging, mouse_reporting,
+                pointer_in_terminal,
+                self.scrollbar_dragging,
+                mouse_reporting,
                 ui.ctx().input(|i| i.events.len()),
             );
             if mouse_reporting {
@@ -384,13 +395,16 @@ impl TerminalSession {
                 });
                 log::info!(
                     "[dbg] SGR branch: collected {} wheel events: {:?}, pointer_pos={:?}, pixel_to_cell={:?}",
-                    scroll_ys.len(), scroll_ys,
+                    scroll_ys.len(),
+                    scroll_ys,
                     pointer_pos,
                     pointer_pos.and_then(|p| pixel_to_cell(p)),
                 );
                 // Consume all wheel events to prevent egui from using them.
-                ui.ctx()
-                    .input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::MouseWheel { .. })));
+                ui.ctx().input_mut(|i| {
+                    i.events
+                        .retain(|e| !matches!(e, egui::Event::MouseWheel { .. }))
+                });
                 // Send SGR scroll events with delta accumulation.
                 // Accumulate all scroll deltas and send one event per
                 // line of total scroll.  Without this, each tiny sub-line
@@ -404,13 +418,22 @@ impl TerminalSession {
                             // This preserves fractional deltas across frames
                             // so slow/precise scrolling doesn't lose events.
                             self.scroll_accumulator_y += total as f64 * self.cell_height as f64;
-                            let lines = (self.scroll_accumulator_y / self.cell_height as f64).abs() as i32;
+                            let lines =
+                                (self.scroll_accumulator_y / self.cell_height as f64).abs() as i32;
                             if lines != 0 {
-                                let btn = if self.scroll_accumulator_y > 0.0 { 64 } else { 65 };
+                                let btn = if self.scroll_accumulator_y > 0.0 {
+                                    64
+                                } else {
+                                    65
+                                };
                                 let btn_val = btn | mod_bits;
                                 log::info!(
                                     "[dbg] SGR: acc={}, sending {} events btn={} col={} row={}",
-                                    self.scroll_accumulator_y, lines, btn_val, col + 1, row + 1,
+                                    self.scroll_accumulator_y,
+                                    lines,
+                                    btn_val,
+                                    col + 1,
+                                    row + 1,
                                 );
                                 // Batch all SGR sequences into a single PTY
                                 // write to avoid N `flush()` calls per frame.
@@ -458,14 +481,20 @@ impl TerminalSession {
                                 if write_elapsed > std::time::Duration::from_millis(10) {
                                     log::warn!(
                                         "[perf] SGR batch write: {} bytes in {:?}",
-                                        batch.len(), write_elapsed,
+                                        batch.len(),
+                                        write_elapsed,
                                     );
                                 }
                             } else {
-                                log::info!("[dbg] SGR: accumulated total={} too small, skipping", total);
+                                log::info!(
+                                    "[dbg] SGR: accumulated total={} too small, skipping",
+                                    total
+                                );
                             }
                         } else {
-                            log::info!("[dbg] SGR: pixel_to_cell returned None (pointer over scrollbar?)");
+                            log::info!(
+                                "[dbg] SGR: pixel_to_cell returned None (pointer over scrollbar?)"
+                            );
                         }
                     } else {
                         log::info!("[dbg] SGR: pointer_pos is None, can't send SGR");
@@ -490,8 +519,10 @@ impl TerminalSession {
                         .sum()
                 });
                 if total_scroll.abs() > 0.0 {
-                    ui.ctx()
-                        .input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::MouseWheel { .. })));
+                    ui.ctx().input_mut(|i| {
+                        i.events
+                            .retain(|e| !matches!(e, egui::Event::MouseWheel { .. }))
+                    });
                     // Do not scroll while an alternate-screen app is running
                     // (e.g. vim, less — the app handles its own scrolling).
                     if !mode.contains(TermMode::ALT_SCREEN) {
@@ -516,7 +547,8 @@ impl TerminalSession {
             || (self.selecting && !ui.ctx().input(|i| i.pointer.is_decidedly_dragging()));
         if drag_ended {
             if mouse_reporting {
-                if let Some(pos) = response.interact_pointer_pos()
+                if let Some(pos) = response
+                    .interact_pointer_pos()
                     .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos()))
                 {
                     if let Some((row, col)) = pixel_to_cell(pos) {
@@ -559,7 +591,7 @@ impl TerminalSession {
                     self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
                     self.send_sgr_mouse(row, col, btn, false); // press
                     self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
-                    self.send_sgr_mouse(row, col, btn, true);  // release
+                    self.send_sgr_mouse(row, col, btn, true); // release
                 }
             }
             return;
@@ -665,8 +697,11 @@ impl TerminalSession {
         let active = self.scrollbar_dragging || ui.rect_contains_pointer(track);
 
         // Track background.
-        ui.painter()
-            .rect_filled(track, 0.0, egui::Color32::from_black_alpha(if active { 40 } else { 15 }));
+        ui.painter().rect_filled(
+            track,
+            0.0,
+            egui::Color32::from_black_alpha(if active { 40 } else { 15 }),
+        );
 
         // Thumb – only draw when there is actually something to scroll.
         if screen < total {
@@ -679,11 +714,7 @@ impl TerminalSession {
     }
 
     /// Render the right-click context menu (Copy / Paste).
-    pub fn render_context_menu(
-        &mut self,
-        _ui: &egui::Ui,
-        response: &egui::Response,
-    ) {
+    pub fn render_context_menu(&mut self, _ui: &egui::Ui, response: &egui::Response) {
         response.context_menu(|ctx_ui| {
             if self.terminal.has_selection() {
                 if ctx_ui.button("Copy").clicked() {
@@ -734,8 +765,16 @@ mod tests {
         // thumb_ratio = 25/75 = 0.333, thumb_h = 400*0.333 = 133.33
         // pos_ratio = (50-0)/50 = 1.0 → thumb at bottom
         let (thumb, _h) = TerminalSession::scrollbar_thumb_rect(track, 25, 50, 0);
-        assert!((thumb.bottom() - 400.0).abs() < 1.0, "thumb.bottom={}", thumb.bottom());
-        assert!((thumb.top() - (400.0 - 133.33)).abs() < 1.0, "thumb.top={}", thumb.top());
+        assert!(
+            (thumb.bottom() - 400.0).abs() < 1.0,
+            "thumb.bottom={}",
+            thumb.bottom()
+        );
+        assert!(
+            (thumb.top() - (400.0 - 133.33)).abs() < 1.0,
+            "thumb.top={}",
+            thumb.top()
+        );
     }
 
     #[test]

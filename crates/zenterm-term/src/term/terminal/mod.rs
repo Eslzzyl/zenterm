@@ -4,7 +4,7 @@
 //! methods for feeding bytes, resizing, scrolling, and reading the grid.
 
 use std::collections::HashMap;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 
 use alacritty_terminal::event::{Event, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
@@ -12,9 +12,9 @@ use alacritty_terminal::index::{Column, Line};
 
 use zenterm_core::image::ImageCell;
 
+use crate::image::ImageCache;
 use crate::image::kitty::{KittyAccumulator, KittyImage};
 use crate::image::sixel;
-use crate::image::ImageCache;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{ClipboardType, Config as TermConfig, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{Color, Handler, NamedColor, Processor, Rgb};
@@ -25,24 +25,22 @@ use zenterm_core::damage::DamageSet;
 use zenterm_core::position::TermPos;
 use zenterm_core::size::TermSize;
 use zenterm_core::{
-    ITermProprietary, ITermUnicodeVersionOp,
-    KittyNotification, Progress, SemanticPrompt,
+    ITermProprietary, ITermUnicodeVersionOp, KittyNotification, Progress, SemanticPrompt,
 };
 
-use super::color_scheme::{named_color_default_rgb, ColorScheme};
+use super::TermDimensions;
+use super::color_scheme::{ColorScheme, named_color_default_rgb};
 use super::grid_view::{CursorInfo, GridView};
 use super::listener::Listener;
 use super::osc::{
-    parse_conemu_progress, parse_osc133, parse_iterm_proprietary, scan_oscs,
-    KittyNotificationState,
+    KittyNotificationState, parse_conemu_progress, parse_iterm_proprietary, parse_osc133, scan_oscs,
 };
-use super::TermDimensions;
 
-mod unicode;
-mod selection;
 mod image;
+mod selection;
+mod unicode;
 
-use self::unicode::{PLACEHOLDER_CHAR, diacritic_value, VirtualPlacement};
+use self::unicode::{PLACEHOLDER_CHAR, VirtualPlacement, diacritic_value};
 
 /// The terminal state machine.
 ///
@@ -253,24 +251,20 @@ impl Terminal {
                 let payload_start = esc_pos + 2;
                 // Find the string terminator ST: ESC \
                 // Use SIMD-optimized memchr instead of windows(2) for ~5x faster search.
-                let st_rel = memchr::memchr(0x1b, &bytes[payload_start..])
-                    .and_then(|rel| {
-                        let abs = payload_start + rel;
-                        if abs + 1 < bytes.len() && bytes[abs + 1] == b'\\' {
-                            Some(rel)
-                        } else {
-                            None
-                        }
-                    });
+                let st_rel = memchr::memchr(0x1b, &bytes[payload_start..]).and_then(|rel| {
+                    let abs = payload_start + rel;
+                    if abs + 1 < bytes.len() && bytes[abs + 1] == b'\\' {
+                        Some(rel)
+                    } else {
+                        None
+                    }
+                });
                 if let Some(st_rel) = st_rel {
                     let payload = &bytes[payload_start..payload_start + st_rel];
                     if let Some(cmd) = KittyImage::parse_apc(payload) {
                         let reply = self.handle_kitty_command(cmd);
                         if let Some(r) = reply {
-                            log::debug!(
-                                "[img] Kitty query response: {} bytes",
-                                r.len(),
-                            );
+                            log::debug!("[img] Kitty query response: {} bytes", r.len(),);
                             replies.extend_from_slice(r.as_bytes());
                         }
                     } else {
@@ -306,15 +300,14 @@ impl Terminal {
                 }
                 if j < bytes.len() && bytes[j] == b'q' {
                     let payload_start = j + 1;
-                    let st_rel = memchr::memchr(0x1b, &bytes[payload_start..])
-                        .and_then(|rel| {
-                            let abs = payload_start + rel;
-                            if abs + 1 < bytes.len() && bytes[abs + 1] == b'\\' {
-                                Some(rel)
-                            } else {
-                                None
-                            }
-                        });
+                    let st_rel = memchr::memchr(0x1b, &bytes[payload_start..]).and_then(|rel| {
+                        let abs = payload_start + rel;
+                        if abs + 1 < bytes.len() && bytes[abs + 1] == b'\\' {
+                            Some(rel)
+                        } else {
+                            None
+                        }
+                    });
                     if let Some(st_rel) = st_rel {
                         let params = sixel::parse_dcs_params(&bytes[param_start..j]);
                         self.handle_sixel(&bytes[payload_start..payload_start + st_rel], &params);
@@ -351,12 +344,23 @@ impl Terminal {
                         if param_str == "16" {
                             let cols = self.term.columns();
                             let rows = self.term.screen_lines();
-                            let cell_w = if cols > 0 { self.pixel_width / cols as u32 } else { 0 };
-                            let cell_h = if rows > 0 { self.pixel_height / rows as u32 } else { 0 };
+                            let cell_w = if cols > 0 {
+                                self.pixel_width / cols as u32
+                            } else {
+                                0
+                            };
+                            let cell_h = if rows > 0 {
+                                self.pixel_height / rows as u32
+                            } else {
+                                0
+                            };
                             let response = format!("\x1b[6;{};{}t", cell_h, cell_w);
                             log::info!(
                                 "[img] CSI 16t response: cell_w={cell_w}, cell_h={cell_h}, pixel={}x{}, grid={}x{}",
-                                self.pixel_width, self.pixel_height, cols, rows,
+                                self.pixel_width,
+                                self.pixel_height,
+                                cols,
+                                rows,
                             );
                             replies.extend_from_slice(response.as_bytes());
                             prev_end = Some(j + 1);
@@ -367,7 +371,9 @@ impl Terminal {
         }
         log::debug!(
             "[img] APC scan: batch_len={}, apc_count={}, elapsed={:?}",
-            bytes.len(), apc_count, t_apc_start.elapsed(),
+            bytes.len(),
+            apc_count,
+            t_apc_start.elapsed(),
         );
         let t_apc_elapsed = t_apc_start.elapsed();
 
@@ -412,7 +418,8 @@ impl Terminal {
 
             // Process bytes before this OSC (cursor positioning, text, etc.).
             if vt_osc_start > prev_vt_off {
-                self.processor.advance(&mut self.term, &vt_bytes[prev_vt_off..vt_osc_start]);
+                self.processor
+                    .advance(&mut self.term, &vt_bytes[prev_vt_off..vt_osc_start]);
             }
 
             // Dispatch the OSC — cursor/grid state now reflects the prefix
@@ -428,8 +435,7 @@ impl Terminal {
                         self.pending_progress = Some(prog);
                     } else {
                         // iTerm2-style notification.
-                        self.pending_notification =
-                            Some(("Zenterm".into(), osc.payload.clone()));
+                        self.pending_notification = Some(("Zenterm".into(), osc.payload.clone()));
                     }
                 }
                 777 => {
@@ -482,8 +488,7 @@ impl Terminal {
                 }
                 99 => {
                     // OSC 99 — Kitty desktop notification.
-                    let (notification, response) = self.kitty_state
-                        .handle_event(&osc.payload, "");
+                    let (notification, response) = self.kitty_state.handle_event(&osc.payload, "");
                     if let Some(notif) = notification {
                         // Reuse the existing notification channel for display.
                         let title = if notif.title.is_empty() {
@@ -533,8 +538,7 @@ impl Terminal {
                                 );
                             }
                             ITermProprietary::StealFocus => {
-                                self.pending_iterm_action =
-                                    Some(ITermProprietary::StealFocus);
+                                self.pending_iterm_action = Some(ITermProprietary::StealFocus);
                             }
                             ITermProprietary::ClearScrollback => {
                                 self.term.grid_mut().clear_history();
@@ -552,14 +556,11 @@ impl Terminal {
                                     Some(ITermProprietary::HighlightCursorLine(enabled));
                             }
                             ITermProprietary::RequestCellSize => {
-                                if self.cell_pixel_width > 0
-                                    && self.cell_pixel_height > 0
-                                {
+                                if self.cell_pixel_width > 0 && self.cell_pixel_height > 0 {
                                     let w = self.cell_pixel_width as f32;
                                     let h = self.cell_pixel_height as f32;
-                                    let response = format!(
-                                        "\x1b]1337;ReportCellSize={h};{w}\x1b\\"
-                                    );
+                                    let response =
+                                        format!("\x1b]1337;ReportCellSize={h};{w}\x1b\\");
                                     log::debug!(
                                         "Terminal::feed: OSC 1337 RequestCellSize \
                                          response: {response}"
@@ -576,25 +577,18 @@ impl Terminal {
                                     .iterm_builtin_var(&name)
                                     .or_else(|| self.user_vars.get(&name).cloned());
                                 let response = if let Some(val) = value {
-                                    let b64_val =
-                                        crate::term::osc::base64_encode_for_response(
-                                            val.as_bytes(),
-                                        );
-                                    let b64_name =
-                                        crate::term::osc::base64_encode_for_response(
-                                            name.as_bytes(),
-                                        );
-                                    format!(
-                                        "\x1b]1337;ReportVariable={b64_name}={b64_val}\x1b\\"
-                                    )
+                                    let b64_val = crate::term::osc::base64_encode_for_response(
+                                        val.as_bytes(),
+                                    );
+                                    let b64_name = crate::term::osc::base64_encode_for_response(
+                                        name.as_bytes(),
+                                    );
+                                    format!("\x1b]1337;ReportVariable={b64_name}={b64_val}\x1b\\")
                                 } else {
-                                    let b64_name =
-                                        crate::term::osc::base64_encode_for_response(
-                                            name.as_bytes(),
-                                        );
-                                    format!(
-                                        "\x1b]1337;ReportVariable={b64_name}=\x1b\\"
-                                    )
+                                    let b64_name = crate::term::osc::base64_encode_for_response(
+                                        name.as_bytes(),
+                                    );
+                                    format!("\x1b]1337;ReportVariable={b64_name}=\x1b\\")
                                 };
                                 log::debug!(
                                     "Terminal::feed: OSC 1337 ReportVariable({name}) \
@@ -620,37 +614,30 @@ impl Terminal {
                                         Some(ITermProprietary::File(file_data));
                                 }
                             }
-                            ITermProprietary::UnicodeVersion(op) => {
-                                match op {
-                                    ITermUnicodeVersionOp::Set(n) => {
-                                        self.unicode_version = n;
-                                    }
-                                    ITermUnicodeVersionOp::Push(label) => {
-                                        self.unicode_version_stack.push((
-                                            self.unicode_version,
-                                            label,
-                                        ));
-                                    }
-                                    ITermUnicodeVersionOp::Pop(label) => {
-                                        if let Some(l) = label {
-                                            while let Some((ver, ol)) =
-                                                self.unicode_version_stack.pop()
-                                            {
-                                                self.unicode_version = ver;
-                                                if ol == Some(l.clone()) {
-                                                    break;
-                                                }
+                            ITermProprietary::UnicodeVersion(op) => match op {
+                                ITermUnicodeVersionOp::Set(n) => {
+                                    self.unicode_version = n;
+                                }
+                                ITermUnicodeVersionOp::Push(label) => {
+                                    self.unicode_version_stack
+                                        .push((self.unicode_version, label));
+                                }
+                                ITermUnicodeVersionOp::Pop(label) => {
+                                    if let Some(l) = label {
+                                        while let Some((ver, ol)) = self.unicode_version_stack.pop()
+                                        {
+                                            self.unicode_version = ver;
+                                            if ol == Some(l.clone()) {
+                                                break;
                                             }
-                                        } else {
-                                            if let Some((ver, _)) =
-                                                self.unicode_version_stack.pop()
-                                            {
-                                                self.unicode_version = ver;
-                                            }
+                                        }
+                                    } else {
+                                        if let Some((ver, _)) = self.unicode_version_stack.pop() {
+                                            self.unicode_version = ver;
                                         }
                                     }
                                 }
-                            }
+                            },
                         }
                     }
                 }
@@ -667,7 +654,8 @@ impl Terminal {
 
         // Process remaining bytes after the last OSC.
         if prev_vt_off < vt_bytes.len() {
-            self.processor.advance(&mut self.term, &vt_bytes[prev_vt_off..]);
+            self.processor
+                .advance(&mut self.term, &vt_bytes[prev_vt_off..]);
         }
         let t_vt_elapsed = t_vt_start.elapsed();
 
@@ -709,8 +697,16 @@ impl Terminal {
                     log::debug!("Terminal::feed: TextAreaSizeRequest");
                     let cols = self.term.columns() as u16;
                     let rows = self.term.screen_lines() as u16;
-                    let cell_w = if cols > 0 { (self.pixel_width / cols as u32) as u16 } else { 0 };
-                    let cell_h = if rows > 0 { (self.pixel_height / rows as u32) as u16 } else { 0 };
+                    let cell_w = if cols > 0 {
+                        (self.pixel_width / cols as u32) as u16
+                    } else {
+                        0
+                    };
+                    let cell_h = if rows > 0 {
+                        (self.pixel_height / rows as u32) as u16
+                    } else {
+                        0
+                    };
                     let size = WindowSize {
                         num_lines: rows,
                         num_cols: cols,
@@ -762,9 +758,7 @@ impl Terminal {
                     log::debug!("Terminal::feed: ChildExit({:?})", status);
                     self.pending_child_exit = Some(status);
                 }
-                Event::CursorBlinkingChange
-                | Event::MouseCursorDirty
-                | Event::Wakeup => {
+                Event::CursorBlinkingChange | Event::MouseCursorDirty | Event::Wakeup => {
                     // These events are handled internally by the term or
                     // are noise that we don't need to act on.
                 }
@@ -776,8 +770,13 @@ impl Terminal {
         if elapsed > std::time::Duration::from_millis(50) {
             log::warn!(
                 "[perf] Terminal::feed({} bytes) took {:?} (apc_scan={:?} osc_scan={:?} vt_parse={:?} damage={:?} events={:?})",
-                bytes.len(), elapsed,
-                t_apc_elapsed, t_osc_elapsed, t_vt_elapsed, t_damage_elapsed, t_evt_elapsed,
+                bytes.len(),
+                elapsed,
+                t_apc_elapsed,
+                t_osc_elapsed,
+                t_vt_elapsed,
+                t_damage_elapsed,
+                t_evt_elapsed,
             );
         }
 
@@ -969,14 +968,20 @@ impl Terminal {
                         let row_val = match diacritic_value(zerowidth[0]) {
                             Some(v) => v,
                             None => {
-                                log::warn!("[img] unicode placeholder: invalid row diacritic cp={:X}", zerowidth[0] as u32);
+                                log::warn!(
+                                    "[img] unicode placeholder: invalid row diacritic cp={:X}",
+                                    zerowidth[0] as u32
+                                );
                                 continue;
                             }
                         };
                         let col_val = match diacritic_value(zerowidth[1]) {
                             Some(v) => v,
                             None => {
-                                log::warn!("[img] unicode placeholder: invalid col diacritic cp={:X}", zerowidth[1] as u32);
+                                log::warn!(
+                                    "[img] unicode placeholder: invalid col diacritic cp={:X}",
+                                    zerowidth[1] as u32
+                                );
                                 continue;
                             }
                         };
@@ -1001,8 +1006,14 @@ impl Terminal {
                         let col_val = inh_col;
                         inh_col = inh_col.saturating_add(1);
 
-                        placeholders.push((row_idx, col_idx, full_id, row_val, col_val,
-                            inh_id_extra.unwrap_or(0)));
+                        placeholders.push((
+                            row_idx,
+                            col_idx,
+                            full_id,
+                            row_val,
+                            col_val,
+                            inh_id_extra.unwrap_or(0),
+                        ));
                     }
                     // else: no inherited state yet — skip.
                 }
@@ -1035,16 +1046,18 @@ impl Terminal {
         _id_extra: u32,
     ) {
         // Find the virtual placement for this image_id.
-        let vp = self.virtual_placements.get(&(image_id, None))
-            .or_else(|| {
-                self.virtual_placements.iter()
-                    .find(|((id, _), _)| *id == image_id)
-                    .map(|(_, vp)| vp)
-            });
+        let vp = self.virtual_placements.get(&(image_id, None)).or_else(|| {
+            self.virtual_placements
+                .iter()
+                .find(|((id, _), _)| *id == image_id)
+                .map(|(_, vp)| vp)
+        });
         let vp = match vp {
             Some(vp) => vp,
             None => {
-                log::warn!("[img] unicode placeholder: no virtual placement for image_id={image_id}");
+                log::warn!(
+                    "[img] unicode placeholder: no virtual placement for image_id={image_id}"
+                );
                 return;
             }
         };
@@ -1307,7 +1320,6 @@ impl Terminal {
         self.pending_clipboard_load.take()
     }
 
-
     /// Default background colour — the resolved `NamedColor::Background`.
     ///
     /// Cells whose `cell.bg` equals this value don't need their own
@@ -1344,8 +1356,16 @@ impl Terminal {
 
         Cell {
             c,
-            fg: if flags.contains(Flags::INVERSE) { bg } else { fg },
-            bg: if flags.contains(Flags::INVERSE) { fg } else { bg },
+            fg: if flags.contains(Flags::INVERSE) {
+                bg
+            } else {
+                fg
+            },
+            bg: if flags.contains(Flags::INVERSE) {
+                fg
+            } else {
+                bg
+            },
             bold: flags.contains(Flags::BOLD),
             italic: flags.contains(Flags::ITALIC),
             underline_style,
@@ -1361,8 +1381,8 @@ impl Terminal {
     fn resolve_color(&self, color: Color) -> Rgba {
         match color {
             Color::Named(named) => {
-                let rgb = self.scheme.colors[named]
-                    .unwrap_or_else(|| named_color_default_rgb(named));
+                let rgb =
+                    self.scheme.colors[named].unwrap_or_else(|| named_color_default_rgb(named));
                 Rgba::from_u8(rgb.r, rgb.g, rgb.b, 255)
             }
             Color::Spec(rgb) => Rgba::from_u8(rgb.r, rgb.g, rgb.b, 255),

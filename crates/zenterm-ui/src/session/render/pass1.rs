@@ -1,8 +1,8 @@
 //! Shared rendering pass 1: background quad.
 
 use zenterm_core::color::Rgba;
-use zenterm_render::glyph_type;
 use zenterm_render::CellInstance;
+use zenterm_render::glyph_type;
 
 /// Emit a solid-colour background quad for a single cell.
 ///
@@ -56,10 +56,22 @@ mod tests {
     #[test]
     fn emits_when_color_different_from_default() {
         let mut v = vec![];
-        emit_background_quad(&mut v, 0, 0, 10.0, 20.0, 1.0,
-            Rgba::new(1.0, 0.0, 0.0, 1.0),  // red
-            Rgba::new(0.0, 0.0, 0.0, 1.0),  // default = black
-            false, 0.0, 0.0, 2.0, 2.0, 1.0);
+        emit_background_quad(
+            &mut v,
+            0,
+            0,
+            10.0,
+            20.0,
+            1.0,
+            Rgba::new(1.0, 0.0, 0.0, 1.0), // red
+            Rgba::new(0.0, 0.0, 0.0, 1.0), // default = black
+            false,
+            0.0,
+            0.0,
+            2.0,
+            2.0,
+            1.0,
+        );
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].flags, glyph_type::SOLID);
     }
@@ -67,21 +79,44 @@ mod tests {
     #[test]
     fn skips_when_color_matches_default_and_not_force() {
         let mut v = vec![];
-        emit_background_quad(&mut v, 0, 0, 10.0, 20.0, 1.0,
+        emit_background_quad(
+            &mut v,
+            0,
+            0,
+            10.0,
+            20.0,
+            1.0,
             Rgba::new(0.0, 0.0, 0.0, 1.0),
-            Rgba::new(0.0, 0.0, 0.0, 1.0),  // same
-            false, 0.0, 0.0, 2.0, 2.0, 1.0);
+            Rgba::new(0.0, 0.0, 0.0, 1.0), // same
+            false,
+            0.0,
+            0.0,
+            2.0,
+            2.0,
+            1.0,
+        );
         assert_eq!(v.len(), 0);
     }
 
     #[test]
     fn force_overrides_default_bg_skip() {
         let mut v = vec![];
-        emit_background_quad(&mut v, 0, 0, 10.0, 20.0, 1.0,
+        emit_background_quad(
+            &mut v,
+            0,
+            0,
+            10.0,
+            20.0,
+            1.0,
             Rgba::new(0.0, 0.0, 0.0, 1.0),
-            Rgba::new(0.0, 0.0, 0.0, 1.0),  // same
-            true,  // force
-            0.0, 0.0, 2.0, 2.0, 1.0);
+            Rgba::new(0.0, 0.0, 0.0, 1.0), // same
+            true,                          // force
+            0.0,
+            0.0,
+            2.0,
+            2.0,
+            1.0,
+        );
         assert_eq!(v.len(), 1);
     }
 
@@ -92,10 +127,22 @@ mod tests {
         // bg_x = 5 + (1*10).round() = 15
         // bg_y = 5 + (2*20).round() = 45
         // clip_pos = [15*2-1=29, 1-45*2=-89]
-        emit_background_quad(&mut v, 1, 2, 10.0, 20.0, 1.0,
+        emit_background_quad(
+            &mut v,
+            1,
+            2,
+            10.0,
+            20.0,
+            1.0,
             Rgba::new(1.0, 0.0, 0.0, 1.0),
             Rgba::new(0.0, 0.0, 0.0, 1.0),
-            false, 5.0, 5.0, 2.0, 2.0, 1.0);
+            false,
+            5.0,
+            5.0,
+            2.0,
+            2.0,
+            1.0,
+        );
         assert_eq!(v.len(), 1);
         let eps = 0.001;
         assert!((v[0].clip_pos[0] - 29.0).abs() < eps);
@@ -106,10 +153,22 @@ mod tests {
     fn wide_char_num_cells_doubles_width() {
         let mut v = vec![];
         // num_cells=2 should make clip_cell_size.x = 10*2*2 = 40
-        emit_background_quad(&mut v, 0, 0, 10.0, 20.0, 2.0,
+        emit_background_quad(
+            &mut v,
+            0,
+            0,
+            10.0,
+            20.0,
+            2.0,
             Rgba::new(1.0, 0.0, 0.0, 1.0),
             Rgba::new(0.0, 0.0, 0.0, 1.0),
-            false, 0.0, 0.0, 2.0, 2.0, 1.0);
+            false,
+            0.0,
+            0.0,
+            2.0,
+            2.0,
+            1.0,
+        );
         assert_eq!(v.len(), 1);
         assert!((v[0].clip_cell_size[0] - 40.0).abs() < 0.001);
         assert!((v[0].clip_cell_size[1] - 40.0).abs() < 0.001);
@@ -119,9 +178,22 @@ mod tests {
     fn fg_and_bg_color_match_input() {
         let mut v = vec![];
         let red = Rgba::new(1.0, 0.0, 0.0, 1.0);
-        emit_background_quad(&mut v, 0, 0, 10.0, 20.0, 1.0,
-            red, Rgba::new(0.0, 0.0, 0.0, 1.0),
-            true, 0.0, 0.0, 2.0, 2.0, 1.0);
+        emit_background_quad(
+            &mut v,
+            0,
+            0,
+            10.0,
+            20.0,
+            1.0,
+            red,
+            Rgba::new(0.0, 0.0, 0.0, 1.0),
+            true,
+            0.0,
+            0.0,
+            2.0,
+            2.0,
+            1.0,
+        );
         assert_eq!(v.len(), 1);
         assert!((v[0].fg_color[0] - 1.0).abs() < 0.001);
         assert!((v[0].fg_color[1]).abs() < 0.001);
@@ -132,10 +204,22 @@ mod tests {
     #[test]
     fn opacity_scales_alpha() {
         let mut v = vec![];
-        emit_background_quad(&mut v, 0, 0, 10.0, 20.0, 1.0,
+        emit_background_quad(
+            &mut v,
+            0,
+            0,
+            10.0,
+            20.0,
+            1.0,
             Rgba::new(1.0, 0.0, 0.0, 1.0),
             Rgba::new(0.0, 0.0, 0.0, 1.0),
-            true, 0.0, 0.0, 2.0, 2.0, 0.5);
+            true,
+            0.0,
+            0.0,
+            2.0,
+            2.0,
+            0.5,
+        );
         assert_eq!(v.len(), 1);
         // Alpha should be 1.0 * 0.5 = 0.5
         assert!((v[0].fg_color[3] - 0.5).abs() < 0.001);
@@ -145,10 +229,22 @@ mod tests {
     #[test]
     fn opacity_zero_makes_fully_transparent() {
         let mut v = vec![];
-        emit_background_quad(&mut v, 0, 0, 10.0, 20.0, 1.0,
+        emit_background_quad(
+            &mut v,
+            0,
+            0,
+            10.0,
+            20.0,
+            1.0,
             Rgba::new(1.0, 0.0, 0.0, 1.0),
             Rgba::new(0.0, 0.0, 0.0, 1.0),
-            true, 0.0, 0.0, 2.0, 2.0, 0.0);
+            true,
+            0.0,
+            0.0,
+            2.0,
+            2.0,
+            0.0,
+        );
         assert_eq!(v.len(), 1);
         assert!((v[0].fg_color[3] - 0.0).abs() < 0.001);
     }
@@ -157,11 +253,22 @@ mod tests {
     fn opacity_does_not_affect_skip_optimization() {
         let mut v = vec![];
         // Color matches default_bg → should still be skipped regardless of opacity.
-        emit_background_quad(&mut v, 0, 0, 10.0, 20.0, 1.0,
+        emit_background_quad(
+            &mut v,
+            0,
+            0,
+            10.0,
+            20.0,
+            1.0,
             Rgba::new(0.0, 0.0, 0.0, 1.0),
             Rgba::new(0.0, 0.0, 0.0, 1.0),
-            false, 0.0, 0.0, 2.0, 2.0, 0.3);
+            false,
+            0.0,
+            0.0,
+            2.0,
+            2.0,
+            0.3,
+        );
         assert_eq!(v.len(), 0);
     }
 }
-

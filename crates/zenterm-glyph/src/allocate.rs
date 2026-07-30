@@ -16,11 +16,7 @@ impl GlyphAtlas {
     /// Existing slots are unchanged — all prior [`GlyphEntry`] UV
     /// coordinates remain valid.
     pub(crate) fn grow_atlas(&mut self) -> Result<()> {
-        let current_size = self
-            .slots
-            .last()
-            .map(|s| s.size)
-            .unwrap_or(512);
+        let current_size = self.slots.last().map(|s| s.size).unwrap_or(512);
         let new_size = (current_size * 2).min(4096);
 
         if new_size > 4096 || new_size == current_size {
@@ -36,10 +32,8 @@ impl GlyphAtlas {
             new_size,
         );
 
-        let allocator = etagere::AtlasAllocator::new(etagere::size2(
-            new_size as i32,
-            new_size as i32,
-        ));
+        let allocator =
+            etagere::AtlasAllocator::new(etagere::size2(new_size as i32, new_size as i32));
         let texture_data = vec![0u8; (new_size * new_size * 4) as usize];
 
         self.slots.push(AtlasSlot {

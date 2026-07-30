@@ -110,8 +110,7 @@ impl ImageCache {
         if self.used_memory <= self.max_memory {
             return;
         }
-        let referenced: std::collections::HashSet<u32> =
-            self.id_to_data.keys().copied().collect();
+        let referenced: std::collections::HashSet<u32> = self.id_to_data.keys().copied().collect();
         let target = self.used_memory - self.max_memory;
         let mut freed = 0;
         self.id_to_data.retain(|id, data| {

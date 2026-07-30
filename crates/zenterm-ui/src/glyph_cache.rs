@@ -27,10 +27,10 @@
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use std::sync::atomic::Ordering;
 use zenterm_core::{HintingMode, RenderMode, Result, SubpixelLayout};
 use zenterm_glyph::{GlyphAtlas, ShapedGlyph};
 use zenterm_render::callback::{AtlasSlotData, AtlasUpdate, SharedRenderState};
-use std::sync::atomic::Ordering;
 
 /// Guard returned by [`SharedGlyphAtlas::lock`].  Provides mutable
 /// access to the underlying [`GlyphAtlas`].
@@ -107,7 +107,10 @@ impl SharedGlyphAtlas {
     /// Convenience wrapper for callers that don't want to hold the
     /// lock for long.
     pub fn cell_size(&self) -> (f32, f32) {
-        self.lock().guard.cell_size().expect("glyph atlas cell_size")
+        self.lock()
+            .guard
+            .cell_size()
+            .expect("glyph atlas cell_size")
     }
 
     /// Y offset (in pixels) from the cell top to the baseline.
@@ -210,8 +213,7 @@ impl SharedGlyphAtlas {
     /// Re-seed the atlas with common ASCII characters so the first
     /// frame has something to render.
     pub fn seed_ascii(&self) {
-        const ASCII: &str =
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,!?;:-=+*/\\|()[]{}<>\"'`~@#$%^&_";
+        const ASCII: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,!?;:-=+*/\\|()[]{}<>\"'`~@#$%^&_";
         let mut atlas = self.inner.lock().unwrap();
         for c in ASCII.chars() {
             let _ = atlas.ensure_glyph(c);
@@ -238,11 +240,13 @@ impl SharedGlyphAtlas {
 
 impl<'a> std::ops::Deref for GlyphAtlasGuard<'a> {
     type Target = GlyphAtlas;
-    fn deref(&self) -> &Self::Target { &*self.guard }
+    fn deref(&self) -> &Self::Target {
+        &*self.guard
+    }
 }
 
 impl<'a> std::ops::DerefMut for GlyphAtlasGuard<'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut *self.guard }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.guard
+    }
 }
-
-

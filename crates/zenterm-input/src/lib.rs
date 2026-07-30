@@ -38,10 +38,10 @@ mod sequences;
 mod tests;
 
 use self::keys::{key_to_ascii, key_to_ctrl_code, key_to_ctrl_extended};
-use self::kitty::{lookup as kitty_lookup, Terminator};
+use self::kitty::{Terminator, lookup as kitty_lookup};
 use self::sequences::{
-    ascii_alternates, csi_u_simple, cursor_seq, fkey_seq, kitty_mod_idx, kitty_seq,
-    modifier_index, tilde_seq, tilde_seq_raw,
+    ascii_alternates, csi_u_simple, cursor_seq, fkey_seq, kitty_mod_idx, kitty_seq, modifier_index,
+    tilde_seq, tilde_seq_raw,
 };
 
 bitflags::bitflags! {
@@ -202,8 +202,9 @@ impl InputMapper {
                 if text.is_empty() {
                     return None;
                 }
-                let has_printable =
-                    text.chars().any(|c| !c.is_control() && c != '\n' && c != '\r');
+                let has_printable = text
+                    .chars()
+                    .any(|c| !c.is_control() && c != '\n' && c != '\r');
                 if !has_printable {
                     return None;
                 }
@@ -514,8 +515,7 @@ fn encode_kitty(
     };
 
     // ── Associated text ───────────────────────────────────────────────
-    let text_codepoints = if flags.contains(KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT) && pressed
-    {
+    let text_codepoints = if flags.contains(KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT) && pressed {
         associated_text_codepoints(&key)
     } else {
         vec![]
@@ -558,18 +558,60 @@ fn encode_kitty_text(
 fn is_printable_key(key: &Key) -> bool {
     matches!(
         key,
-        Key::A | Key::B | Key::C | Key::D | Key::E | Key::F | Key::G
-            | Key::H | Key::I | Key::J | Key::K | Key::L | Key::M
-            | Key::N | Key::O | Key::P | Key::Q | Key::R | Key::S
-            | Key::T | Key::U | Key::V | Key::W | Key::X | Key::Y | Key::Z
-            | Key::Num0 | Key::Num1 | Key::Num2 | Key::Num3 | Key::Num4
-            | Key::Num5 | Key::Num6 | Key::Num7 | Key::Num8 | Key::Num9
+        Key::A
+            | Key::B
+            | Key::C
+            | Key::D
+            | Key::E
+            | Key::F
+            | Key::G
+            | Key::H
+            | Key::I
+            | Key::J
+            | Key::K
+            | Key::L
+            | Key::M
+            | Key::N
+            | Key::O
+            | Key::P
+            | Key::Q
+            | Key::R
+            | Key::S
+            | Key::T
+            | Key::U
+            | Key::V
+            | Key::W
+            | Key::X
+            | Key::Y
+            | Key::Z
+            | Key::Num0
+            | Key::Num1
+            | Key::Num2
+            | Key::Num3
+            | Key::Num4
+            | Key::Num5
+            | Key::Num6
+            | Key::Num7
+            | Key::Num8
+            | Key::Num9
             | Key::Space
-            | Key::Minus | Key::Equals | Key::Comma | Key::Period
-            | Key::Slash | Key::Backslash | Key::Semicolon | Key::Quote
-            | Key::Backtick | Key::OpenBracket | Key::CloseBracket
-            | Key::Colon | Key::Plus | Key::Pipe | Key::Questionmark
-            | Key::Exclamationmark | Key::OpenCurlyBracket
+            | Key::Minus
+            | Key::Equals
+            | Key::Comma
+            | Key::Period
+            | Key::Slash
+            | Key::Backslash
+            | Key::Semicolon
+            | Key::Quote
+            | Key::Backtick
+            | Key::OpenBracket
+            | Key::CloseBracket
+            | Key::Colon
+            | Key::Plus
+            | Key::Pipe
+            | Key::Questionmark
+            | Key::Exclamationmark
+            | Key::OpenCurlyBracket
             | Key::CloseCurlyBracket
     )
 }
@@ -579,10 +621,7 @@ fn is_printable_key(key: &Key) -> bool {
 /// Used as the primary key code in Kitty CSI-u sequences.  Per the
 /// protocol the primary code is **always** the unshifted/base value;
 /// the Shift modifier is conveyed only via the modifier field.
-fn logical_codepoint(
-    key: &Key,
-    physical_key: Option<Key>,
-) -> Option<u32> {
+fn logical_codepoint(key: &Key, physical_key: Option<Key>) -> Option<u32> {
     // Prefer the physical key position over the logical key when they
     // differ, because the physical key represents the unshifted
     // character on the keyboard.

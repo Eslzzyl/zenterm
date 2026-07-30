@@ -20,7 +20,12 @@ pub struct TermSize {
 impl TermSize {
     /// Create a new terminal size.
     pub const fn new(rows: u16, cols: u16, pixel_width: u16, pixel_height: u16) -> Self {
-        Self { rows, cols, pixel_width, pixel_height }
+        Self {
+            rows,
+            cols,
+            pixel_width,
+            pixel_height,
+        }
     }
 }
 

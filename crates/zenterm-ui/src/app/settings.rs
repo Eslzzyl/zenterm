@@ -16,7 +16,8 @@ impl ZentermApp {
 
         // ── One-time font registration ─────────────────────────────
         if self.settings_state.open && !self.settings_state.fonts_registered {
-            let ok = crate::settings::register_preview_fonts(ctx, &self.settings_state.font_families);
+            let ok =
+                crate::settings::register_preview_fonts(ctx, &self.settings_state.font_families);
             self.settings_state.registered_fonts = ok;
             self.settings_state.fonts_registered = true;
         }
@@ -36,29 +37,21 @@ impl ZentermApp {
         let settings_state = &mut self.settings_state;
         let config = &self.config;
 
-        let output = ctx.show_viewport_immediate(
-            viewport_id,
-            builder,
-            |ctx, _class| {
-                // User clicked the native close button → hide the viewport.
-                if ctx.input(|i| i.viewport().close_requested()) {
-                    settings_state.open = false;
-                    return crate::settings::SettingsOutput::default();
-                }
+        let output = ctx.show_viewport_immediate(viewport_id, builder, |ctx, _class| {
+            // User clicked the native close button → hide the viewport.
+            if ctx.input(|i| i.viewport().close_requested()) {
+                settings_state.open = false;
+                return crate::settings::SettingsOutput::default();
+            }
 
-                // Set the window title (dirty indicator).
-                let dirty = settings_state.is_dirty(config);
-                let title = if dirty {
-                    "Settings ●"
-                } else {
-                    "Settings"
-                };
-                ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.to_owned()));
+            // Set the window title (dirty indicator).
+            let dirty = settings_state.is_dirty(config);
+            let title = if dirty { "Settings ●" } else { "Settings" };
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.to_owned()));
 
-                // Render the settings form (no egui::Window wrapper).
-                crate::settings::render_settings_viewport(ctx, settings_state, config)
-            },
-        );
+            // Render the settings form (no egui::Window wrapper).
+            crate::settings::render_settings_viewport(ctx, settings_state, config)
+        });
 
         // ── Immediate apply: if working_config changed, apply now ─
         if settings_state.is_dirty(&self.config) {

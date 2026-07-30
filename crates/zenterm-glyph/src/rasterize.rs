@@ -73,10 +73,7 @@ impl GlyphAtlas {
             .hint(hint)
             .build();
 
-        let offset = Vector::new(
-            cache_key.x_bin.as_float(),
-            cache_key.y_bin.as_float(),
-        );
+        let offset = Vector::new(cache_key.x_bin.as_float(), cache_key.y_bin.as_float());
 
         let transform = if cache_key.flags.contains(CacheKeyFlags::FAKE_ITALIC) {
             Some(Transform::skew(

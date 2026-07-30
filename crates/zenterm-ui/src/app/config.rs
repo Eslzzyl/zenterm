@@ -10,8 +10,8 @@ use zenterm_config::Config;
 use zenterm_core::SubpixelLayout;
 use zenterm_term::ColorScheme;
 
-use super::theme::theme_bg_to_color32;
 use super::ZentermApp;
+use super::theme::theme_bg_to_color32;
 
 impl ZentermApp {
     pub(crate) fn maybe_save_config(&mut self) {
@@ -71,7 +71,11 @@ impl ZentermApp {
     // ── Config reload ─────────────────────────────────────────────
     /// Apply a new config in-place, updating all sessions and the
     /// glyph atlas as needed.  Returns the diff of what changed.
-    pub(crate) fn apply_new_config(&mut self, new_config: Config, egui_ctx: &Context) -> zenterm_config::ConfigChanges {
+    pub(crate) fn apply_new_config(
+        &mut self,
+        new_config: Config,
+        egui_ctx: &Context,
+    ) -> zenterm_config::ConfigChanges {
         let old_config = std::mem::replace(&mut self.config, new_config);
         let changes = old_config.diff_to(&self.config);
 
@@ -114,7 +118,8 @@ impl ZentermApp {
         // Apply per-session config changes.
         if changes.font || changes.cursor || changes.colors {
             for (_, session) in self.sessions.iter_mut() {
-                session.apply_config_change(self.config.font.size, self.config.cursor.blink_interval);
+                session
+                    .apply_config_change(self.config.font.size, self.config.cursor.blink_interval);
                 session.terminal_dirty = true;
             }
         }
@@ -123,8 +128,7 @@ impl ZentermApp {
         // (size, family, ligatures, hinting, etc.).
         if changes.font {
             let new_font_size = self.config.font.size * self.pixels_per_point;
-            let font_family =
-                std::borrow::Cow::Owned(self.config.font.normal.family.clone());
+            let font_family = std::borrow::Cow::Owned(self.config.font.normal.family.clone());
             let (cw, ch) = self.atlas.reinit_for_dpi(
                 new_font_size,
                 font_family,
@@ -148,26 +152,48 @@ impl ZentermApp {
         // in emit_background_quad() and do not require a reload.
         if changes.background {
             let _t0 = std::time::Instant::now();
-            let old_path = old_config.background.image_path.as_deref().unwrap_or("").to_owned();
-            let new_path = self.config.background.image_path.as_deref().unwrap_or("").to_owned();
+            let old_path = old_config
+                .background
+                .image_path
+                .as_deref()
+                .unwrap_or("")
+                .to_owned();
+            let new_path = self
+                .config
+                .background
+                .image_path
+                .as_deref()
+                .unwrap_or("")
+                .to_owned();
             if old_path != new_path {
                 // Clone the path before the mutable borrow.
                 let path = self.config.background.image_path.clone();
                 match path {
                     Some(p) if !p.is_empty() => {
                         self.load_background_image(&p);
-                        log::debug!("bg: apply_new_config -> load_background_image took {:?}", _t0.elapsed());
+                        log::debug!(
+                            "bg: apply_new_config -> load_background_image took {:?}",
+                            _t0.elapsed()
+                        );
                     }
                     _ => {
                         // Clear the background image.
                         self.background_image_loaded = false;
                         self.loaded_bg_image_size = None;
-                        *self.gpu.shared.background_data.lock().expect("background_data lock") = None;
+                        *self
+                            .gpu
+                            .shared
+                            .background_data
+                            .lock()
+                            .expect("background_data lock") = None;
                         log::debug!("bg: cleared (apply_new_config) {:?}", _t0.elapsed());
                     }
                 }
             } else {
-                log::debug!("bg: config change (opacity/mode only, no reload) {:?}", _t0.elapsed());
+                log::debug!(
+                    "bg: config change (opacity/mode only, no reload) {:?}",
+                    _t0.elapsed()
+                );
             }
         }
 

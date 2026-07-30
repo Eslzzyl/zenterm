@@ -11,8 +11,8 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use zenterm_pty::PtySession;
-use zenterm_render::callback::CallbackHandle;
 use zenterm_render::CellInstance;
+use zenterm_render::callback::CallbackHandle;
 use zenterm_term::Terminal;
 
 use crate::glyph_cache::SharedGlyphAtlas;
@@ -27,8 +27,12 @@ use crate::gpu::SharedGpuContext;
 pub struct SessionId(pub u64);
 
 impl SessionId {
-    pub const fn new(id: u64) -> Self { Self(id) }
-    pub const fn raw(self) -> u64 { self.0 }
+    pub const fn new(id: u64) -> Self {
+        Self(id)
+    }
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
 }
 
 // ── Notification state placeholder ─────────────────────────────────────
@@ -52,7 +56,10 @@ pub enum NotificationState {
     None,
     Bell,
     Pending,
-    Desktop { title: String, body: String },
+    Desktop {
+        title: String,
+        body: String,
+    },
 }
 
 // ── TerminalSession ────────────────────────────────────────────────────

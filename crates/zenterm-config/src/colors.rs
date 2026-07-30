@@ -266,15 +266,13 @@ fn apply_ansi(target: &mut [Rgba; 8], src: &AnsiColors) {
 pub(crate) fn parse_hex_opt(s: &Option<String>) -> Option<Rgba> {
     match s.as_deref() {
         None | Some("") | Some("CellBackground") | Some("CellForeground") => None,
-        Some(hex) => {
-            match parse_hex(hex) {
-                Ok(c) => Some(c),
-                Err(e) => {
-                    log::warn!("invalid colour {hex:?}: {e}");
-                    None
-                }
+        Some(hex) => match parse_hex(hex) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                log::warn!("invalid colour {hex:?}: {e}");
+                None
             }
-        }
+        },
     }
 }
 

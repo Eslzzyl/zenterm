@@ -99,7 +99,11 @@ impl Theme {
             ThemePreference::Dark => THEME_DARK.clone(),
             ThemePreference::Light => THEME_LIGHT.clone(),
             ThemePreference::System => {
-                if system_dark { THEME_DARK.clone() } else { THEME_LIGHT.clone() }
+                if system_dark {
+                    THEME_DARK.clone()
+                } else {
+                    THEME_LIGHT.clone()
+                }
             }
         }
     }

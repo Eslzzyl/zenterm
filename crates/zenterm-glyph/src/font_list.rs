@@ -102,18 +102,8 @@ fn check_panose_monospaced(path: &std::path::Path) -> bool {
         if tag != b"OS/2" {
             continue;
         }
-        let offset = u32::from_be_bytes([
-            entry[8],
-            entry[9],
-            entry[10],
-            entry[11],
-        ]);
-        let length = u32::from_be_bytes([
-            entry[12],
-            entry[13],
-            entry[14],
-            entry[15],
-        ]);
+        let offset = u32::from_be_bytes([entry[8], entry[9], entry[10], entry[11]]);
+        let length = u32::from_be_bytes([entry[12], entry[13], entry[14], entry[15]]);
         // Need at least 36 bytes to reach the panose proportion byte.
         if length < 36 {
             return false;
@@ -172,19 +162,25 @@ pub fn find_font_source(db: &fontdb::Database, family_name: &str) -> Option<Font
         .copied()
         .min_by_key(|f| {
             // Lower score = better match.
-            let weight_penalty = if f.weight == fontdb::Weight::NORMAL { 0 } else { 100 };
-            let style_penalty = if f.style == fontdb::Style::Normal { 0 } else { 10 };
+            let weight_penalty = if f.weight == fontdb::Weight::NORMAL {
+                0
+            } else {
+                100
+            };
+            let style_penalty = if f.style == fontdb::Style::Normal {
+                0
+            } else {
+                10
+            };
             weight_penalty + style_penalty
         })
         .unwrap_or(faces[0]);
 
     match &face.source {
-        fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => {
-            Some(FontSource {
-                path: path.clone(),
-                index: face.index,
-            })
-        }
+        fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => Some(FontSource {
+            path: path.clone(),
+            index: face.index,
+        }),
         fontdb::Source::Binary(_) => None,
     }
 }

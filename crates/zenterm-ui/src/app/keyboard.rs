@@ -3,8 +3,8 @@
 //! Routes egui events to the active terminal session and processes
 //! application-wide keyboard shortcuts.
 
-use egui::Context;
 use alacritty_terminal::term::TermMode;
+use egui::Context;
 
 use zenterm_input::MappingOptions;
 
@@ -219,7 +219,10 @@ impl ZentermApp {
             }
         }
         if copy {
-            log::warn!("[clipboard] entering copy handler, active_session_id={:?}", self.active_session_id);
+            log::warn!(
+                "[clipboard] entering copy handler, active_session_id={:?}",
+                self.active_session_id
+            );
             if let Some(id) = self.active_session_id {
                 if let Some(session) = self.sessions.get_mut(&id) {
                     let has_sel = session.terminal.has_selection();
@@ -234,11 +237,15 @@ impl ZentermApp {
                                     Err(e) => log::error!("[clipboard] set_text FAILED: {e}"),
                                 }
                             } else {
-                                log::error!("[clipboard] clipboard is None (arboard init failed at session creation)");
+                                log::error!(
+                                    "[clipboard] clipboard is None (arboard init failed at session creation)"
+                                );
                             }
                             return true;
                         } else {
-                            log::warn!("[clipboard] has_selection=true but selected_text() returned None");
+                            log::warn!(
+                                "[clipboard] has_selection=true but selected_text() returned None"
+                            );
                         }
                     }
                 } else {
@@ -271,15 +278,15 @@ impl ZentermApp {
             if let Some(id) = self.active_session_id {
                 if let Some(session) = self.sessions.get_mut(&id) {
                     if !session.terminal.mode().contains(TermMode::ALT_SCREEN) {
-                        log::info!("[dbg] keyboard: NOT alt_screen → consuming PageUp/Down for scrollback");
+                        log::info!(
+                            "[dbg] keyboard: NOT alt_screen → consuming PageUp/Down for scrollback"
+                        );
                         let rows = session.terminal.size().rows as i32;
                         let mut scrolled = false;
                         ctx.input(|input| {
                             for event in &input.events {
                                 if let egui::Event::Key {
-                                    key,
-                                    pressed: true,
-                                    ..
+                                    key, pressed: true, ..
                                 } = event
                                 {
                                     match key {
@@ -313,9 +320,9 @@ impl ZentermApp {
                                         e,
                                         egui::Event::Key {
                                             key: egui::Key::PageUp
-                                            | egui::Key::PageDown
-                                            | egui::Key::Home
-                                            | egui::Key::End,
+                                                | egui::Key::PageDown
+                                                | egui::Key::Home
+                                                | egui::Key::End,
                                             pressed: true,
                                             ..
                                         }
@@ -325,7 +332,9 @@ impl ZentermApp {
                             return true;
                         }
                     } else {
-                        log::info!("[dbg] keyboard: ALT_SCREEN active → PageUp/Down/Home/End will be forwarded to PTY");
+                        log::info!(
+                            "[dbg] keyboard: ALT_SCREEN active → PageUp/Down/Home/End will be forwarded to PTY"
+                        );
                     }
                 }
             }
@@ -335,5 +344,4 @@ impl ZentermApp {
 
         false
     }
-
 }

@@ -11,18 +11,18 @@
 use memchr::{memchr, memchr2};
 
 mod conemu;
-mod kitty_notify;
-mod util;
-mod osc133;
 mod iterm;
+mod kitty_notify;
+mod osc133;
 #[cfg(test)]
 mod tests;
+mod util;
 
 pub(crate) use conemu::parse_conemu_progress;
-pub(crate) use kitty_notify::KittyNotificationState;
-pub(crate) use util::base64_encode_for_response;
-pub(crate) use osc133::parse_osc133;
 pub(crate) use iterm::parse_iterm_proprietary;
+pub(crate) use kitty_notify::KittyNotificationState;
+pub(crate) use osc133::parse_osc133;
+pub(crate) use util::base64_encode_for_response;
 
 /// A single OSC match found in the byte stream.
 #[derive(Debug, Clone)]
@@ -102,8 +102,8 @@ pub(crate) fn scan_oscs(bytes: &[u8]) -> Vec<OscMatch> {
                 if let Ok(payload) = std::str::from_utf8(payload_bytes) {
                     let byte_start = i;
                     let terminator_len = match tail[end] {
-                        0x07 => 1,      // BEL
-                        _ => 2,         // ST (ESC \)
+                        0x07 => 1, // BEL
+                        _ => 2,    // ST (ESC \)
                     };
                     let byte_end = payload_start + end + terminator_len;
                     results.push(OscMatch {
@@ -115,10 +115,12 @@ pub(crate) fn scan_oscs(bytes: &[u8]) -> Vec<OscMatch> {
                     // Advance past the entire OSC sequence.
                     i = byte_end;
                 } else {
-                    i = payload_start + end + match tail[end] {
-                        0x07 => 1,
-                        _ => 2,
-                    };
+                    i = payload_start
+                        + end
+                        + match tail[end] {
+                            0x07 => 1,
+                            _ => 2,
+                        };
                 }
             }
             None => {

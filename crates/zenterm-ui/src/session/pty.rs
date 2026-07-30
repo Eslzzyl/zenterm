@@ -6,7 +6,7 @@ use alacritty_terminal::term::TermMode;
 
 use super::effects::SessionEffect;
 use super::osc7::osc7_url_to_path;
-use super::types::{TerminalSession, TITLE_DEBOUNCE_MS};
+use super::types::{TITLE_DEBOUNCE_MS, TerminalSession};
 
 impl TerminalSession {
     /// Drain pending PTY bytes into the terminal state machine, write
@@ -41,10 +41,7 @@ impl TerminalSession {
             log::trace!("pump_pty: batching {} bytes from PTY", batch.len());
             let replies = self.terminal.feed(&batch);
             if !replies.is_empty() {
-                log::trace!(
-                    "pump_pty: writing {} reply bytes",
-                    replies.len(),
-                );
+                log::trace!("pump_pty: writing {} reply bytes", replies.len(),);
                 if let Err(e) = self.pty.write(&replies) {
                     log::error!("failed to write pty reply: {e}");
                 }
@@ -76,10 +73,7 @@ impl TerminalSession {
     /// Returns side-effect events the caller must handle
     /// (currently: `WindowTitle`, `CloseWindow`).
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-    pub fn handle_side_effects(
-        &mut self,
-        egui_ctx: &egui::Context,
-    ) -> Vec<SessionEffect> {
+    pub fn handle_side_effects(&mut self, egui_ctx: &egui::Context) -> Vec<SessionEffect> {
         let mut effects = Vec::new();
 
         // Buffer incoming title event (don't apply yet — wait for stability).
@@ -106,19 +100,23 @@ impl TerminalSession {
                         .map(|s| s.to_string())
                         .unwrap_or_default();
                     if self.title != fallback {
-                        log::debug!(
-                            "session: empty title → fallback to cwd '{:?}'",
-                            fallback,
-                        );
+                        log::debug!("session: empty title → fallback to cwd '{:?}'", fallback,);
                         self.title = fallback;
                         effects.push(SessionEffect::WindowTitle(self.title.clone()));
                     }
                 } else if self.title != *title {
-                    log::debug!("session: window title changed: {:?} -> {:?}", self.title, title);
+                    log::debug!(
+                        "session: window title changed: {:?} -> {:?}",
+                        self.title,
+                        title
+                    );
                     self.title = title.clone();
                     effects.push(SessionEffect::WindowTitle(title.clone()));
                 } else {
-                    log::trace!("session: window title unchanged ({:?}), skipping", self.title);
+                    log::trace!(
+                        "session: window title unchanged ({:?}), skipping",
+                        self.title
+                    );
                 }
                 self.pending_title = None;
             }
@@ -150,7 +148,9 @@ impl TerminalSession {
             if !should_show {
                 log::debug!(
                     "suppressed Kitty notification (occasion={:?}, window_focused={}, tab_active={})",
-                    kitty.occasion, window_focused, self.tab_active,
+                    kitty.occasion,
+                    window_focused,
+                    self.tab_active,
                 );
             } else {
                 let title = if kitty.title.is_empty() {
@@ -188,7 +188,8 @@ impl TerminalSession {
                         // fall back to icon name (XDG only).
                         if !icon_data.is_empty() {
                             let tmp_dir = std::env::temp_dir();
-                            let path = tmp_dir.join(format!("zenterm-icon-{}.png", std::process::id()));
+                            let path =
+                                tmp_dir.join(format!("zenterm-icon-{}.png", std::process::id()));
                             if let Ok(mut file) = std::fs::File::create(&path) {
                                 use std::io::Write;
                                 if file.write_all(&icon_data).is_ok() {
@@ -204,7 +205,9 @@ impl TerminalSession {
                         // Timeout.
                         match timeout_ms {
                             -1 => {} // system default
-                            0 => { n.timeout(notify_rust::Timeout::Never); }
+                            0 => {
+                                n.timeout(notify_rust::Timeout::Never);
+                            }
                             ms if ms > 0 => {
                                 n.timeout(notify_rust::Timeout::Milliseconds(ms as u32));
                             }
@@ -238,7 +241,10 @@ impl TerminalSession {
                                             ActionResponse::Closed(_reason) => {
                                                 if close_report {
                                                     let id = notif_id.as_deref().unwrap_or("0");
-                                                    let resp = format!("\x1b]99;i={}:p=close;\x1b\\\\", id);
+                                                    let resp = format!(
+                                                        "\x1b]99;i={}:p=close;\x1b\\\\",
+                                                        id
+                                                    );
                                                     let _ = resp_tx.send(resp);
                                                 }
                                                 break;
@@ -247,10 +253,14 @@ impl TerminalSession {
                                                 if report_click {
                                                     let id = notif_id.as_deref().unwrap_or("0");
                                                     if let Some(num) = act.strip_prefix("btn") {
-                                                        let resp = format!("\x1b]99;i={};{}\x1b\\\\", id, num);
+                                                        let resp = format!(
+                                                            "\x1b]99;i={};{}\x1b\\\\",
+                                                            id, num
+                                                        );
                                                         let _ = resp_tx.send(resp);
                                                     } else {
-                                                        let resp = format!("\x1b]99;i={};\x1b\\\\", id);
+                                                        let resp =
+                                                            format!("\x1b]99;i={};\x1b\\\\", id);
                                                         let _ = resp_tx.send(resp);
                                                     }
                                                 }

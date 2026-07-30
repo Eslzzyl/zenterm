@@ -124,11 +124,21 @@ impl Default for UiConfig {
     }
 }
 
-fn default_true() -> bool { true }
-fn default_sidebar_width() -> f32 { 220.0 }
-fn default_sidebar_min_width() -> f32 { 160.0 }
-fn default_sidebar_max_width() -> f32 { 480.0 }
-fn default_layout_debounce_ms() -> u64 { 500 }
+fn default_true() -> bool {
+    true
+}
+fn default_sidebar_width() -> f32 {
+    220.0
+}
+fn default_sidebar_min_width() -> f32 {
+    160.0
+}
+fn default_sidebar_max_width() -> f32 {
+    480.0
+}
+fn default_layout_debounce_ms() -> u64 {
+    500
+}
 
 // ── Sub-types ──────────────────────────────────────────────────────────
 

@@ -6,8 +6,8 @@ use egui::Context;
 
 use zenterm_term::ColorScheme;
 
-use crate::session::{SessionEffect, SessionId, TerminalSession};
 use super::ZentermApp;
+use crate::session::{SessionEffect, SessionId, TerminalSession};
 
 impl ZentermApp {
     /// Spawn a new session in the active workspace's currently focused
@@ -137,7 +137,10 @@ impl ZentermApp {
                 // won't reflect it until the next frame.
                 ctx.request_repaint();
             } else {
-                log::trace!("app: window title unchanged ({:?}), skipping ViewportCommand", t);
+                log::trace!(
+                    "app: window title unchanged ({:?}), skipping ViewportCommand",
+                    t
+                );
             }
         }
         // Handle shell-exited sessions.

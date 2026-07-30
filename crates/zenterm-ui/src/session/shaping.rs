@@ -14,28 +14,17 @@ use zenterm_term::GridView;
 /// Ordered roughly by likelihood to improve short-circuiting.
 const LIGATURE_PATTERNS: &[&str] = &[
     // Arrows (most common)
-    "->", "=>", "<-", "<=", "->>", "-->>", "-->",
-    "<--", "<<--", "->-", ">-", "<->", "<==>", "<==",
+    "->", "=>", "<-", "<=", "->>", "-->>", "-->", "<--", "<<--", "->-", ">-", "<->", "<==>", "<==",
     // Comparison (very common)
-    "==", "!=", "===", "!==", ">=", "<=", ">>=", "<<=",
-    // Logical
-    "||", "&&", "^^",
-    // Assignment / lambda
-    ":=", "::=", "=>",
-    // Member access / range
-    "::", "..", "...", "..=", ".=",
-    // Pipe / compose
-    "|>", "<|", "<|>",
-    // Comments / preprocessor
-    "//", "///", "//!", "/*", "*/",
-    // Math / increment
-    "+=", "-=", "*=", "/=", "**", "++", "--",
-    // Bitwise / compound
-    "&=", "|=", "^=", "%=",
-    // Other
-    "#(", "#{", "#[", "#![", "#!",
-    "~=", "!~",
-    ".<", ".>",
+    "==", "!=", "===", "!==", ">=", "<=", ">>=", "<<=", // Logical
+    "||", "&&", "^^", // Assignment / lambda
+    ":=", "::=", "=>", // Member access / range
+    "::", "..", "...", "..=", ".=", // Pipe / compose
+    "|>", "<|", "<|>", // Comments / preprocessor
+    "//", "///", "//!", "/*", "*/", // Math / increment
+    "+=", "-=", "*=", "/=", "**", "++", "--", // Bitwise / compound
+    "&=", "|=", "^=", "%=", // Other
+    "#(", "#{", "#[", "#![", "#!", "~=", "!~", ".<", ".>",
 ];
 
 // ── Detection helpers ──────────────────────────────────────────────────
@@ -54,8 +43,23 @@ pub(crate) fn might_ligate(text: &str) -> bool {
     // Fast rejection: must contain at least one ligature-seeding character.
     let bytes = text.as_bytes();
     if !bytes.iter().any(|b| {
-        matches!(b, b'-' | b'=' | b'!' | b'>' | b'<' | b':' | b'|'
-                    | b'&' | b'+' | b'#' | b'/' | b'*' | b'~' | b'^' | b'%')
+        matches!(
+            b,
+            b'-' | b'='
+                | b'!'
+                | b'>'
+                | b'<'
+                | b':'
+                | b'|'
+                | b'&'
+                | b'+'
+                | b'#'
+                | b'/'
+                | b'*'
+                | b'~'
+                | b'^'
+                | b'%'
+        )
     }) {
         return false;
     }
@@ -125,12 +129,7 @@ pub(crate) fn glyph_grid_num_cells(
 /// * **Hidden cell** — invisible content should not be shaped.
 /// * **Style change** — different `bold` or `italic` flags require
 ///   separate shaping with different [`cosmic_text::Attrs`].
-pub(crate) fn detect_run_end(
-    grid: &GridView,
-    row: usize,
-    start_col: usize,
-    cols: usize,
-) -> usize {
+pub(crate) fn detect_run_end(grid: &GridView, row: usize, start_col: usize, cols: usize) -> usize {
     let first = match grid.cell(row, start_col) {
         Some(c) => c,
         None => return start_col + 1,

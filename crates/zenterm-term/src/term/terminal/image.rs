@@ -7,12 +7,10 @@ use zenterm_core::{ITermDimension, ITermFileData};
 
 use crate::image::kitty::{self, KittyImage};
 use crate::image::sixel::{self, SixelBuilder};
-use crate::image::{
-    assign_image_to_cells, PlacementParams, PlacementStyle,
-};
+use crate::image::{PlacementParams, PlacementStyle, assign_image_to_cells};
 
-use super::unicode::VirtualPlacement;
 use super::Terminal;
+use super::unicode::VirtualPlacement;
 
 // ── Kitty protocol handler ─────────────────────────────────────────────
 
@@ -39,11 +37,17 @@ impl Terminal {
         );
 
         match assembled {
-            KittyImage::TransmitData { transmit, verbosity } => {
+            KittyImage::TransmitData {
+                transmit,
+                verbosity,
+            } => {
                 log::debug!(
                     "[img] TransmitData: fmt={:?}, w={:?}, h={:?}, id={:?}, num={:?}",
-                    transmit.format, transmit.width, transmit.height,
-                    transmit.image_id, transmit.image_number,
+                    transmit.format,
+                    transmit.width,
+                    transmit.height,
+                    transmit.image_id,
+                    transmit.image_number,
                 );
                 // Implicit ID (i=0, I=0): do not respond.
                 let implicit = transmit.image_id == Some(0) && transmit.image_number == Some(0);
@@ -53,16 +57,19 @@ impl Terminal {
                     match kitty::decode_image_data(transmit, &mut self.image_cache) {
                         Ok(id) => {
                             log::debug!("[img] TransmitData decode OK, image_id={id}");
-                            if implicit { return None; }
-                            return Some(kitty::kitty_response(
-                                Some(id), None, "OK",
-                            ));
+                            if implicit {
+                                return None;
+                            }
+                            return Some(kitty::kitty_response(Some(id), None, "OK"));
                         }
                         Err(e) => {
                             log::error!("[img] TransmitData decode FAILED: {e}");
-                            if implicit { return None; }
+                            if implicit {
+                                return None;
+                            }
                             return Some(kitty::kitty_response(
-                                resp_id, resp_num,
+                                resp_id,
+                                resp_num,
                                 &format!("ERROR:{e}"),
                             ));
                         }
@@ -72,23 +79,37 @@ impl Terminal {
                 }
                 None
             }
-            KittyImage::TransmitDataAndDisplay { transmit, placement, .. } => {
+            KittyImage::TransmitDataAndDisplay {
+                transmit,
+                placement,
+                ..
+            } => {
                 log::debug!(
                     "[img] TransmitDataAndDisplay: fmt={:?}, w={:?}, h={:?}, id={:?}, num={:?}, virtual={}",
-                    transmit.format, transmit.width, transmit.height,
-                    transmit.image_id, transmit.image_number,
+                    transmit.format,
+                    transmit.width,
+                    transmit.height,
+                    transmit.image_id,
+                    transmit.image_number,
                     placement.virtual_placement,
                 );
                 match kitty::decode_image_data(transmit, &mut self.image_cache) {
                     Ok(image_id) => {
-                        log::debug!("[img] decode OK, image_id={image_id}, calling kitty_place_image");
+                        log::debug!(
+                            "[img] decode OK, image_id={image_id}, calling kitty_place_image"
+                        );
                         self.kitty_place_image(Some(image_id), None, placement);
                     }
                     Err(e) => log::error!("[img] decode FAILED: {e}"),
                 }
                 None
             }
-            KittyImage::Display { image_id, image_number, placement, .. } => {
+            KittyImage::Display {
+                image_id,
+                image_number,
+                placement,
+                ..
+            } => {
                 log::debug!(
                     "[img] Display: image_id={image_id:?}, num={image_number:?}, virtual={}",
                     placement.virtual_placement,
@@ -104,12 +125,14 @@ impl Terminal {
             KittyImage::Query { transmit } => {
                 log::debug!(
                     "[img] Query: id={:?}, num={:?}",
-                    transmit.image_id, transmit.image_number,
+                    transmit.image_id,
+                    transmit.image_number,
                 );
                 // EINVAL: image ID required for query.
                 if transmit.image_id == Some(0) && transmit.image_number == Some(0) {
                     return Some(kitty::kitty_response(
-                        transmit.image_id, transmit.image_number,
+                        transmit.image_id,
+                        transmit.image_number,
                         "EINVAL: image ID required",
                     ));
                 }
@@ -119,7 +142,11 @@ impl Terminal {
                     "OK",
                 ))
             }
-            KittyImage::TransmitFrame { transmit, frame, verbosity } => {
+            KittyImage::TransmitFrame {
+                transmit,
+                frame,
+                verbosity,
+            } => {
                 log::debug!("[img] TransmitFrame");
                 let result = kitty::decode_image_frame(transmit, frame, &mut self.image_cache);
                 match &result {
@@ -146,16 +173,15 @@ impl Terminal {
                 match &result {
                     Ok(()) => {
                         if verbosity != kitty::KittyImageVerbosity::Quiet {
-                            return Some(kitty::kitty_response(
-                                resp_id, resp_num, "OK",
-                            ));
+                            return Some(kitty::kitty_response(resp_id, resp_num, "OK"));
                         }
                     }
                     Err(e) => {
                         log::error!("[img] compose frame FAILED: {e}");
                         if verbosity != kitty::KittyImageVerbosity::OnlyErrors {
                             return Some(kitty::kitty_response(
-                                resp_id, resp_num,
+                                resp_id,
+                                resp_num,
                                 &format!("ERROR:{e}"),
                             ));
                         }
@@ -166,11 +192,17 @@ impl Terminal {
             KittyImage::AnimationControl { control, verbosity } => {
                 log::debug!(
                     "[img] AnimationControl: action={:?}, frame={:?}, gap={:?}",
-                    control.action, control.frame, control.gap_ms,
+                    control.action,
+                    control.frame,
+                    control.gap_ms,
                 );
                 // Animation playback control is not yet supported; return error.
                 if verbosity != kitty::KittyImageVerbosity::OnlyErrors {
-                    return Some(kitty::kitty_response(None, None, "ERROR: animation control not implemented"));
+                    return Some(kitty::kitty_response(
+                        None,
+                        None,
+                        "ERROR: animation control not implemented",
+                    ));
                 }
                 None
             }
@@ -188,7 +220,8 @@ impl Terminal {
             "[img] kitty_place_image: resolved_id={id}, image_id={image_id:?}, \
              num={image_number:?}, virtual={}, cell_pixel={}x{}, do_not_move={}",
             placement.virtual_placement,
-            self.cell_pixel_width, self.cell_pixel_height,
+            self.cell_pixel_width,
+            self.cell_pixel_height,
             placement.do_not_move_cursor,
         );
 
@@ -218,12 +251,13 @@ impl Terminal {
             };
             log::debug!(
                 "[img] virtual placement stored: id={}, p={:?}, grid={}x{}",
-                vp.image_id, vp.placement_id, vp.columns, vp.rows,
+                vp.image_id,
+                vp.placement_id,
+                vp.columns,
+                vp.rows,
             );
-            self.virtual_placements.insert(
-                (vp.image_id, vp.placement_id),
-                vp,
-            );
+            self.virtual_placements
+                .insert((vp.image_id, vp.placement_id), vp);
             // Virtual placements do not move the cursor.
             return;
         }
@@ -243,7 +277,8 @@ impl Terminal {
         if self.cell_pixel_width == 0 || self.cell_pixel_height == 0 {
             log::warn!(
                 "[img] kitty_place_image: cell_pixel is 0 ({}x{}), SKIPPING placement",
-                self.cell_pixel_width, self.cell_pixel_height,
+                self.cell_pixel_width,
+                self.cell_pixel_height,
             );
             return;
         }
@@ -291,7 +326,8 @@ impl Terminal {
         for (col, viewport_row, cell) in &result.cells {
             // viewport_row is in [0, screen_lines).  Convert to grid line.
             let grid_line = *viewport_row as i32 - display_offset;
-            self.image_placements.insert((grid_line, *col), cell.clone());
+            self.image_placements
+                .insert((grid_line, *col), cell.clone());
         }
 
         let new_cursor = if result.move_cursor {
@@ -306,17 +342,24 @@ impl Terminal {
         log::debug!(
             "[img] placed {} cells ({}x{}), total_placements={}, \
              img={}x{}px, cursor ({},{})→({},{})",
-            result.cells.len(), result.width_in_cells, result.height_in_cells,
+            result.cells.len(),
+            result.width_in_cells,
+            result.height_in_cells,
             self.image_placements.len(),
-            img_w, img_h,
-            cursor.pos.column, cursor.pos.line,
-            new_cursor.0, new_cursor.1,
+            img_w,
+            img_h,
+            cursor.pos.column,
+            cursor.pos.line,
+            new_cursor.0,
+            new_cursor.1,
         );
 
         if result.move_cursor {
             // Kitty moves cursor to after the bottom-right of the image.
-            self.term.grid_mut().cursor.point.column = alacritty_terminal::index::Column(new_cursor.0);
-            self.term.grid_mut().cursor.point.line = alacritty_terminal::index::Line(new_cursor.1 as i32);
+            self.term.grid_mut().cursor.point.column =
+                alacritty_terminal::index::Column(new_cursor.0);
+            self.term.grid_mut().cursor.point.line =
+                alacritty_terminal::index::Line(new_cursor.1 as i32);
         }
 
         self.damage.mark_all();
@@ -409,9 +452,7 @@ impl Terminal {
         let rgba = decoded.into_vec();
 
         // Store in image cache with a unique id.
-        let image_data = Arc::new(ImageData::new(ImageDataType::new_rgba8(
-            rgba, img_w, img_h,
-        )));
+        let image_data = Arc::new(ImageData::new(ImageDataType::new_rgba8(rgba, img_w, img_h)));
         // Use a unique auto-incrementing number so each image gets its own
         // cache slot, even when the application sends multiple `File=` sequences.
         let number = self.next_iterm_image_number;
@@ -423,14 +464,8 @@ impl Terminal {
         let cols = self.term.columns();
         let rows = self.term.screen_lines();
 
-        let (columns, rows_opt) = self.iterm_dimensions_to_grid(
-            file.width,
-            file.height,
-            img_w,
-            img_h,
-            cols,
-            rows,
-        );
+        let (columns, rows_opt) =
+            self.iterm_dimensions_to_grid(file.width, file.height, img_w, img_h, cols, rows);
 
         let cursor = self.cursor();
         let cursor_col = cursor.pos.column;
@@ -469,7 +504,8 @@ impl Terminal {
         let display_offset = self.term.grid().display_offset() as i32;
         for (col, viewport_row, cell) in &result.cells {
             let grid_line = *viewport_row as i32 - display_offset;
-            self.image_placements.insert((grid_line, *col), cell.clone());
+            self.image_placements
+                .insert((grid_line, *col), cell.clone());
         }
 
         // Move cursor if needed.
@@ -478,8 +514,7 @@ impl Terminal {
             let new_row = (cursor_row + result.height_in_cells)
                 .saturating_sub(1)
                 .min(rows.saturating_sub(1));
-            self.term.grid_mut().cursor.point.column =
-                alacritty_terminal::index::Column(new_col);
+            self.term.grid_mut().cursor.point.column = alacritty_terminal::index::Column(new_col);
             self.term.grid_mut().cursor.point.line =
                 alacritty_terminal::index::Line(new_row as i32);
         }
@@ -513,9 +548,7 @@ impl Terminal {
             match dim {
                 ITermDimension::Automatic => None,
                 ITermDimension::Cells(n) => Some(n.max(1) as usize),
-                ITermDimension::Pixels(n) => {
-                    Some((n.max(1) as u32 / cell_w).max(1) as usize)
-                }
+                ITermDimension::Pixels(n) => Some((n.max(1) as u32 / cell_w).max(1) as usize),
                 ITermDimension::Percent(n) => {
                     let pct = n.max(1).min(100) as usize;
                     Some((max_cols * pct / 100).max(1))
@@ -526,9 +559,7 @@ impl Terminal {
             match dim {
                 ITermDimension::Automatic => None,
                 ITermDimension::Cells(n) => Some(n.max(1) as usize),
-                ITermDimension::Pixels(n) => {
-                    Some((n.max(1) as u32 / cell_h).max(1) as usize)
-                }
+                ITermDimension::Pixels(n) => Some((n.max(1) as u32 / cell_h).max(1) as usize),
                 ITermDimension::Percent(n) => {
                     let pct = n.max(1).min(100) as usize;
                     Some((max_rows * pct / 100).max(1))
@@ -536,12 +567,10 @@ impl Terminal {
             }
         };
 
-        let columns = calc_cols(width).unwrap_or_else(|| {
-            ((img_w + cell_w - 1) / cell_w).max(1) as usize
-        });
-        let rows_out = calc_rows(height).unwrap_or_else(|| {
-            ((img_h + cell_h - 1) / cell_h).max(1) as usize
-        });
+        let columns =
+            calc_cols(width).unwrap_or_else(|| ((img_w + cell_w - 1) / cell_w).max(1) as usize);
+        let rows_out =
+            calc_rows(height).unwrap_or_else(|| ((img_h + cell_h - 1) / cell_h).max(1) as usize);
 
         (columns.min(max_cols), Some(rows_out.min(max_rows)))
     }
@@ -558,9 +587,15 @@ impl Terminal {
                     self.image_cache.clear();
                 }
             }
-            kitty::KittyImageDelete::ByImageId { image_id, placement_id, delete } => {
+            kitty::KittyImageDelete::ByImageId {
+                image_id,
+                placement_id,
+                delete,
+            } => {
                 self.image_placements.retain(|_, v| {
-                    if v.image_id != Some(image_id) { return true; }
+                    if v.image_id != Some(image_id) {
+                        return true;
+                    }
                     placement_id.map_or(false, |p| v.placement_id != Some(p))
                 });
                 self.virtual_placements.retain(|(id, pid), _| {
@@ -572,9 +607,15 @@ impl Terminal {
                     }
                 }
             }
-            kitty::KittyImageDelete::ByImageNumber { image_number: _, placement_id, delete } => {
+            kitty::KittyImageDelete::ByImageNumber {
+                image_number: _,
+                placement_id,
+                delete,
+            } => {
                 // Look up the image_id from the number mapping.
-                let ids: Vec<u32> = self.image_placements.iter()
+                let ids: Vec<u32> = self
+                    .image_placements
+                    .iter()
                     .filter(|(_, v)| v.placement_id == placement_id)
                     .map(|(_, v)| v.image_id)
                     .flatten()
@@ -603,9 +644,8 @@ impl Terminal {
             kitty::KittyImageDelete::DeleteAt { x, y, delete } => {
                 let display_offset = self.term.grid().display_offset() as i32;
                 let del_grid_line = y as i32 - display_offset;
-                self.image_placements.retain(|&(line, col), _| {
-                    !(line == del_grid_line && col == x as usize)
-                });
+                self.image_placements
+                    .retain(|&(line, col), _| !(line == del_grid_line && col == x as usize));
                 if delete {
                     log::warn!("kitty delete DeleteAt with delete=true: image_id unknown");
                 }
@@ -618,7 +658,8 @@ impl Terminal {
                 });
             }
             kitty::KittyImageDelete::DeleteRow { y, delete: _ } => {
-                self.image_placements.retain(|&(_, col), _| col != y as usize);
+                self.image_placements
+                    .retain(|&(_, col), _| col != y as usize);
             }
             kitty::KittyImageDelete::DeleteZ { z, delete: _ } => {
                 self.image_placements.retain(|_, v| v.z_index != z);
@@ -629,21 +670,34 @@ impl Terminal {
                 // Then remove all placements for that image.
                 let all_ids: Vec<u32> = self.image_cache.all_image_ids();
                 for id in all_ids {
-                    let dominated = self.image_cache.get(id).map(|d| {
-                        let guard = d.data();
-                        matches!(&*guard, zenterm_core::image::ImageDataType::AnimRgba8 { .. })
-                    }).unwrap_or(false);
+                    let dominated = self
+                        .image_cache
+                        .get(id)
+                        .map(|d| {
+                            let guard = d.data();
+                            matches!(
+                                &*guard,
+                                zenterm_core::image::ImageDataType::AnimRgba8 { .. }
+                            )
+                        })
+                        .unwrap_or(false);
 
                     if dominated {
                         // Convert AnimRgba8 → Rgba8 (keep first frame).
                         if let Some(d) = self.image_cache.get(id) {
                             let mut guard = d.data();
                             if let zenterm_core::image::ImageDataType::AnimRgba8 {
-                                ref width, ref height, ref frames, ..
-                            } = *guard {
+                                ref width,
+                                ref height,
+                                ref frames,
+                                ..
+                            } = *guard
+                            {
                                 if let Some(first_frame) = frames.first() {
                                     let new_data = zenterm_core::image::ImageDataType::new_rgba8(
-                                        first_frame.clone(), *width, *height,
+                                        first_frame.clone(),
+                                        *width,
+                                        *height,
                                     );
                                     *guard = new_data;
                                 }
@@ -672,12 +726,16 @@ impl Terminal {
                     log::warn!("kitty delete DeleteAtCellZ with delete=true: image_id unknown");
                 }
             }
-            kitty::KittyImageDelete::DeleteRange { first, last, delete } => {
+            kitty::KittyImageDelete::DeleteRange {
+                first,
+                last,
+                delete,
+            } => {
                 // Delete all placements whose image_id is in [first, last].
-                let ids_to_delete: Vec<u32> = self.image_placements.iter()
-                    .filter(|(_, v)| {
-                        v.image_id.map_or(false, |id| id >= first && id <= last)
-                    })
+                let ids_to_delete: Vec<u32> = self
+                    .image_placements
+                    .iter()
+                    .filter(|(_, v)| v.image_id.map_or(false, |id| id >= first && id <= last))
                     .map(|(_, v)| v.image_id.unwrap())
                     .collect();
                 for id in ids_to_delete {
@@ -746,7 +804,8 @@ impl Terminal {
                 let display_offset = self.term.grid().display_offset() as i32;
                 for (col, viewport_row, cell) in &result.cells {
                     let grid_line = *viewport_row as i32 - display_offset;
-                    self.image_placements.insert((grid_line, *col), cell.clone());
+                    self.image_placements
+                        .insert((grid_line, *col), cell.clone());
                 }
                 self.damage.mark_all();
             }

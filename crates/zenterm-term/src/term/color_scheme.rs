@@ -142,25 +142,93 @@ pub(crate) fn named_color_default_rgb(named: NamedColor) -> Rgb {
         NamedColor::Black => Rgb { r: 0, g: 0, b: 0 },
         NamedColor::Red => Rgb { r: 170, g: 0, b: 0 },
         NamedColor::Green => Rgb { r: 0, g: 170, b: 0 },
-        NamedColor::Yellow => Rgb { r: 170, g: 170, b: 0 },
+        NamedColor::Yellow => Rgb {
+            r: 170,
+            g: 170,
+            b: 0,
+        },
         NamedColor::Blue => Rgb { r: 0, g: 0, b: 170 },
-        NamedColor::Magenta => Rgb { r: 170, g: 0, b: 170 },
-        NamedColor::Cyan => Rgb { r: 0, g: 170, b: 170 },
-        NamedColor::White => Rgb { r: 200, g: 200, b: 200 },
-        NamedColor::BrightBlack => Rgb { r: 85, g: 85, b: 85 },
-        NamedColor::BrightRed => Rgb { r: 255, g: 85, b: 85 },
-        NamedColor::BrightGreen => Rgb { r: 85, g: 255, b: 85 },
-        NamedColor::BrightYellow => Rgb { r: 255, g: 255, b: 85 },
-        NamedColor::BrightBlue => Rgb { r: 85, g: 85, b: 255 },
-        NamedColor::BrightMagenta => Rgb { r: 255, g: 85, b: 255 },
-        NamedColor::BrightCyan => Rgb { r: 85, g: 255, b: 255 },
-        NamedColor::BrightWhite => Rgb { r: 255, g: 255, b: 255 },
+        NamedColor::Magenta => Rgb {
+            r: 170,
+            g: 0,
+            b: 170,
+        },
+        NamedColor::Cyan => Rgb {
+            r: 0,
+            g: 170,
+            b: 170,
+        },
+        NamedColor::White => Rgb {
+            r: 200,
+            g: 200,
+            b: 200,
+        },
+        NamedColor::BrightBlack => Rgb {
+            r: 85,
+            g: 85,
+            b: 85,
+        },
+        NamedColor::BrightRed => Rgb {
+            r: 255,
+            g: 85,
+            b: 85,
+        },
+        NamedColor::BrightGreen => Rgb {
+            r: 85,
+            g: 255,
+            b: 85,
+        },
+        NamedColor::BrightYellow => Rgb {
+            r: 255,
+            g: 255,
+            b: 85,
+        },
+        NamedColor::BrightBlue => Rgb {
+            r: 85,
+            g: 85,
+            b: 255,
+        },
+        NamedColor::BrightMagenta => Rgb {
+            r: 255,
+            g: 85,
+            b: 255,
+        },
+        NamedColor::BrightCyan => Rgb {
+            r: 85,
+            g: 255,
+            b: 255,
+        },
+        NamedColor::BrightWhite => Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
         // Terminal-default colours used when no colour scheme is configured.
-        NamedColor::Foreground => Rgb { r: 220, g: 220, b: 220 }, // light grey
-        NamedColor::Background => Rgb { r: 0, g: 0, b: 0 },      // black
-        NamedColor::Cursor => Rgb { r: 220, g: 220, b: 220 },    // same as fg
-        NamedColor::DimForeground => Rgb { r: 140, g: 140, b: 140 },
-        NamedColor::BrightForeground => Rgb { r: 255, g: 255, b: 255 },
-        _ => Rgb { r: 255, g: 255, b: 255 },
+        NamedColor::Foreground => Rgb {
+            r: 220,
+            g: 220,
+            b: 220,
+        }, // light grey
+        NamedColor::Background => Rgb { r: 0, g: 0, b: 0 }, // black
+        NamedColor::Cursor => Rgb {
+            r: 220,
+            g: 220,
+            b: 220,
+        }, // same as fg
+        NamedColor::DimForeground => Rgb {
+            r: 140,
+            g: 140,
+            b: 140,
+        },
+        NamedColor::BrightForeground => Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
+        _ => Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
     }
 }

@@ -7,8 +7,8 @@ use alacritty_terminal::vte::ansi::CursorShape;
 
 use zenterm_core::cell::UnderlineStyle;
 use zenterm_core::color::Rgba;
-use zenterm_render::glyph_type;
 use zenterm_render::CellInstance;
+use zenterm_render::glyph_type;
 use zenterm_term::GridView;
 
 /// Emit underline, strikethrough, and cursor-style (Beam/Underline)

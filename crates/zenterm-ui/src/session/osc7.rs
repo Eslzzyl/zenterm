@@ -114,4 +114,3 @@ mod tests {
         assert_eq!(s, "%");
     }
 }
-

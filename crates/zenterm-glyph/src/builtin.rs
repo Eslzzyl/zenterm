@@ -87,9 +87,9 @@ pub fn render(c: char, params: &BuiltinParams) -> Option<BuiltinGlyph> {
         // ░ Light shade (U+2591) — 25% intensity
         // ▒ Medium shade (U+2592) — 50% intensity
         // ▓ Dark shade (U+2593) — 75% intensity
-        '\u{2591}' => Some(solid_fill(w, h, by, 64)),   // 25%
-        '\u{2592}' => Some(solid_fill(w, h, by, 128)),  // 50%
-        '\u{2593}' => Some(solid_fill(w, h, by, 192)),  // 75%
+        '\u{2591}' => Some(solid_fill(w, h, by, 64)), // 25%
+        '\u{2592}' => Some(solid_fill(w, h, by, 128)), // 50%
+        '\u{2593}' => Some(solid_fill(w, h, by, 192)), // 75%
 
         // ── Half blocks ──────────────────────────────────────────────
         // ▀ Upper half block (U+2580)
@@ -197,8 +197,7 @@ fn set_pixel(buf: &mut [u8], w: u32, _h: u32, x: u32, y: u32, val: u8) {
 }
 
 /// Draw a filled rectangle region.
-fn fill_region(buf: &mut [u8], buf_w: u32, _buf_h: u32,
-               x: u32, y: u32, rw: u32, rh: u32, val: u8) {
+fn fill_region(buf: &mut [u8], buf_w: u32, _buf_h: u32, x: u32, y: u32, rw: u32, rh: u32, val: u8) {
     for row in y..y + rh {
         for col in x..x + rw {
             set_pixel(buf, buf_w, _buf_h, col, row, val);
@@ -344,7 +343,7 @@ fn quadrant_upper_right(w: u32, h: u32, by: f32) -> BuiltinGlyph {
 fn quadrant_two_diagonal(w: u32, h: u32, by: f32) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
-    fill_region(&mut data, w, h, 0, 0, hw, hh, 255);       // UL
+    fill_region(&mut data, w, h, 0, 0, hw, hh, 255); // UL
     fill_region(&mut data, w, h, hw, hh, w - hw, h - hh, 255); // LR
     builtin_result(w, h, by, data)
 }
@@ -352,22 +351,27 @@ fn quadrant_two_diagonal(w: u32, h: u32, by: f32) -> BuiltinGlyph {
 fn quadrant_two_diagonal_mirror(w: u32, h: u32, by: f32) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
-    fill_region(&mut data, w, h, hw, 0, w - hw, hh, 255);  // UR
-    fill_region(&mut data, w, h, 0, hh, hw, h - hh, 255);  // LL
+    fill_region(&mut data, w, h, hw, 0, w - hw, hh, 255); // UR
+    fill_region(&mut data, w, h, 0, hh, hw, h - hh, 255); // LL
     builtin_result(w, h, by, data)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn quadrant_three(
-    w: u32, h: u32, by: f32,
-    ul: bool, ur: bool, ll: bool, lr: bool,
-) -> BuiltinGlyph {
+fn quadrant_three(w: u32, h: u32, by: f32, ul: bool, ur: bool, ll: bool, lr: bool) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
-    if ul { fill_region(&mut data, w, h, 0, 0, hw, hh, 255); }
-    if ur { fill_region(&mut data, w, h, hw, 0, w - hw, hh, 255); }
-    if ll { fill_region(&mut data, w, h, 0, hh, hw, h - hh, 255); }
-    if lr { fill_region(&mut data, w, h, hw, hh, w - hw, h - hh, 255); }
+    if ul {
+        fill_region(&mut data, w, h, 0, 0, hw, hh, 255);
+    }
+    if ur {
+        fill_region(&mut data, w, h, hw, 0, w - hw, hh, 255);
+    }
+    if ll {
+        fill_region(&mut data, w, h, 0, hh, hw, h - hh, 255);
+    }
+    if lr {
+        fill_region(&mut data, w, h, hw, hh, w - hw, h - hh, 255);
+    }
     builtin_result(w, h, by, data)
 }
 
@@ -393,12 +397,24 @@ fn vline(w: u32, h: u32, by: f32, heavy: bool, underline_thickness: f32) -> Buil
     builtin_result(w, h, by, data)
 }
 
-enum Corner { DownRight, DownLeft, UpRight, UpLeft }
+enum Corner {
+    DownRight,
+    DownLeft,
+    UpRight,
+    UpLeft,
+}
 
 /// Box drawing corner (┌ ┐ └ ┘) and heavy variants (┏ ┓ ┗ ┛).
 ///
 /// `heavy=false` → light stroke, `heavy=true` → double-width heavy stroke.
-fn corner(w: u32, h: u32, by: f32, which: Corner, heavy: bool, underline_thickness: f32) -> BuiltinGlyph {
+fn corner(
+    w: u32,
+    h: u32,
+    by: f32,
+    which: Corner,
+    heavy: bool,
+    underline_thickness: f32,
+) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
     let lw = line_width(w, h, underline_thickness);
     let sw = if heavy { lw * 2 } else { lw };
@@ -416,42 +432,46 @@ fn corner(w: u32, h: u32, by: f32, which: Corner, heavy: bool, underline_thickne
     match which {
         Corner::DownRight => {
             // ┌: right horizontal + bottom vertical
-            draw_hline_segment(&mut data, w, h, x0, y0,
-                               w.saturating_sub(x0), sw, 255);
-            draw_vline_segment(&mut data, w, h, x0, y0,
-                               h.saturating_sub(y0), sw, 255);
+            draw_hline_segment(&mut data, w, h, x0, y0, w.saturating_sub(x0), sw, 255);
+            draw_vline_segment(&mut data, w, h, x0, y0, h.saturating_sub(y0), sw, 255);
         }
         Corner::DownLeft => {
             // ┐: left horizontal + bottom vertical
-            draw_hline_segment(&mut data, w, h, 0, y0,
-                               x1, sw, 255);
-            draw_vline_segment(&mut data, w, h, x0, y0,
-                               h.saturating_sub(y0), sw, 255);
+            draw_hline_segment(&mut data, w, h, 0, y0, x1, sw, 255);
+            draw_vline_segment(&mut data, w, h, x0, y0, h.saturating_sub(y0), sw, 255);
         }
         Corner::UpRight => {
             // └: right horizontal + top vertical
-            draw_hline_segment(&mut data, w, h, x0, y0,
-                               w.saturating_sub(x0), sw, 255);
-            draw_vline_segment(&mut data, w, h, x0, 0,
-                               y1, sw, 255);
+            draw_hline_segment(&mut data, w, h, x0, y0, w.saturating_sub(x0), sw, 255);
+            draw_vline_segment(&mut data, w, h, x0, 0, y1, sw, 255);
         }
         Corner::UpLeft => {
             // ┘: left horizontal + top vertical
-            draw_hline_segment(&mut data, w, h, 0, y0,
-                               x1, sw, 255);
-            draw_vline_segment(&mut data, w, h, x0, 0,
-                               y1, sw, 255);
+            draw_hline_segment(&mut data, w, h, 0, y0, x1, sw, 255);
+            draw_vline_segment(&mut data, w, h, x0, 0, y1, sw, 255);
         }
     }
     builtin_result(w, h, by, data)
 }
 
-enum TType { Left, Right, Up, Down }
+enum TType {
+    Left,
+    Right,
+    Up,
+    Down,
+}
 
 /// Box drawing T-junction (├ ┤ ┬ ┴).
 ///
 /// `heavy=false` → light stroke, `heavy=true` → double-width heavy stroke.
-fn t_junction(w: u32, h: u32, by: f32, heavy: bool, ttype: TType, underline_thickness: f32) -> BuiltinGlyph {
+fn t_junction(
+    w: u32,
+    h: u32,
+    by: f32,
+    heavy: bool,
+    ttype: TType,
+    underline_thickness: f32,
+) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
     let lw = line_width(w, h, underline_thickness);
     let sw = if heavy { lw * 2 } else { lw };
@@ -468,26 +488,22 @@ fn t_junction(w: u32, h: u32, by: f32, heavy: bool, ttype: TType, underline_thic
         TType::Left => {
             // ├: full vertical + right horizontal
             draw_vline(&mut data, w, h, x0, sw, 255);
-            draw_hline_segment(&mut data, w, h, x0, y0,
-                               w.saturating_sub(x0), sw, 255);
+            draw_hline_segment(&mut data, w, h, x0, y0, w.saturating_sub(x0), sw, 255);
         }
         TType::Right => {
             // ┤: full vertical + left horizontal
             draw_vline(&mut data, w, h, x0, sw, 255);
-            draw_hline_segment(&mut data, w, h, 0, y0,
-                               x1, sw, 255);
+            draw_hline_segment(&mut data, w, h, 0, y0, x1, sw, 255);
         }
         TType::Down => {
             // ┬: full horizontal + bottom vertical
             draw_hline(&mut data, w, h, y0, sw, 255);
-            draw_vline_segment(&mut data, w, h, x0, y0,
-                               h.saturating_sub(y0), sw, 255);
+            draw_vline_segment(&mut data, w, h, x0, y0, h.saturating_sub(y0), sw, 255);
         }
         TType::Up => {
             // ┴: full horizontal + top vertical
             draw_hline(&mut data, w, h, y0, sw, 255);
-            draw_vline_segment(&mut data, w, h, x0, 0,
-                               y1, sw, 255);
+            draw_vline_segment(&mut data, w, h, x0, 0, y1, sw, 255);
         }
     }
     builtin_result(w, h, by, data)

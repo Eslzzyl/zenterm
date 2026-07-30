@@ -105,11 +105,7 @@ fn assert_map_none(event: &egui::Event) {
     assert_eq!(result, None, "event={event:?}");
 }
 
-fn assert_map_with(
-    event: &egui::Event,
-    expected: &[u8],
-    opts: &MappingOptions,
-) {
+fn assert_map_with(event: &egui::Event, expected: &[u8], opts: &MappingOptions) {
     let result = InputMapper::map(event, opts);
     assert_eq!(result.as_deref(), Some(expected), "event={event:?}");
 }
@@ -194,7 +190,10 @@ fn test_arrows() {
 fn test_arrows_with_mods() {
     assert_map(&key_event(Key::ArrowUp, true, false, false), b"\x1b[1;5A");
     assert_map(&key_event(Key::ArrowDown, true, false, false), b"\x1b[1;5B");
-    assert_map(&key_event(Key::ArrowRight, true, false, false), b"\x1b[1;5C");
+    assert_map(
+        &key_event(Key::ArrowRight, true, false, false),
+        b"\x1b[1;5C",
+    );
     assert_map(&key_event(Key::ArrowLeft, true, false, false), b"\x1b[1;5D");
 }
 
@@ -211,10 +210,26 @@ fn test_app_cursor_arrows() {
         app_cursor: true,
         ..MappingOptions::new()
     };
-    assert_map_with(&key_event(Key::ArrowUp, false, false, false), b"\x1bOA", &opts);
-    assert_map_with(&key_event(Key::ArrowDown, false, false, false), b"\x1bOB", &opts);
-    assert_map_with(&key_event(Key::ArrowRight, false, false, false), b"\x1bOC", &opts);
-    assert_map_with(&key_event(Key::ArrowLeft, false, false, false), b"\x1bOD", &opts);
+    assert_map_with(
+        &key_event(Key::ArrowUp, false, false, false),
+        b"\x1bOA",
+        &opts,
+    );
+    assert_map_with(
+        &key_event(Key::ArrowDown, false, false, false),
+        b"\x1bOB",
+        &opts,
+    );
+    assert_map_with(
+        &key_event(Key::ArrowRight, false, false, false),
+        b"\x1bOC",
+        &opts,
+    );
+    assert_map_with(
+        &key_event(Key::ArrowLeft, false, false, false),
+        b"\x1bOD",
+        &opts,
+    );
     assert_map_with(&key_event(Key::Home, false, false, false), b"\x1bOH", &opts);
     assert_map_with(&key_event(Key::End, false, false, false), b"\x1bOF", &opts);
 }
@@ -225,8 +240,16 @@ fn test_app_cursor_with_mods() {
         app_cursor: true,
         ..MappingOptions::new()
     };
-    assert_map_with(&key_event(Key::ArrowUp, true, false, false), b"\x1b[1;5A", &opts);
-    assert_map_with(&key_event(Key::ArrowDown, true, false, false), b"\x1b[1;5B", &opts);
+    assert_map_with(
+        &key_event(Key::ArrowUp, true, false, false),
+        b"\x1b[1;5A",
+        &opts,
+    );
+    assert_map_with(
+        &key_event(Key::ArrowDown, true, false, false),
+        b"\x1b[1;5B",
+        &opts,
+    );
 }
 
 // ── Legacy: Home / End ───────────────────────────────────────────
@@ -467,11 +490,7 @@ fn test_f35_not_handled() {
 fn test_kitty_disambiguate_ctrl_letter() {
     // Ctrl+A should send CSI u sequence instead of raw 0x01.
     let opts = kitty_opts(KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES);
-    assert_map_with(
-        &key_event(Key::A, true, false, false),
-        b"\x1b[97;5u",
-        &opts,
-    );
+    assert_map_with(&key_event(Key::A, true, false, false), b"\x1b[97;5u", &opts);
 }
 
 #[test]
@@ -479,22 +498,14 @@ fn test_kitty_disambiguate_ctrl_shift_a() {
     // Ctrl+Shift+A should send CSI u with mods=6 (ctrl+shift) and
     // the *unshifted* base code 'a' (97) per the Kitty spec.
     let opts = kitty_opts(KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES);
-    assert_map_with(
-        &key_event(Key::A, true, false, true),
-        b"\x1b[97;6u",
-        &opts,
-    );
+    assert_map_with(&key_event(Key::A, true, false, true), b"\x1b[97;6u", &opts);
 }
 
 #[test]
 fn test_kitty_disambiguate_alt_a() {
     // Alt+A should send CSI u with mods=3 (alt).
     let opts = kitty_opts(KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES);
-    assert_map_with(
-        &key_event(Key::A, false, true, false),
-        b"\x1b[97;3u",
-        &opts,
-    );
+    assert_map_with(&key_event(Key::A, false, true, false), b"\x1b[97;3u", &opts);
 }
 
 #[test]
@@ -548,7 +559,11 @@ fn test_kitty_disambiguate_unmodified_keys_still_plain() {
     // Tab without modifiers → \t
     assert_map_with(&key_event(Key::Tab, false, false, false), b"\t", &opts);
     // Backspace without modifiers → \x7f
-    assert_map_with(&key_event(Key::Backspace, false, false, false), b"\x7f", &opts);
+    assert_map_with(
+        &key_event(Key::Backspace, false, false, false),
+        b"\x7f",
+        &opts,
+    );
     // Printable char without modifiers → None (handled by Event::Text)
     assert_map_none_with(&key_event(Key::A, false, false, false), &opts);
 }
@@ -587,11 +602,7 @@ fn test_kitty_report_all_tab() {
     let flags = KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES
         | KittyKeyboardFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
     let opts = kitty_opts(flags);
-    assert_map_with(
-        &key_event(Key::Tab, false, false, false),
-        b"\x1b[9u",
-        &opts,
-    );
+    assert_map_with(&key_event(Key::Tab, false, false, false), b"\x1b[9u", &opts);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -600,8 +611,8 @@ fn test_kitty_report_all_tab() {
 
 #[test]
 fn test_kitty_event_type_repeat() {
-    let flags = KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES
-        | KittyKeyboardFlags::REPORT_EVENT_TYPES;
+    let flags =
+        KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES | KittyKeyboardFlags::REPORT_EVENT_TYPES;
     let opts = kitty_opts(flags);
     // Repeat event for 'a'
     assert_map_with(
@@ -613,8 +624,8 @@ fn test_kitty_event_type_repeat() {
 
 #[test]
 fn test_kitty_event_type_release() {
-    let flags = KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES
-        | KittyKeyboardFlags::REPORT_EVENT_TYPES;
+    let flags =
+        KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES | KittyKeyboardFlags::REPORT_EVENT_TYPES;
     let opts = kitty_opts(flags);
     // Release event for Escape
     assert_map_with(
@@ -627,8 +638,8 @@ fn test_kitty_event_type_release() {
 #[test]
 fn test_kitty_event_type_release_enter_no_report_all() {
     // Without REPORT_ALL, Enter release is suppressed.
-    let flags = KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES
-        | KittyKeyboardFlags::REPORT_EVENT_TYPES;
+    let flags =
+        KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES | KittyKeyboardFlags::REPORT_EVENT_TYPES;
     let opts = kitty_opts(flags);
     assert_map_none_with(
         &key_event_full(Key::Enter, false, false, false, false, false),
@@ -666,8 +677,8 @@ fn test_kitty_without_event_types_ignores_release() {
 
 #[test]
 fn test_kitty_alternates_letter() {
-    let flags = KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES
-        | KittyKeyboardFlags::REPORT_ALTERNATE_KEYS;
+    let flags =
+        KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES | KittyKeyboardFlags::REPORT_ALTERNATE_KEYS;
     let opts = kitty_opts(flags);
     // Shift+A: primary='a'(97), alternates=('A','a'), mods=2(shift)
     assert_map_with(
@@ -679,8 +690,8 @@ fn test_kitty_alternates_letter() {
 
 #[test]
 fn test_kitty_alternates_ctrl_a() {
-    let flags = KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES
-        | KittyKeyboardFlags::REPORT_ALTERNATE_KEYS;
+    let flags =
+        KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES | KittyKeyboardFlags::REPORT_ALTERNATE_KEYS;
     let opts = kitty_opts(flags);
     // Ctrl+A: unshifted='a'(97), shifted='A'(65)
     assert_map_with(
@@ -696,8 +707,8 @@ fn test_kitty_alternates_ctrl_a() {
 
 #[test]
 fn test_kitty_associated_text() {
-    let flags = KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES
-        | KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT;
+    let flags =
+        KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES | KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT;
     let opts = kitty_opts(flags);
     // 'j' with ctrl: key=106, mods=5, text=106
     assert_map_with(
@@ -723,8 +734,10 @@ fn test_kitty_f5_ctrl() {
 
 #[test]
 fn test_kitty_f13_unmodified() {
-    let opts = kitty_opts(KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES
-        | KittyKeyboardFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES);
+    let opts = kitty_opts(
+        KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES
+            | KittyKeyboardFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
+    );
     assert_map_with(
         &key_event(Key::F13, false, false, false),
         b"\x1b[57376u",
@@ -793,7 +806,11 @@ fn test_kitty_disabled_fallback_to_legacy() {
     // kitty_flags = None → legacy path
     let opts = MappingOptions::default(); // kitty_flags=None
     assert_map_with(&key_event(Key::A, true, false, false), b"\x01", &opts);
-    assert_map_with(&key_event(Key::ArrowUp, true, false, false), b"\x1b[1;5A", &opts);
+    assert_map_with(
+        &key_event(Key::ArrowUp, true, false, false),
+        b"\x1b[1;5A",
+        &opts,
+    );
     assert_map_with(&key_event(Key::Enter, false, false, true), b"\r", &opts);
 }
 
