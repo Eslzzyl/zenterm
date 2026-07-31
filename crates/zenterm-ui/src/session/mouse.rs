@@ -690,7 +690,7 @@ impl TerminalSession {
         ui.painter().rect_filled(
             track,
             0.0,
-            egui::Color32::from_black_alpha(if active { 40 } else { 15 }),
+            ui.visuals().faint_bg_color,
         );
 
         // Thumb – only draw when there is actually something to scroll.
@@ -698,7 +698,13 @@ impl TerminalSession {
             ui.painter().rect_filled(
                 thumb,
                 4.0,
-                egui::Color32::from_gray(if active { 160 } else { 100 }),
+                if active {
+                    ui.visuals().strong_text_color()
+                } else {
+                    ui.visuals()
+                        .weak_text_color
+                        .unwrap_or_else(|| ui.visuals().text_color().gamma_multiply(0.65))
+                },
             );
         }
     }

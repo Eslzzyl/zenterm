@@ -172,15 +172,36 @@ impl ColorsConfig {
         if let Some(c) = parse_hex_opt(&self.selection.foreground) {
             theme.selection_fg = c;
         }
-        if let Some(c) = parse_hex_opt(&self.selection.background) {
+        let custom_selection_background = if let Some(c) = parse_hex_opt(&self.selection.background) {
             theme.selection_bg = c;
-        }
+            true
+        } else {
+            false
+        };
 
         // ANSI normal.
         apply_ansi(&mut theme.ansi_normal, &self.normal);
 
         // ANSI bright.
         apply_ansi(&mut theme.ansi_bright, &self.bright);
+
+        // Derive UI chrome from the resolved terminal theme so custom
+        // foreground/background colours do not leave the panels behind.
+        let dark_mode = theme.background.r() < 0.5;
+        theme.ui_text = theme.foreground;
+        theme.ui_bg = blend_rgba(
+            theme.background,
+            theme.foreground,
+            if dark_mode { 0.08 } else { 0.04 },
+        );
+        theme.ui_surface = blend_rgba(
+            theme.background,
+            theme.foreground,
+            if dark_mode { 0.16 } else { 0.10 },
+        );
+        if custom_selection_background {
+            theme.ui_accent = theme.selection_bg;
+        }
 
         theme
     }
@@ -210,6 +231,12 @@ fn apply_ansi(target: &mut [Rgba; 8], src: &AnsiColors) {
             target[i] = c;
         }
     }
+}
+
+fn blend_rgba(a: Rgba, b: Rgba, amount: f32) -> Rgba {
+    let amount = amount.clamp(0.0, 1.0);
+    let mix = |x: f32, y: f32| x + (y - x) * amount;
+    Rgba::rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
 }
 
 // ── Hex colour parsing ─────────────────────────────────────────────────

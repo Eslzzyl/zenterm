@@ -11,7 +11,7 @@ use zenterm_core::SubpixelLayout;
 use zenterm_term::ColorScheme;
 
 use super::ZentermApp;
-use super::theme::theme_bg_to_color32;
+use super::theme::{configure_egui_style, system_theme_is_dark, theme_bg_to_color32};
 
 impl ZentermApp {
     pub(crate) fn maybe_save_config(&mut self) {
@@ -81,14 +81,14 @@ impl ZentermApp {
         let changes = old_config.diff_to(&self.config);
 
         // Re-resolve theme.
-        let system_dark = egui_ctx.input(|i| match i.raw.system_theme {
-            Some(egui::Theme::Dark) => true,
-            Some(egui::Theme::Light) => false,
-            None => true,
-        });
+        let system_dark = system_theme_is_dark(egui_ctx);
         self.theme = self.config.colors.to_theme(system_dark);
         self.last_system_dark = system_dark;
         self.default_bg = theme_bg_to_color32(&self.theme);
+        // `self.theme` is replaced before the next frame's sync check, so
+        // refresh egui immediately here instead of waiting for a theme
+        // difference that can no longer be observed by `sync_theme`.
+        configure_egui_style(egui_ctx, &self.theme);
 
         if changes.colors {
             let scheme = ColorScheme::from_theme(&self.theme);

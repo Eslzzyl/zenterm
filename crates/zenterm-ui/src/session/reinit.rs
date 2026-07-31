@@ -140,26 +140,10 @@ impl TerminalSession {
         let size = self.terminal.size();
         let text = format!("{} × {}", size.cols, size.rows);
 
-        // Choose backdrop and text colours based on terminal background
-        // luminance so the overlay is legible on both light and dark
-        // terminals.
-        let bg = self.default_bg;
-        let lum = 0.299 * bg.r() as f32 / 255.0
-            + 0.587 * bg.g() as f32 / 255.0
-            + 0.114 * bg.b() as f32 / 255.0;
-        let (backdrop_color, text_color) = if lum < 0.5 {
-            // Dark terminal → light backdrop with dark text.
-            (
-                egui::Color32::WHITE.gamma_multiply(0.55),
-                egui::Color32::BLACK,
-            )
-        } else {
-            // Light terminal → dark backdrop with light text.
-            (
-                egui::Color32::BLACK.gamma_multiply(0.55),
-                egui::Color32::WHITE,
-            )
-        };
+        // Use the active egui theme so the transient overlay belongs to
+        // the same visual system as the rest of the application chrome.
+        let backdrop_color = ui.visuals().window_fill;
+        let text_color = ui.visuals().strong_text_color();
 
         // Semi-transparent rounded backdrop, centred in `rect`.
         let backdrop = egui::Rect::from_center_size(rect.center(), egui::vec2(160.0, 44.0));

@@ -32,6 +32,10 @@ pub struct WorkspaceSidebarEntry {
     pub is_active: bool,
     /// Number of tabs in this workspace (shown as a subtitle).
     pub tab_count: usize,
+    /// Title of the first tab, used as a lightweight session hint.
+    pub tab_title: Option<String>,
+    /// Whether any session in the workspace needs attention.
+    pub has_attention: bool,
 }
 
 // ── Events ───────────────────────────────────────────────────────────────
@@ -78,22 +82,31 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
     ui.vertical(|ui| {
         ui.add_space(10.0);
 
-        // ── "New shell" / "New WS" / ⚙ buttons ──────────────────
+        // ── "New workspace" / settings buttons ───────────────────
+        let compact_toolbar = ui.available_width() < 200.0;
+        let new_workspace_fill = ui.visuals().selection.bg_fill;
         ui.horizontal(|ui| {
-            if ui.button("+  New shell").clicked() {
-                events.push(SidebarEvent::NewShell);
-            }
-            if ui.button("+  New WS").clicked() {
+            let new_workspace = if compact_toolbar {
+                ui.add(egui::Button::new("+").fill(new_workspace_fill))
+                    .on_hover_text("New workspace")
+            } else {
+                ui.add(egui::Button::new("+  New workspace").fill(new_workspace_fill))
+            };
+            if new_workspace.clicked() {
                 events.push(SidebarEvent::NewWorkspace);
             }
             // Push settings gear to the right.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("⚙").clicked() {
+                let response = ui.button("⚙");
+                if response.clicked() {
                     events.push(SidebarEvent::OpenSettings);
                 }
+                response.on_hover_text("Settings");
             });
         });
-        ui.add_space(6.0);
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(4.0);
 
         // ── Scrollable workspace list ───────────────────────────
         egui::ScrollArea::vertical()
@@ -110,56 +123,84 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
                     // Paint background for the entire card.
                     let is_hovered = card_resp.hovered();
                     let corner_radius = 8.0;
+                    let accent = ui.visuals().hyperlink_color;
                     let bg = if ws_entry.is_active {
-                        ui.visuals().selection.bg_fill
-                    } else if is_hovered {
-                        Color32::from_rgba_premultiplied(
-                            ui.visuals().widgets.hovered.bg_fill.r(),
-                            ui.visuals().widgets.hovered.bg_fill.g(),
-                            ui.visuals().widgets.hovered.bg_fill.b(),
-                            (ui.visuals().widgets.hovered.bg_fill.a() as f32 * 0.6) as u8,
+                        Color32::from_rgba_unmultiplied(
+                            accent.r(),
+                            accent.g(),
+                            accent.b(),
+                            if ui.visuals().dark_mode { 48 } else { 30 },
                         )
+                    } else if is_hovered {
+                        // A surface-to-background blend is too subtle in the
+                        // light theme, where both colours are close together.
+                        // Reuse the theme accent used for selection instead.
+                        ui.visuals().selection.bg_fill
                     } else {
                         Color32::TRANSPARENT
                     };
                     ui.painter().rect_filled(card_rect, corner_radius, bg);
 
-                    // Card border — use the same subtle stroke as windows.
-                    let border_color = ui.visuals().window_stroke.color;
-                    ui.painter().rect_stroke(
-                        card_rect,
-                        corner_radius,
-                        egui::Stroke::new(1.0_f32, border_color),
-                        egui::StrokeKind::Inside,
-                    );
+                    // Use a compact active rail instead of outlining every
+                    // workspace as a separate card.
+                    if ws_entry.is_active {
+                        let rail_rect = egui::Rect::from_min_size(
+                            card_rect.min,
+                            egui::vec2(3.0, card_rect.height()),
+                        );
+                        ui.painter().rect_filled(rail_rect, 2.0, accent);
+                    }
 
                     // ── Card content ─────────────────────────────
-                    let content_rect = card_rect.shrink2(egui::vec2(14.0, 8.0));
+                    let content_rect = card_rect.shrink2(egui::vec2(14.0, 7.0));
                     let mut content_ui = ui.new_child(
                         egui::UiBuilder::default()
                             .max_rect(content_rect)
                             .layout(*ui.layout()),
                     );
                     content_ui.vertical(|ui| {
-                        let label_color = if ws_entry.is_active {
-                            ui.visuals().selection.stroke.color
-                        } else if is_hovered {
-                            ui.visuals().strong_text_color()
-                        } else {
-                            ui.visuals().text_color()
-                        };
-                        let mut label = egui::RichText::new(&ws_entry.name)
-                            .size(14.0)
-                            .color(label_color);
-                        if ws_entry.is_active {
-                            label = label.strong();
-                        }
-                        ui.label(label);
+                        ui.horizontal(|ui| {
+                            let label_color = if ws_entry.is_active || is_hovered {
+                                ui.visuals().strong_text_color()
+                            } else {
+                                ui.visuals().text_color()
+                            };
+                            let mut label = egui::RichText::new(&ws_entry.name)
+                                .size(14.0)
+                                .color(label_color);
+                            if ws_entry.is_active {
+                                label = label.strong();
+                            }
+                            ui.label(label);
 
-                        // Subtitle: tab count.
-                        if ws_entry.tab_count > 0 {
-                            ui.add_space(2.0);
-                            ui.weak(format!("{} tabs", ws_entry.tab_count));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ws_entry.has_attention {
+                                        ui.colored_label(
+                                            ui.visuals().warn_fg_color,
+                                            egui::RichText::new("!").strong(),
+                                        )
+                                        .on_hover_text("Session needs attention");
+                                    }
+                                    if ws_entry.tab_count > 0 {
+                                        let tab_label = if ws_entry.tab_count == 1 {
+                                            "1 tab".to_string()
+                                        } else {
+                                            format!("{} tabs", ws_entry.tab_count)
+                                        };
+                                        ui.weak(tab_label);
+                                    }
+                                },
+                            );
+                        });
+
+                        if let Some(title) = &ws_entry.tab_title
+                            && !title.is_empty()
+                            && title != &ws_entry.name
+                        {
+                            ui.add_space(1.0);
+                            ui.weak(title);
                         }
                     });
 

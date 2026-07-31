@@ -135,7 +135,7 @@ pub struct WindowPadding {
 
 impl Default for WindowPadding {
     fn default() -> Self {
-        Self { x: 0.0, y: 0.0 }
+        Self { x: 8.0, y: 6.0 }
     }
 }
 

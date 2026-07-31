@@ -187,7 +187,8 @@ fn render_settings_content(
                         ui.add_space(12.0);
                         if ui
                             .button(
-                                egui::RichText::new("↺ Reset All").color(egui::Color32::LIGHT_RED),
+                                egui::RichText::new("↺ Reset All")
+                                    .color(ui.visuals().error_fg_color),
                             )
                             .clicked()
                         {
@@ -207,7 +208,7 @@ fn render_settings_content(
                     egui::RichText::new(
                         "⚠ Some changes require an application restart to take full effect",
                     )
-                    .color(egui::Color32::YELLOW),
+                    .color(ui.visuals().warn_fg_color),
                 );
                 ui.add_space(6.0);
             }

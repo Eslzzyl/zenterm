@@ -59,4 +59,5 @@ mod types;
 pub use badge::render_badge;
 
 pub use effects::SessionEffect;
+pub(crate) use types::NotificationState;
 pub use types::{SessionId, TerminalSession};

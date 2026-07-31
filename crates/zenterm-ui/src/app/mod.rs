@@ -26,7 +26,7 @@ use egui::Context;
 
 use zenterm_config::Config;
 use zenterm_core::SubpixelLayout;
-use zenterm_core::theme::{THEME_DARK, Theme, ThemePreference};
+use zenterm_core::theme::{Theme, ThemePreference};
 use zenterm_render::BackgroundImageData;
 use zenterm_render::callback::{CallbackHandle, SharedRenderState, TerminalWgpuCallback};
 use zenterm_render::glyph_type;
@@ -39,6 +39,7 @@ use crate::legacy::render_legacy_single;
 use crate::session::{SessionId, TerminalSession};
 use crate::settings::SettingsState;
 use crate::workspace::WorkspaceManager;
+use self::theme::{configure_egui_style, system_theme_is_dark};
 
 // ── App-level state ────────────────────────────────────────────────────
 
@@ -98,6 +99,11 @@ pub struct ZentermApp {
     /// resize) don't thrash the I/O.
     last_config_save_at: Option<Instant>,
 
+    /// Keep the native window hidden until the first fully themed frame has
+    /// completed.  This prevents the platform from exposing egui's fallback
+    /// visuals while the app is still being initialized.
+    viewport_revealed: bool,
+
     // ── Event-driven wakeup (idle CPU) ──────────────────────────
     /// Stored egui context, used to create cross-thread wakeup
     /// callbacks for PTY reader threads.  Clone is cheap (Arc bump).
@@ -116,6 +122,13 @@ impl ZentermApp {
         pixels_per_point: f32,
         config: Config,
     ) -> Self {
+        // Resolve and install the configured theme before any expensive
+        // renderer setup.  This minimizes the window in which eframe could
+        // present its default egui visuals during startup.
+        let system_dark = system_theme_is_dark(&egui_ctx);
+        let theme = config.colors.to_theme(system_dark);
+        configure_egui_style(&egui_ctx, &theme);
+
         let shared = std::sync::Arc::new(SharedRenderState::new(80 * 24));
         let gpu = SharedGpuContext::new(device, queue, target_format, shared.clone());
 
@@ -147,8 +160,7 @@ impl ZentermApp {
         );
         let callback = CallbackHandle::new(callback);
 
-        // ── Theme + colour scheme (default = dark) ────────────────
-        let theme = THEME_DARK.clone();
+        // ── Theme + colour scheme ─────────────────────────────────
         let default_bg = theme_bg_to_color32(&theme);
         let scheme = ColorScheme::from_theme(&theme);
 
@@ -281,7 +293,7 @@ impl ZentermApp {
             config,
             theme,
             theme_preference: ThemePreference::Dark,
-            last_system_dark: true,
+            last_system_dark: system_dark,
             default_bg,
             pixels_per_point,
             error_toast: None,
@@ -293,6 +305,7 @@ impl ZentermApp {
             current_window_title: None,
             config_dirty: false,
             last_config_save_at: None,
+            viewport_revealed: false,
             egui_ctx,
         };
 
@@ -429,6 +442,13 @@ impl eframe::App for ZentermApp {
             self.maybe_persist_layout();
         }
 
+        // The native window starts hidden. Reveal it only after the app has
+        // synchronized the configured theme and completed its first update.
+        if !self.viewport_revealed {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            self.viewport_revealed = true;
+        }
+
         // 9. Do NOT call ctx.request_repaint() here.
         //
         // In the event-driven architecture, the egui event loop enters
@@ -450,7 +470,7 @@ impl eframe::App for ZentermApp {
                 .resizable(false)
                 .show_inside(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.colored_label(egui::Color32::RED, "⚠ Config error");
+                        ui.colored_label(ui.visuals().error_fg_color, "⚠ Config error");
                         ui.label(msg);
                         if ui.button("×").clicked() {
                             self.error_toast = None;
@@ -707,7 +727,7 @@ impl ZentermApp {
 /// Convert a [`Theme`] background colour to `egui::Color32`.
 fn theme_bg_to_color32(theme: &Theme) -> egui::Color32 {
     let b = theme.background;
-    egui::Color32::from_rgba_premultiplied(
+    egui::Color32::from_rgba_unmultiplied(
         (b.r() * 255.0).round().clamp(0.0, 255.0) as u8,
         (b.g() * 255.0).round().clamp(0.0, 255.0) as u8,
         (b.b() * 255.0).round().clamp(0.0, 255.0) as u8,

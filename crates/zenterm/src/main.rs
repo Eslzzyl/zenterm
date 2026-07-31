@@ -49,6 +49,7 @@ fn main() -> eframe::Result<()> {
             .with_icon(icon)
             .with_decorations(config.window.decorations)
             .with_transparent(false)
+            .with_visible(false)
             .with_resizable(true),
         // Use smaller GPU memory blocks — we're a terminal, not a game.
         // Performance (default) pre-allocates 128–256 MB blocks from the

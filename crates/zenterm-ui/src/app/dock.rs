@@ -25,6 +25,7 @@ impl ZentermApp {
         if show_sidebar {
             let pos = self.config.ui.sidebar_position;
             let width = self.config.ui.sidebar_width;
+            let min_width = self.config.ui.sidebar_min_width;
             let max_w = self.config.ui.sidebar_max_width;
             let panel = match pos {
                 zenterm_config::ui::SidebarPosition::Left => egui::Panel::left("zenterm_sidebar"),
@@ -38,17 +39,34 @@ impl ZentermApp {
                 String,
                 bool,
                 usize, // tab count
+                Option<String>,
+                bool,
             )> = self
                 .workspaces
                 .workspaces
                 .iter()
                 .map(|ws| {
-                    let tab_count = ws.all_tab_ids().len();
+                    let tab_ids = ws.all_tab_ids();
+                    let tab_count = tab_ids.len();
+                    let tab_title = tab_ids
+                        .first()
+                        .and_then(|id| self.sessions.get(id))
+                        .map(|session| session.title_effective());
+                    let has_attention = tab_ids.iter().any(|id| {
+                        self.sessions.get(id).is_some_and(|session| {
+                            !matches!(
+                                session.notification,
+                                crate::session::NotificationState::None
+                            )
+                        })
+                    });
                     (
                         ws.id,
                         ws.name.clone(),
                         ws.id == self.workspaces.active_workspace_id,
                         tab_count,
+                        tab_title,
+                        has_attention,
                     )
                 })
                 .collect();
@@ -56,7 +74,7 @@ impl ZentermApp {
             panel
                 .resizable(true)
                 .default_size(width)
-                .min_size(width) // default = minimum = can't go narrower
+                .min_size(min_width)
                 .max_size(max_w)
                 .show_inside(ui, |ui| {
                     let mut queued_new_tab = false;
@@ -69,14 +87,18 @@ impl ZentermApp {
                     let sidebar_data = crate::sidebar::SidebarData {
                         workspaces: ws_snapshot
                             .into_iter()
-                            .map(|(id, name, is_active, tab_count)| {
-                                crate::sidebar::WorkspaceSidebarEntry {
-                                    id,
-                                    name,
-                                    is_active,
-                                    tab_count,
-                                }
-                            })
+                            .map(
+                                |(id, name, is_active, tab_count, tab_title, has_attention)| {
+                                    crate::sidebar::WorkspaceSidebarEntry {
+                                        id,
+                                        name,
+                                        is_active,
+                                        tab_count,
+                                        tab_title,
+                                        has_attention,
+                                    }
+                                },
+                            )
                             .collect(),
                     };
 
@@ -209,9 +231,9 @@ impl ZentermApp {
                 let mut style = Style::from_egui(ui.style().as_ref());
                 let egui_visuals = ui.visuals().clone();
 
-                // Tab bar — taller, subtle background, flush corners.
+                // Tab bar — compact, with a clear active surface.
                 style.tab_bar.bg_fill = egui_visuals.extreme_bg_color;
-                style.tab_bar.height = 30.0;
+                style.tab_bar.height = 32.0;
                 style.tab_bar.inner_margin = Margin::symmetric(4, 0);
                 style.tab_bar.corner_radius = CornerRadius::ZERO;
                 style.tab_bar.hline_color = egui_visuals.window_stroke.color;
@@ -243,6 +265,18 @@ impl ZentermApp {
                 style.tab.hovered.corner_radius = top_round;
                 style.tab.focused.corner_radius = top_round;
                 style.tab.focused_with_kb_focus.corner_radius = top_round;
+
+                let active_tab_bg = Color32::from_rgba_unmultiplied(
+                    egui_visuals.hyperlink_color.r(),
+                    egui_visuals.hyperlink_color.g(),
+                    egui_visuals.hyperlink_color.b(),
+                    if egui_visuals.dark_mode { 52 } else { 32 },
+                );
+                style.tab.active.bg_fill = active_tab_bg;
+                style.tab.active_with_kb_focus.bg_fill = active_tab_bg;
+                style.tab.active.outline_color = egui_visuals.hyperlink_color;
+                style.tab.active_with_kb_focus.outline_color = egui_visuals.hyperlink_color;
+                style.tab.hovered.bg_fill = egui_visuals.widgets.hovered.bg_fill;
 
                 // Place the "+" add-tab button right after the last tab.
                 style.buttons.add_tab_align = TabAddAlign::Left;
@@ -290,6 +324,10 @@ impl ZentermApp {
                         pending_rename: &mut self.pending_rename,
                         show_active_indicator,
                         background_active: self.background_image_loaded,
+                        terminal_padding: egui::vec2(
+                            self.config.window.padding.x,
+                            self.config.window.padding.y,
+                        ),
                     };
                     area.show_inside(ui, &mut viewer);
                     let after = serde_json::to_vec(&ws.dock)
@@ -353,7 +391,9 @@ impl ZentermApp {
                                 egui::Align2::RIGHT_TOP,
                                 &text,
                                 egui::FontId::proportional(font_size),
-                                egui::Color32::from_gray(180),
+                                ui.visuals()
+                                    .weak_text_color
+                                    .unwrap_or_else(|| ui.visuals().text_color().gamma_multiply(0.65)),
                             );
                         }
                     }

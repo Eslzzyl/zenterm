@@ -40,6 +40,8 @@ pub struct TabViewerContext<'a> {
     /// and the egui `rect_filled` for the terminal background should be
     /// skipped (the background image/texture is handled by the shader).
     pub background_active: bool,
+    /// Inner spacing between the tab body and terminal cell grid.
+    pub terminal_padding: egui::Vec2,
 }
 
 impl<'a> TabViewer for TabViewerContext<'a> {
@@ -104,9 +106,14 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         // the app before `DockArea::show_inside`) so a single wgpu
         // callback covering the entire dock area renders every tab.
         let rect = ui.max_rect();
+        let padding = egui::vec2(
+            self.terminal_padding.x.min(rect.width() * 0.45).max(0.0),
+            self.terminal_padding.y.min(rect.height() * 0.45).max(0.0),
+        );
+        let content_rect = rect.shrink2(padding);
         let ppp = ui.ctx().pixels_per_point();
-        let origin_px = [rect.min.x * ppp, rect.min.y * ppp];
-        let size_px = [rect.size().x * ppp, rect.size().y * ppp];
+        let origin_px = [content_rect.min.x * ppp, content_rect.min.y * ppp];
+        let size_px = [content_rect.size().x * ppp, content_rect.size().y * ppp];
         session.set_viewport(origin_px, size_px);
 
         // Resize the terminal to match the new pixel area.
@@ -114,7 +121,7 @@ impl<'a> TabViewer for TabViewerContext<'a> {
 
         // Compute hover BEFORE cell-instance building so URL underline
         // is rendered on the correct frame (not one frame behind).
-        session.compute_hover(ui, rect);
+        session.compute_hover(ui, content_rect);
 
         // Build GPU instance data and append to the shared instance
         // buffer.  Instances are positioned in the dock-area clip
@@ -123,7 +130,8 @@ impl<'a> TabViewer for TabViewerContext<'a> {
 
         // Allocate the terminal area and run mouse / SGR / context-menu.
         let sense = egui::Sense::click_and_drag();
-        let (cell_rect, response) = ui.allocate_exact_size(ui.available_size(), sense);
+        let response = ui.allocate_rect(content_rect, sense);
+        let cell_rect = content_rect;
         log::trace!(
             "[dbg] tab_viewer: calling handle_mouse for tab={:?}, active={:?}, rect={:?}, event_count={}",
             tab,
@@ -165,7 +173,7 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         // foreground/background combination.
         if self.show_active_indicator && *self.active_session_id == Some(*tab) {
             let sel = session.terminal.scheme().selection_bg;
-            let accent = egui::Color32::from_rgba_premultiplied(
+            let accent = egui::Color32::from_rgba_unmultiplied(
                 (sel.r() * 255.0).round().clamp(0.0, 255.0) as u8,
                 (sel.g() * 255.0).round().clamp(0.0, 255.0) as u8,
                 (sel.b() * 255.0).round().clamp(0.0, 255.0) as u8,

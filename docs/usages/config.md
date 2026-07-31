@@ -16,7 +16,7 @@ Controls the appearance and initial size of the terminal window.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `dimensions` | `{ columns, lines }` | `{ columns = 80, lines = 24 }` | Initial terminal size in cells (not pixels). The window is sized to fit this grid at the configured font size. |
-| `padding` | `{ x, y }` | `{ x = 0, y = 0 }` | Inner padding between the window edge and the terminal grid, in logical pixels at 1× DPI. |
+| `padding` | `{ x, y }` | `{ x = 8, y = 6 }` | Inner padding between the window edge and the terminal grid, in logical pixels at 1× DPI. |
 | `title` | `string` | `"Zenterm"` | Window title. The terminal can override this via OSC 0 / OSC 2 escape sequences. |
 | `decorations` | `bool` | `true` | Show window decorations (title bar + borders). |
 | `startup_mode` | `string` | `"Windowed"` | Initial window state. One of: `"Windowed"`, `"Maximized"`, `"Fullscreen"`. |

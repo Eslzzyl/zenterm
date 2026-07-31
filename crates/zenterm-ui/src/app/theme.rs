@@ -27,16 +27,13 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
     let surface = rgba_to_color32(&theme.ui_surface);
     let dark_mode = theme.background.r() < 0.5;
 
-    // Border colour derived from background.
-    let border = if dark_mode {
-        Color32::from_gray(48)
-    } else {
-        Color32::from_gray(210)
-    };
+    // Keep UI chrome derived from resolved theme tokens instead of a
+    // separate hard-coded light/dark palette.
+    let border = blend_colors(ui_bg, ui_text, if dark_mode { 0.28 } else { 0.18 });
 
     // ── Text colours ────────────────────────────────────────────────
     let text_color = ui_text;
-    let weak_text = Color32::from_rgba_premultiplied(
+    let weak_text = Color32::from_rgba_unmultiplied(
         text_color.r(),
         text_color.g(),
         text_color.b(),
@@ -44,21 +41,17 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
     );
 
     // ── Widget state colours ────────────────────────────────────────
-    let hover_bg = if dark_mode {
-        Color32::from_rgb(55, 55, 55)
-    } else {
-        Color32::from_rgb(220, 220, 220)
-    };
+    // Menu items and dock tabs need a clear hover affordance.  A blend of
+    // the two light surfaces is nearly indistinguishable in the light theme,
+    // so tint the state toward the configured accent instead.
+    let hover_bg = blend_colors(ui_bg, accent, if dark_mode { 0.22 } else { 0.12 });
     let active_bg = accent.linear_multiply(0.8);
     let open_bg = accent.linear_multiply(0.15);
     let rounding = CornerRadius::same(6);
     let small_rounding = CornerRadius::same(4);
 
-    let ext_bg = if dark_mode {
-        Color32::from_rgb(12, 12, 12)
-    } else {
-        Color32::from_rgb(245, 245, 245)
-    };
+    let ext_bg = blend_colors(ui_bg, surface, if dark_mode { 0.20 } else { 0.35 });
+    let faint_bg = blend_colors(ui_bg, surface, if dark_mode { 0.45 } else { 0.65 });
 
     let base = if dark_mode {
         Visuals::dark()
@@ -71,11 +64,7 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
         panel_fill: ext_bg,       // matches tab-bar background
         extreme_bg_color: ext_bg, // used by the tab bar
         window_fill: surface,
-        faint_bg_color: if dark_mode {
-            Color32::from_rgb(22, 22, 22)
-        } else {
-            Color32::from_rgb(235, 235, 235)
-        },
+        faint_bg_color: faint_bg,
         window_corner_radius: CornerRadius::same(8),
         window_stroke: Stroke::new(1.0_f32, border),
         window_highlight_topmost: true,
@@ -87,19 +76,14 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
             color: Color32::BLACK.linear_multiply(0.3),
         },
         selection: egui::style::Selection {
-            bg_fill: Color32::from_rgba_premultiplied(
-                accent.r(),
-                accent.g(),
-                accent.b(),
-                if dark_mode { 55 } else { 40 },
-            ),
+            bg_fill: with_alpha(accent, if dark_mode { 55 } else { 40 }),
             stroke: Stroke::new(1.0_f32, text_color),
         },
         weak_text_alpha: 0.65,
         weak_text_color: Some(weak_text),
         hyperlink_color: accent,
-        warn_fg_color: Color32::from_rgb(255, 180, 0),
-        error_fg_color: Color32::from_rgb(255, 80, 80),
+        warn_fg_color: rgba_to_color32(&theme.ansi_bright[3]),
+        error_fg_color: rgba_to_color32(&theme.ansi_bright[1]),
         // Override widget state colors.
         widgets: egui::style::Widgets {
             noninteractive: egui::style::WidgetVisuals {
@@ -119,7 +103,9 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
                 expansion: 0.0,
             },
             hovered: egui::style::WidgetVisuals {
-                weak_bg_fill: Color32::TRANSPARENT,
+                // egui buttons use weak_bg_fill for their frame fill.  Keep
+                // this populated or menu items will never show hover state.
+                weak_bg_fill: hover_bg,
                 bg_fill: hover_bg,
                 bg_stroke: Stroke::new(1.0_f32, accent),
                 fg_stroke: Stroke::new(1.5_f32, text_color),
@@ -127,7 +113,7 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
                 expansion: 1.0,
             },
             active: egui::style::WidgetVisuals {
-                weak_bg_fill: Color32::TRANSPARENT,
+                weak_bg_fill: active_bg,
                 bg_fill: active_bg,
                 bg_stroke: Stroke::new(1.0_f32, accent),
                 fg_stroke: Stroke::new(2.0_f32, text_color),
@@ -135,7 +121,7 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
                 expansion: 0.0,
             },
             open: egui::style::WidgetVisuals {
-                weak_bg_fill: Color32::TRANSPARENT,
+                weak_bg_fill: open_bg,
                 bg_fill: open_bg,
                 bg_stroke: Stroke::new(1.0_f32, accent),
                 fg_stroke: Stroke::new(1.0_f32, text_color),
@@ -168,6 +154,18 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
     ctx.set_global_style(style);
 }
 
+/// Resolve the OS theme exposed by egui.  During very early startup the
+/// platform may not have populated `raw.system_theme` yet, so preserve the
+/// current egui visual mode instead of unconditionally forcing dark mode.
+pub(crate) fn system_theme_is_dark(ctx: &Context) -> bool {
+    let current_visuals_dark = ctx.global_style().visuals.dark_mode;
+    ctx.input(|i| match i.raw.system_theme {
+        Some(egui::Theme::Dark) => true,
+        Some(egui::Theme::Light) => false,
+        None => current_visuals_dark,
+    })
+}
+
 impl ZentermApp {
     // ── Theme sync (app-level) ─────────────────────────────────────
 
@@ -176,15 +174,9 @@ impl ZentermApp {
     /// theme changes, and re-configures the egui global style so the
     /// UI chrome matches.
     pub(crate) fn sync_theme(&mut self, egui_ctx: &Context) {
-        let system_dark = egui_ctx.input(|i| match i.raw.system_theme {
-            Some(egui::Theme::Dark) => true,
-            Some(egui::Theme::Light) => false,
-            None => true,
-        });
+        let system_dark = system_theme_is_dark(egui_ctx);
         let new_theme = self.config.colors.to_theme(system_dark);
-        let theme_changed = new_theme.background.r() != self.theme.background.r()
-            || new_theme.background.g() != self.theme.background.g()
-            || new_theme.background.b() != self.theme.background.b();
+        let theme_changed = new_theme != self.theme;
         if theme_changed || self.last_system_dark != system_dark {
             self.theme = new_theme.clone();
             self.last_system_dark = system_dark;
@@ -283,10 +275,24 @@ pub(crate) fn theme_bg_to_color32(theme: &Theme) -> egui::Color32 {
 
 /// Convert a [`zenterm_core::color::Rgba`] to `egui::Color32`.
 fn rgba_to_color32(c: &zenterm_core::color::Rgba) -> egui::Color32 {
-    egui::Color32::from_rgba_premultiplied(
+    egui::Color32::from_rgba_unmultiplied(
         (c.r() * 255.0).round().clamp(0.0, 255.0) as u8,
         (c.g() * 255.0).round().clamp(0.0, 255.0) as u8,
         (c.b() * 255.0).round().clamp(0.0, 255.0) as u8,
         (c.a() * 255.0).round().clamp(0.0, 255.0) as u8,
     )
+}
+
+fn with_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+}
+
+fn blend_colors(a: egui::Color32, b: egui::Color32, amount: f32) -> egui::Color32 {
+    let amount = amount.clamp(0.0, 1.0);
+    let mix = |x: u8, y: u8| {
+        (x as f32 + (y as f32 - x as f32) * amount)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    egui::Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
 }
