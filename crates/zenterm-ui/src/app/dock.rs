@@ -250,6 +250,17 @@ impl ZentermApp {
                 style.buttons.close_tab_active_color = text_bright;
                 style.buttons.close_tab_bg_fill = Color32::TRANSPARENT;
 
+                // Paint the full-dock background before DockArea so every
+                // tab bar, including bars inside split leaves, stays above
+                // the background image.
+                if self.background_image_loaded {
+                    let background_cb = egui_wgpu::Callback::new_paint_callback(
+                        dock_rect,
+                        self.callback.background_only(),
+                    );
+                    ui.painter().add(background_cb);
+                }
+
                 // ── Render tabs (nested scope to drop viewer early) ──
                 {
                     let ws = self.workspaces.active_workspace_mut();
@@ -273,11 +284,10 @@ impl ZentermApp {
                     area.show_inside(ui, &mut viewer);
                 } // viewer dropped → self.sessions borrow released
 
-                // Single wgpu callback covering the entire dock area.
-                // All sessions append cell instances to the shared
-                // buffer; clip-space coordinates are computed relative
-                // to this viewport so one draw call renders all tabs.
-                let cb = egui_wgpu::Callback::new_paint_callback(dock_rect, self.callback.clone());
+                // Paint terminal cells after DockArea. Cell geometry is
+                // limited to tab bodies, so it does not cover the bars.
+                let cb =
+                    egui_wgpu::Callback::new_paint_callback(dock_rect, self.callback.cells_only());
                 ui.painter().add(cb);
 
                 // ── Transient resize overlay ─────────────────────────

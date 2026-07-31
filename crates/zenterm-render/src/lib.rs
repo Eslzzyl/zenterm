@@ -574,53 +574,33 @@ impl TerminalRenderPass {
         self.num_instances.store(count, Ordering::Release);
     }
 
-    /// Draw into an existing render pass.
-    ///
-    /// When multiple atlas slots are active the draw is segmented by
-    /// [`AtlasRange`], binding the corresponding texture for each
-    /// segment.  Instances not covered by any range (such as SOLID
-    /// background and decoration quads that don't sample the atlas
-    /// texture) are drawn with bind group 0.
-    ///
-    /// When `background_active` is true, instance 0 is a BACKGROUND
-    /// quad sampled from `@group(1)` (the background image texture).
-    /// It is drawn first with any valid `@group(0)` (it doesn't sample
-    /// glyph_atlas).  Cell instances start at offset 1.
-    pub fn draw_to_pass(&self, rpass: &mut wgpu::RenderPass) {
-        let count = self.num_instances.load(Ordering::Acquire);
-        if count == 0 {
+    /// Draw only the background image quad into an existing render pass.
+    pub fn draw_background_to_pass(&self, rpass: &mut wgpu::RenderPass) {
+        if !self.background_active || self.num_instances.load(Ordering::Acquire) == 0 {
             return;
         }
-        rpass.set_pipeline(&self.pipeline);
-        rpass.set_vertex_buffer(0, self.vertex_buf.slice(..));
-        rpass.set_vertex_buffer(1, self.instance_buf.slice(..));
-        rpass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
 
-        // Bind @group(1) once for all draw calls (background texture
-        // or 1×1 dummy).  Cell-instance draw paths do not sample it.
-        rpass.set_bind_group(1, &self.background_bind_group, &[]);
-
-        let bg_active = self.background_active;
-        let start: u32 = if bg_active { 1 } else { 0 };
-
-        // ── Draw background quad (instance 0) ───────────────────────
-        if bg_active {
-            // Bind any valid @group(0) — the BACKGROUND shader path
-            // does not sample glyph_atlas, but wgpu validation requires
-            // the binding to be present.
-            if let Some(bg) = self.atlas_bind_groups.first() {
-                rpass.set_bind_group(0, bg, &[]);
-            }
-            rpass.draw_indexed(0..6, 0, 0..1);
+        self.prepare_draw(rpass);
+        // The BACKGROUND shader path does not sample glyph_atlas, but wgpu
+        // validation still requires a valid group 0 binding.
+        if let Some(bg) = self.atlas_bind_groups.first() {
+            rpass.set_bind_group(0, bg, &[]);
         }
+        rpass.draw_indexed(0..6, 0, 0..1);
+    }
 
+    /// Draw only terminal cell instances into an existing render pass.
+    pub fn draw_cells_to_pass(&self, rpass: &mut wgpu::RenderPass) {
+        let count = self.num_instances.load(Ordering::Acquire);
+        let start: u32 = if self.background_active { 1 } else { 0 };
         if count <= start {
             return;
         }
 
-        // ── Draw cell instances (offset by `start`) ─────────────────
+        self.prepare_draw(rpass);
+
+        // Single-slot / empty fast path.
         if self.atlas_ranges.is_empty() || self.atlas_bind_groups.is_empty() {
-            // Single-slot / empty fast path.
             if let Some(bg) = self.atlas_bind_groups.first() {
                 rpass.set_bind_group(0, bg, &[]);
             }
@@ -628,9 +608,8 @@ impl TerminalRenderPass {
             return;
         }
 
-        // Multi-slot segmented draw.  Gaps between ranges (flat
-        // instances such as SOLID bg/deco that aren't in any range)
-        // are drawn with bind group 0 — they don't sample the texture.
+        // Multi-slot segmented draw. Gaps are flat instances that do not
+        // sample the atlas and therefore use bind group 0.
         let mut drawn_end = start;
         for range in &self.atlas_ranges {
             if range.count == 0 {
@@ -645,23 +624,34 @@ impl TerminalRenderPass {
                 continue;
             }
 
-            // Draw gap before this range (flat instances).
             if range.start > drawn_end {
                 rpass.set_bind_group(0, &self.atlas_bind_groups[0], &[]);
                 rpass.draw_indexed(0..6, 0, drawn_end..range.start);
             }
 
-            // Draw this atlas range with its texture.
             rpass.set_bind_group(0, &self.atlas_bind_groups[range.atlas_index], &[]);
             rpass.draw_indexed(0..6, 0, range.start..range.start + range.count);
             drawn_end = range.start + range.count;
         }
 
-        // Draw remaining instances after the last range.
         if drawn_end < count {
             rpass.set_bind_group(0, &self.atlas_bind_groups[0], &[]);
             rpass.draw_indexed(0..6, 0, drawn_end..count);
         }
+    }
+
+    /// Draw both the background quad and terminal cell instances.
+    pub fn draw_to_pass(&self, rpass: &mut wgpu::RenderPass) {
+        self.draw_background_to_pass(rpass);
+        self.draw_cells_to_pass(rpass);
+    }
+
+    fn prepare_draw(&self, rpass: &mut wgpu::RenderPass) {
+        rpass.set_pipeline(&self.pipeline);
+        rpass.set_vertex_buffer(0, self.vertex_buf.slice(..));
+        rpass.set_vertex_buffer(1, self.instance_buf.slice(..));
+        rpass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+        rpass.set_bind_group(1, &self.background_bind_group, &[]);
     }
 
     /// Maximum number of instances this render pass can hold.

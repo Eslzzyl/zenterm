@@ -140,6 +140,13 @@ pub struct TerminalWgpuCallback {
     last_instance_gen: AtomicU64,
 }
 
+#[derive(Clone, Copy)]
+enum PaintMode {
+    All,
+    Background,
+    Cells,
+}
+
 impl TerminalWgpuCallback {
     /// Create a new terminal wgpu callback.
     ///
@@ -346,14 +353,30 @@ impl CallbackTrait for TerminalWgpuCallback {
 
     fn paint(
         &self,
+        info: PaintCallbackInfo,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        callback_resources: &CallbackResources,
+    ) {
+        self.paint_with_mode(info, render_pass, callback_resources, PaintMode::All);
+    }
+}
+
+impl TerminalWgpuCallback {
+    fn paint_with_mode(
+        &self,
         _info: PaintCallbackInfo,
         render_pass: &mut wgpu::RenderPass<'static>,
         _callback_resources: &CallbackResources,
+        mode: PaintMode,
     ) {
         if let Ok(rp_guard) = self.render_pass.lock()
             && let Some(ref rp) = *rp_guard
         {
-            rp.draw_to_pass(render_pass);
+            match mode {
+                PaintMode::All => rp.draw_to_pass(render_pass),
+                PaintMode::Background => rp.draw_background_to_pass(render_pass),
+                PaintMode::Cells => rp.draw_cells_to_pass(render_pass),
+            }
         }
     }
 }
@@ -365,6 +388,7 @@ impl CallbackTrait for TerminalWgpuCallback {
 #[derive(Clone)]
 pub struct CallbackHandle {
     inner: Arc<TerminalWgpuCallback>,
+    mode: PaintMode,
 }
 
 impl CallbackHandle {
@@ -372,6 +396,23 @@ impl CallbackHandle {
     pub fn new(callback: TerminalWgpuCallback) -> Self {
         Self {
             inner: Arc::new(callback),
+            mode: PaintMode::All,
+        }
+    }
+
+    /// Create a callback that paints only the background quad.
+    pub fn background_only(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            mode: PaintMode::Background,
+        }
+    }
+
+    /// Create a callback that paints only terminal cell instances.
+    pub fn cells_only(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            mode: PaintMode::Cells,
         }
     }
 }
@@ -411,6 +452,7 @@ impl CallbackTrait for CallbackHandle {
         render_pass: &mut wgpu::RenderPass<'static>,
         callback_resources: &CallbackResources,
     ) {
-        self.inner.paint(info, render_pass, callback_resources)
+        self.inner
+            .paint_with_mode(info, render_pass, callback_resources, self.mode)
     }
 }
