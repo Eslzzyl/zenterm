@@ -254,6 +254,9 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
 
         let ctx = ui.ctx();
         let area_id = egui::Id::new("ws_rename_area");
+        let input_id = egui::Id::new(("rename_dialog_input", ws_id.0));
+        let has_saved_buffer = ui.data(|d| d.get_temp::<String>(buf_id).is_some());
+        let mut close_requested = false;
 
         egui::Area::new(area_id)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -268,10 +271,27 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
 
                         ui.add(
                             egui::TextEdit::singleline(&mut buf)
-                                .id(egui::Id::new("rename_dialog_input"))
+                                .id(input_id)
                                 .desired_width(f32::INFINITY),
-                        )
-                        .request_focus();
+                        );
+                        if !has_saved_buffer {
+                            ui.memory_mut(|memory| memory.request_focus(input_id));
+                        }
+
+                        let (submit, cancel) = ui.input(|input| {
+                            (
+                                input.key_pressed(egui::Key::Enter),
+                                input.key_pressed(egui::Key::Escape),
+                            )
+                        });
+                        if submit {
+                            if !buf.is_empty() {
+                                events.push(SidebarEvent::RenameWorkspace(ws_id, buf.clone()));
+                            }
+                            close_requested = true;
+                        } else if cancel {
+                            close_requested = true;
+                        }
 
                         ui.add_space(14.0);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -279,15 +299,23 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
                                 if !buf.is_empty() {
                                     events.push(SidebarEvent::RenameWorkspace(ws_id, buf.clone()));
                                 }
-                                close_dialog(ui, ws_id);
+                                close_requested = true;
                             }
                             ui.add_space(8.0);
                             if ui.button("Cancel").clicked() {
-                                close_dialog(ui, ws_id);
+                                close_requested = true;
                             }
                         });
                     });
             });
+
+        if close_requested {
+            close_dialog(ui, ws_id);
+        } else {
+            ui.ctx().data_mut(|d| {
+                d.insert_temp::<String>(buf_id, buf);
+            });
+        }
     }
 
     events

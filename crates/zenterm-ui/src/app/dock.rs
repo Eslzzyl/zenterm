@@ -15,10 +15,10 @@ use crate::tab_viewer::TabViewerContext;
 
 impl ZentermApp {
     pub(crate) fn render_tabs_with_dock(&mut self, ui: &mut egui::Ui) {
-        // Clear pending queues collected during the previous frame.
+        // Clear one-frame action queues collected during the previous frame.
+        // `pending_rename` intentionally persists until the dialog closes.
         self.pending_close.clear();
         self.pending_adds = 0;
-        self.pending_rename = None;
 
         // ── Optional sidebar ────────────────────────────────────────
         let show_sidebar = self.config.ui.sidebar_enabled;
@@ -391,9 +391,9 @@ impl ZentermApp {
                                 egui::Align2::RIGHT_TOP,
                                 &text,
                                 egui::FontId::proportional(font_size),
-                                ui.visuals()
-                                    .weak_text_color
-                                    .unwrap_or_else(|| ui.visuals().text_color().gamma_multiply(0.65)),
+                                ui.visuals().weak_text_color.unwrap_or_else(|| {
+                                    ui.visuals().text_color().gamma_multiply(0.65)
+                                }),
                             );
                         }
                     }
@@ -417,6 +417,9 @@ impl ZentermApp {
 
             let ctx = ui.ctx();
             let area_id = egui::Id::new(("tab_rename_area", rename_id.0));
+            let input_id = egui::Id::new(("tab_rename_dialog_input", rename_id.0));
+            let has_saved_buffer = ctx.data(|d| d.get_temp::<String>(buf_id).is_some());
+            let mut close_requested = false;
 
             egui::Area::new(area_id)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -431,10 +434,29 @@ impl ZentermApp {
 
                             ui.add(
                                 egui::TextEdit::singleline(&mut buf)
-                                    .id(egui::Id::new("tab_rename_dialog_input"))
+                                    .id(input_id)
                                     .desired_width(f32::INFINITY),
-                            )
-                            .request_focus();
+                            );
+                            if !has_saved_buffer {
+                                ui.memory_mut(|memory| memory.request_focus(input_id));
+                            }
+
+                            let (submit, cancel) = ui.input(|input| {
+                                (
+                                    input.key_pressed(egui::Key::Enter),
+                                    input.key_pressed(egui::Key::Escape),
+                                )
+                            });
+                            if submit {
+                                if !buf.is_empty()
+                                    && let Some(s) = self.sessions.get_mut(&rename_id)
+                                {
+                                    s.title_override = Some(buf.clone());
+                                }
+                                close_requested = true;
+                            } else if cancel {
+                                close_requested = true;
+                            }
 
                             ui.add_space(14.0);
                             ui.with_layout(
@@ -446,22 +468,27 @@ impl ZentermApp {
                                         {
                                             s.title_override = Some(buf.clone());
                                         }
-                                        self.pending_rename = None;
-                                        ui.ctx().data_mut(|d| {
-                                            d.remove_temp::<String>(buf_id);
-                                        });
+                                        close_requested = true;
                                     }
                                     ui.add_space(8.0);
                                     if ui.button("Cancel").clicked() {
-                                        self.pending_rename = None;
-                                        ui.ctx().data_mut(|d| {
-                                            d.remove_temp::<String>(buf_id);
-                                        });
+                                        close_requested = true;
                                     }
                                 },
                             );
                         });
                 });
+
+            if close_requested {
+                self.pending_rename = None;
+                ctx.data_mut(|d| {
+                    d.remove_temp::<String>(buf_id);
+                });
+            } else {
+                ctx.data_mut(|d| {
+                    d.insert_temp::<String>(buf_id, buf);
+                });
+            }
         }
 
         // ── Apply pending actions collected by the viewer ─────────
