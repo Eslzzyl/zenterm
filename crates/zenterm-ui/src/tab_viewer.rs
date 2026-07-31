@@ -71,13 +71,11 @@ impl<'a> TabViewer for TabViewerContext<'a> {
                 ui.close();
             }
 
-            if has_override {
-                if ui.button("Reset Tab Title").clicked() {
-                    if let Some(s) = self.sessions.get_mut(tab) {
-                        s.title_override = None;
-                    }
-                    ui.close();
+            if has_override && ui.button("Reset Tab Title").clicked() {
+                if let Some(s) = self.sessions.get_mut(tab) {
+                    s.title_override = None;
                 }
+                ui.close();
             }
         }
     }

@@ -6,6 +6,7 @@
 //! to [`pass1`] (background) and [`pass3`] (decorations) so that both
 //! the ligature and non-ligature paths share the same rendering logic.
 
+mod image;
 mod ligature;
 mod pass1;
 mod pass3;
@@ -14,12 +15,11 @@ use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::vte::ansi::CursorShape;
 
 use zenterm_core::Rgba;
-use zenterm_core::image::ImageCell;
-use zenterm_core::image::ImageDataType;
 use zenterm_glyph::GlyphContentType;
 use zenterm_render::glyph_type;
 use zenterm_render::{AtlasRange, CellInstance};
 
+use self::image::emit_image_quad;
 use self::pass1::emit_background_quad;
 use self::pass3::emit_deco_for_cell;
 use super::shaping;
@@ -347,12 +347,11 @@ impl TerminalSession {
                         && col >= cursor_orig_col
                         && col - cursor_orig_col < preedit.chars().count()
                 });
-                if is_preedit {
-                    if let Some(ref preedit) = self.preedit_text {
-                        if let Some(c) = preedit.chars().nth(col - cursor_orig_col) {
-                            ch_char = c;
-                        }
-                    }
+                if is_preedit
+                    && let Some(ref preedit) = self.preedit_text
+                    && let Some(c) = preedit.chars().nth(col - cursor_orig_col)
+                {
+                    ch_char = c;
                 }
 
                 let is_blank = ch_char == ' ';
@@ -407,29 +406,30 @@ impl TerminalSession {
                     col,
                     self.terminal_dirty
                 );
-                if let Some((url_row, url_col_end)) = hovered_url {
-                    if row == url_row && col < url_col_end {
-                        log::debug!(
-                            "url_underline: emit row={} col={} end={}",
-                            row,
-                            col,
-                            url_col_end
-                        );
-                        let thickness = 1.0_f32.max((ch * 0.06).round());
-                        let deco_y = y_off + row as f32 * ch + baseline + 0.5;
-                        let deco_x = x_off + col as f32 * cw;
-                        self.cached_deco.push(CellInstance {
-                            clip_pos: [deco_x * x_scale - 1.0, 1.0 - deco_y * y_scale],
-                            uv_min: [0.0; 2],
-                            uv_max: [0.0; 2],
-                            clip_cell_size: [cw * x_scale, thickness * y_scale],
-                            glyph_size: [0.0; 2],
-                            glyph_offset: [0.0; 2],
-                            fg_color: [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0],
-                            bg_color: [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0],
-                            flags: glyph_type::SOLID,
-                        });
-                    }
+                if let Some((url_row, url_col_end)) = hovered_url
+                    && row == url_row
+                    && col < url_col_end
+                {
+                    log::debug!(
+                        "url_underline: emit row={} col={} end={}",
+                        row,
+                        col,
+                        url_col_end
+                    );
+                    let thickness = 1.0_f32.max((ch * 0.06).round());
+                    let deco_y = y_off + row as f32 * ch + baseline + 0.5;
+                    let deco_x = x_off + col as f32 * cw;
+                    self.cached_deco.push(CellInstance {
+                        clip_pos: [deco_x * x_scale - 1.0, 1.0 - deco_y * y_scale],
+                        uv_min: [0.0; 2],
+                        uv_max: [0.0; 2],
+                        clip_cell_size: [cw * x_scale, thickness * y_scale],
+                        glyph_size: [0.0; 2],
+                        glyph_offset: [0.0; 2],
+                        fg_color: [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0],
+                        bg_color: [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0],
+                        flags: glyph_type::SOLID,
+                    });
                 }
 
                 let ligatures_enabled = atlas.ligatures_enabled;
@@ -475,32 +475,32 @@ impl TerminalSession {
                         // The ligature branch jumps to run_end, skipping
                         // all cells in (run_start .. run_end).  Any URL
                         // underline for those cells must be emitted here.
-                        if let Some((url_row, url_col_end)) = hovered_url {
-                            if row == url_row {
-                                let emit_start = run_start.max(0);
-                                let emit_end = outcome.run_end.min(url_col_end);
-                                for c in emit_start..emit_end {
-                                    log::debug!(
-                                        "url_underline: ligature-bypass row={} col={} end={}",
-                                        row,
-                                        c,
-                                        url_col_end
-                                    );
-                                    let thickness = 1.0_f32.max((ch * 0.06).round());
-                                    let deco_y = y_off + row as f32 * ch + baseline + 0.5;
-                                    let deco_x = x_off + c as f32 * cw;
-                                    self.cached_deco.push(CellInstance {
-                                        clip_pos: [deco_x * x_scale - 1.0, 1.0 - deco_y * y_scale],
-                                        uv_min: [0.0; 2],
-                                        uv_max: [0.0; 2],
-                                        clip_cell_size: [cw * x_scale, thickness * y_scale],
-                                        glyph_size: [0.0; 2],
-                                        glyph_offset: [0.0; 2],
-                                        fg_color: [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0],
-                                        bg_color: [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0],
-                                        flags: glyph_type::SOLID,
-                                    });
-                                }
+                        if let Some((url_row, url_col_end)) = hovered_url
+                            && row == url_row
+                        {
+                            let emit_start = run_start;
+                            let emit_end = outcome.run_end.min(url_col_end);
+                            for c in emit_start..emit_end {
+                                log::debug!(
+                                    "url_underline: ligature-bypass row={} col={} end={}",
+                                    row,
+                                    c,
+                                    url_col_end
+                                );
+                                let thickness = 1.0_f32.max((ch * 0.06).round());
+                                let deco_y = y_off + row as f32 * ch + baseline + 0.5;
+                                let deco_x = x_off + c as f32 * cw;
+                                self.cached_deco.push(CellInstance {
+                                    clip_pos: [deco_x * x_scale - 1.0, 1.0 - deco_y * y_scale],
+                                    uv_min: [0.0; 2],
+                                    uv_max: [0.0; 2],
+                                    clip_cell_size: [cw * x_scale, thickness * y_scale],
+                                    glyph_size: [0.0; 2],
+                                    glyph_offset: [0.0; 2],
+                                    fg_color: [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0],
+                                    bg_color: [draw_fg.r(), draw_fg.g(), draw_fg.b(), 1.0],
+                                    flags: glyph_type::SOLID,
+                                });
                             }
                         }
                         col = outcome.run_end;
@@ -535,23 +535,23 @@ impl TerminalSession {
                 }
 
                 // ── Image quads (z < 0: behind text) ────────────────────
-                if let Some(ref img) = cell.image {
-                    if img.z_index < 0 {
-                        emit_image_quad(
-                            &mut self.cached_image_below,
-                            &mut atlas,
-                            img,
-                            col,
-                            row,
-                            cw,
-                            ch,
-                            x_off,
-                            y_off,
-                            x_scale,
-                            y_scale,
-                        );
-                        img_below_count += 1;
-                    }
+                if let Some(ref img) = cell.image
+                    && img.z_index < 0
+                {
+                    emit_image_quad(
+                        &mut self.cached_image_below,
+                        &mut atlas,
+                        img,
+                        col,
+                        row,
+                        cw,
+                        ch,
+                        x_off,
+                        y_off,
+                        x_scale,
+                        y_scale,
+                    );
+                    img_below_count += 1;
                 }
 
                 if is_hidden {
@@ -615,7 +615,7 @@ impl TerminalSession {
                         let r_top = (clipped_top - glyph_y_px) / scaled_h;
                         let r_bot = (clipped_bot - glyph_y_px) / scaled_h;
                         let v_range = v_max - v_min;
-                        v_min = v_min + r_top * v_range;
+                        v_min += r_top * v_range;
                         v_max = v_min + (r_bot - r_top) * v_range;
                         glyph_y_px = clipped_top;
                         scaled_h = clipped_h;
@@ -629,7 +629,7 @@ impl TerminalSession {
                         let r_left = (clipped_left - glyph_x_px) / scaled_w;
                         let r_right = (clipped_right - glyph_x_px) / scaled_w;
                         let u_range = u_max - u_min;
-                        u_min = u_min + r_left * u_range;
+                        u_min += r_left * u_range;
                         u_max = u_min + (r_right - r_left) * u_range;
                         glyph_x_px = clipped_left;
                         scaled_w = clipped_w;
@@ -714,23 +714,23 @@ impl TerminalSession {
                 }
 
                 // ── Image quads (z >= 0: on top of text) ────────────────
-                if let Some(ref img) = cell.image {
-                    if img.z_index >= 0 {
-                        emit_image_quad(
-                            &mut self.cached_image_above,
-                            &mut atlas,
-                            img,
-                            col,
-                            row,
-                            cw,
-                            ch,
-                            x_off,
-                            y_off,
-                            x_scale,
-                            y_scale,
-                        );
-                        img_above_count += 1;
-                    }
+                if let Some(ref img) = cell.image
+                    && img.z_index >= 0
+                {
+                    emit_image_quad(
+                        &mut self.cached_image_above,
+                        &mut atlas,
+                        img,
+                        col,
+                        row,
+                        cw,
+                        ch,
+                        x_off,
+                        y_off,
+                        x_scale,
+                        y_scale,
+                    );
+                    img_above_count += 1;
                 }
 
                 col += 1;
@@ -806,79 +806,4 @@ impl TerminalSession {
         self.terminal_dirty = false;
         true
     }
-}
-
-/// Emit a [`CellInstance`] for an [`ImageCell`] attached to a grid cell.
-fn emit_image_quad(
-    bufs: &mut Vec<Vec<CellInstance>>,
-    atlas: &mut zenterm_glyph::GlyphAtlas,
-    img: &ImageCell,
-    col: usize,
-    row: usize,
-    cw: f32,
-    ch: f32,
-    x_off: f32,
-    y_off: f32,
-    x_scale: f32,
-    y_scale: f32,
-) {
-    let (pixels, img_w, img_h, img_hash) = {
-        let guard = img.data.data();
-        match &*guard {
-            ImageDataType::Rgba8 {
-                data,
-                width,
-                height,
-                hash,
-            } => (data.clone(), *width, *height, *hash),
-            ImageDataType::AnimRgba8 {
-                width,
-                height,
-                frames,
-                hashes,
-                ..
-            } => {
-                // Use the first frame for rendering (frame 0).
-                // FUTURE: cycle through frames based on timing.
-                (frames[0].clone(), *width, *height, hashes[0])
-            }
-        }
-    };
-
-    let entry = match atlas.ensure_image(&pixels, img_w, img_h, img_hash) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-
-    let slot_size = atlas.slots[entry.atlas_index as usize].size as f32;
-    let ax = entry.atlas_rect.min.x as f32;
-    let ay = entry.atlas_rect.min.y as f32;
-
-    // Map ImageCell UV (image-space) → atlas UV.
-    let u_min = (ax + img.top_left.x * img_w as f32) / slot_size;
-    let v_min = (ay + img.top_left.y * img_h as f32) / slot_size;
-    let u_max = (ax + img.bottom_right.x * img_w as f32) / slot_size;
-    let v_max = (ay + img.bottom_right.y * img_h as f32) / slot_size;
-
-    // Cell position in pixels (dock-relative).
-    let clip_x = x_off + col as f32 * cw;
-    let clip_y = y_off + row as f32 * ch;
-
-    let instance = CellInstance {
-        clip_pos: [clip_x * x_scale - 1.0, 1.0 - clip_y * y_scale],
-        uv_min: [u_min, v_min],
-        uv_max: [u_max, v_max],
-        clip_cell_size: [cw * x_scale, ch * y_scale],
-        glyph_size: [cw, ch],
-        glyph_offset: [0.0, 0.0],
-        fg_color: [1.0, 1.0, 1.0, 1.0],
-        bg_color: [0.0, 0.0, 0.0, img.z_index as f32],
-        flags: glyph_type::IMAGE,
-    };
-
-    let ai = entry.atlas_index as usize;
-    if ai >= bufs.len() {
-        bufs.resize_with(ai + 1, Vec::new);
-    }
-    bufs[ai].push(instance);
 }

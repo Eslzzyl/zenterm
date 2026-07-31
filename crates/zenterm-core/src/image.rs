@@ -41,20 +41,26 @@ pub enum ImageDataType {
 #[derive(Debug, Clone)]
 pub struct ImageData {
     inner: Arc<Mutex<ImageDataType>>,
-    pub hash: [u8; 32],
 }
 
 impl ImageData {
     pub fn new(data: ImageDataType) -> Self {
-        let hash = data.hash();
         Self {
             inner: Arc::new(Mutex::new(data)),
-            hash,
         }
     }
 
     pub fn data(&self) -> MutexGuard<'_, ImageDataType> {
         self.inner.lock().expect("ImageData lock")
+    }
+
+    /// Return the current content hash.
+    ///
+    /// Image frames may be updated in place by the Kitty protocol, so this
+    /// must be derived from the current payload rather than cached at the
+    /// time the `Arc<ImageData>` is created.
+    pub fn hash(&self) -> [u8; 32] {
+        self.data().hash()
     }
 
     pub fn len(&self) -> usize {
@@ -63,6 +69,10 @@ impl ImageData {
             ImageDataType::Rgba8 { data, .. } => data.len(),
             ImageDataType::AnimRgba8 { frames, .. } => frames.iter().map(|f| f.len()).sum(),
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -119,13 +129,23 @@ impl ImageCell {
 // ── helpers ──────────────────────────────────────────────────────────
 
 fn compute_hash(data: &[u8]) -> [u8; 32] {
-    use std::hash::Hasher as _;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    hasher.write(data);
-    let h = hasher.finish();
-    let mut hash = [0u8; 32];
-    hash[..8].copy_from_slice(&h.to_le_bytes());
-    hash
+    use sha2::{Digest, Sha256};
+    Sha256::digest(data).into()
+}
+
+fn compute_frames_hash(frames: &[Vec<u8>]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update((frames.len() as u64).to_le_bytes());
+    for frame in frames {
+        hasher.update(compute_hash(frame));
+    }
+    hasher.finalize().into()
+}
+
+/// Hash raw image bytes for callers that update animation frames in place.
+pub fn hash_bytes(data: &[u8]) -> [u8; 32] {
+    compute_hash(data)
 }
 
 impl ImageDataType {
@@ -161,16 +181,8 @@ impl ImageDataType {
 
     pub fn hash(&self) -> [u8; 32] {
         match self {
-            Self::Rgba8 { hash, .. } => *hash,
-            Self::AnimRgba8 { hashes, .. } => {
-                let mut combined = [0u8; 32];
-                for h in hashes {
-                    for (i, b) in h.iter().enumerate() {
-                        combined[i] ^= b;
-                    }
-                }
-                combined
-            }
+            Self::Rgba8 { data, .. } => compute_hash(data),
+            Self::AnimRgba8 { frames, .. } => compute_frames_hash(frames),
         }
     }
 
@@ -184,5 +196,39 @@ impl ImageDataType {
         match self {
             Self::Rgba8 { height, .. } | Self::AnimRgba8 { height, .. } => *height,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ImageData, ImageDataType};
+
+    #[test]
+    fn hash_tracks_in_place_single_frame_updates() {
+        let image = ImageData::new(ImageDataType::new_rgba8(vec![1, 2, 3, 4], 1, 1));
+        let original = image.hash();
+
+        if let ImageDataType::Rgba8 { data, .. } = &mut *image.data() {
+            data[0] = 9;
+        }
+
+        assert_ne!(image.hash(), original);
+    }
+
+    #[test]
+    fn hash_tracks_in_place_animation_frame_updates() {
+        let image = ImageData::new(ImageDataType::new_anim_rgba8(
+            vec![vec![1, 2, 3, 4]],
+            vec![],
+            1,
+            1,
+        ));
+        let original = image.hash();
+
+        if let ImageDataType::AnimRgba8 { frames, .. } = &mut *image.data() {
+            frames[0][0] = 9;
+        }
+
+        assert_ne!(image.hash(), original);
     }
 }

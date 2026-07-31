@@ -23,10 +23,10 @@ impl ZentermApp {
             return;
         }
         let debounce = Duration::from_millis(self.config.ui.layout_debounce_ms);
-        if let Some(at) = self.last_persist_at {
-            if at.elapsed() < debounce {
-                return;
-            }
+        if let Some(at) = self.last_persist_at
+            && at.elapsed() < debounce
+        {
+            return;
         }
         self.persist_layout_now();
     }
@@ -50,9 +50,13 @@ impl ZentermApp {
                 })
                 .collect(),
         };
-        if let Err(e) = self.layout_io.save_layout(&persisted) {
-            log::error!("persist_layout_now: save_layout failed: {e}");
-        }
+        let layout_saved = match self.layout_io.save_layout(&persisted) {
+            Ok(()) => true,
+            Err(e) => {
+                log::error!("persist_layout_now: save_layout failed: {e}");
+                false
+            }
+        };
         let metas: Vec<SessionMeta> = self
             .sessions
             .iter()
@@ -71,10 +75,16 @@ impl ZentermApp {
                 }
             })
             .collect();
-        if let Err(e) = self.layout_io.save_sessions(&metas) {
-            log::error!("persist_layout_now: save_sessions failed: {e}");
+        let sessions_saved = match self.layout_io.save_sessions(&metas) {
+            Ok(()) => true,
+            Err(e) => {
+                log::error!("persist_layout_now: save_sessions failed: {e}");
+                false
+            }
+        };
+        if layout_saved && sessions_saved {
+            self.layout_dirty = false;
+            self.last_persist_at = Some(Instant::now());
         }
-        self.layout_dirty = false;
-        self.last_persist_at = Some(Instant::now());
     }
 }

@@ -169,12 +169,27 @@ impl WorkspaceManager {
         next_session_id: u64,
         next_workspace_id: u64,
     ) -> Self {
-        debug_assert!(!workspaces.is_empty());
+        if workspaces.is_empty() {
+            return Self::new();
+        }
+        let fallback_active = workspaces[0].id;
+        let max_session_id = workspaces
+            .iter()
+            .flat_map(WorkspaceState::all_tab_ids)
+            .map(|id| id.0)
+            .max()
+            .unwrap_or(0);
+        let max_workspace_id = workspaces.iter().map(|ws| ws.id.0).max().unwrap_or(0);
+        let active_is_valid = workspaces.iter().any(|ws| ws.id == active_workspace_id);
         Self {
             workspaces,
-            active_workspace_id,
-            next_session_id,
-            next_workspace_id,
+            active_workspace_id: if active_is_valid {
+                active_workspace_id
+            } else {
+                fallback_active
+            },
+            next_session_id: next_session_id.max(max_session_id.saturating_add(1)),
+            next_workspace_id: next_workspace_id.max(max_workspace_id.saturating_add(1)),
         }
     }
 
@@ -242,6 +257,7 @@ impl WorkspaceManager {
     pub fn rename_workspace(&mut self, id: WorkspaceId, new_name: impl Into<String>) -> bool {
         if let Some(ws) = self.find_workspace_mut(id) {
             ws.name = new_name.into();
+            ws.mark_changed();
             true
         } else {
             false
@@ -306,11 +322,11 @@ impl WorkspaceManager {
     pub fn remove_tab_from_any_workspace(&mut self, session_id: SessionId) -> bool {
         for ws in &mut self.workspaces {
             let path = ws.dock.find_tab(&session_id);
-            if let Some(path) = path {
-                if ws.dock.remove_tab(path).is_some() {
-                    ws.mark_changed();
-                    return true;
-                }
+            if let Some(path) = path
+                && ws.dock.remove_tab(path).is_some()
+            {
+                ws.mark_changed();
+                return true;
             }
         }
         false
@@ -329,6 +345,12 @@ impl WorkspaceManager {
         for ws in &mut self.workspaces {
             ws.mark_changed();
         }
+    }
+}
+
+impl Default for WorkspaceManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -407,6 +429,7 @@ mod tests {
         let id = mgr.workspaces[0].id;
         assert!(mgr.rename_workspace(id, "my-project"));
         assert_eq!(mgr.active_workspace().name, "my-project");
+        assert!(mgr.active_workspace().dirty);
     }
 
     #[test]

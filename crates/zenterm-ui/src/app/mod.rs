@@ -184,32 +184,32 @@ impl ZentermApp {
         // ── Restore workspaces if config says so ──────────────────
         let mut workspaces = WorkspaceManager::new();
         let mut restored_session_ids: Vec<SessionId> = Vec::new();
-        if config.ui.restore_layout_on_startup {
-            if let Some(persisted) = layout_io.load_layout() {
-                for pw in &persisted.workspaces {
-                    for (_, tab) in pw.dock.iter_all_tabs() {
-                        restored_session_ids.push(*tab);
-                    }
+        if config.ui.restore_layout_on_startup
+            && let Some(persisted) = layout_io.load_layout()
+        {
+            for pw in &persisted.workspaces {
+                for (_, tab) in pw.dock.iter_all_tabs() {
+                    restored_session_ids.push(*tab);
                 }
-                let mut ws_states = Vec::new();
-                for pw in &persisted.workspaces {
-                    let ws_id = crate::workspace::WorkspaceId::new(pw.id);
-                    ws_states.push(crate::workspace::WorkspaceState::from_dock(
-                        ws_id,
-                        pw.name.clone(),
-                        pw.dock.clone(),
-                    ));
-                }
-                if !ws_states.is_empty() {
-                    let active_ws_id =
-                        crate::workspace::WorkspaceId::new(persisted.active_workspace_id);
-                    workspaces = WorkspaceManager::from_persisted(
-                        ws_states,
-                        active_ws_id,
-                        persisted.next_session_id,
-                        persisted.next_workspace_id,
-                    );
-                }
+            }
+            let mut ws_states = Vec::new();
+            for pw in &persisted.workspaces {
+                let ws_id = crate::workspace::WorkspaceId::new(pw.id);
+                ws_states.push(crate::workspace::WorkspaceState::from_dock(
+                    ws_id,
+                    pw.name.clone(),
+                    pw.dock.clone(),
+                ));
+            }
+            if !ws_states.is_empty() {
+                let active_ws_id =
+                    crate::workspace::WorkspaceId::new(persisted.active_workspace_id);
+                workspaces = WorkspaceManager::from_persisted(
+                    ws_states,
+                    active_ws_id,
+                    persisted.next_session_id,
+                    persisted.next_workspace_id,
+                );
             }
         }
 
@@ -248,10 +248,10 @@ impl ZentermApp {
         for (id, meta) in saved_meta {
             if let Some(session) = sessions.get_mut(&SessionId(id)) {
                 // Restore manual title override if one was persisted.
-                if let Some(ref override_title) = meta.title_override {
-                    if !override_title.is_empty() {
-                        session.title_override = Some(override_title.clone());
-                    }
+                if let Some(ref override_title) = meta.title_override
+                    && !override_title.is_empty()
+                {
+                    session.title_override = Some(override_title.clone());
                 }
                 if let Some(cwd) = meta.cwd {
                     session.cwd = Some(cwd);
@@ -299,10 +299,10 @@ impl ZentermApp {
         // Load background image if configured.
         // Clone the path first to avoid borrowing app.config.
         let bg_path = app.config.background.image_path.clone();
-        if let Some(ref path) = bg_path {
-            if !path.is_empty() {
-                app.load_background_image(path);
-            }
+        if let Some(ref path) = bg_path
+            && !path.is_empty()
+        {
+            app.load_background_image(path);
         }
 
         app
@@ -382,35 +382,35 @@ impl eframe::App for ZentermApp {
         //      a small area around the cursor position so the IME
         //      candidate window appears at the cursor, not at the
         //      viewport origin.
-        if ctx.memory(|m| m.focused().is_none()) && !self.settings_state.open {
-            if let Some(id) = self.active_session_id {
-                if let Some(session) = self.sessions.get(&id) {
-                    let ppp = ctx.pixels_per_point();
-                    let ox = session.last_vp_origin_px[0] / ppp;
-                    let oy = session.last_vp_origin_px[1] / ppp;
-                    let cursor = session.terminal.cursor();
+        if ctx.memory(|m| m.focused().is_none())
+            && !self.settings_state.open
+            && let Some(id) = self.active_session_id
+            && let Some(session) = self.sessions.get(&id)
+        {
+            let ppp = ctx.pixels_per_point();
+            let ox = session.last_vp_origin_px[0] / ppp;
+            let oy = session.last_vp_origin_px[1] / ppp;
+            let cursor = session.terminal.cursor();
 
-                    // Position the IME candidate window at the cursor.
-                    // We use a cursor-sized rect so the IME window
-                    // appears anchored to the cursor position.
-                    let cursor_x = ox + cursor.pos.column as f32 * session.cell_width / ppp;
-                    let cursor_y = oy + cursor.pos.line as f32 * session.cell_height / ppp;
-                    let cursor_w = session.cell_width / ppp;
-                    let cursor_h = session.cell_height / ppp;
+            // Position the IME candidate window at the cursor.
+            // We use a cursor-sized rect so the IME window
+            // appears anchored to the cursor position.
+            let cursor_x = ox + cursor.pos.column as f32 * session.cell_width / ppp;
+            let cursor_y = oy + cursor.pos.line as f32 * session.cell_height / ppp;
+            let cursor_w = session.cell_width / ppp;
+            let cursor_h = session.cell_height / ppp;
 
-                    let cursor_rect = egui::Rect::from_min_size(
-                        egui::pos2(cursor_x, cursor_y),
-                        egui::vec2(cursor_w, cursor_h),
-                    );
+            let cursor_rect = egui::Rect::from_min_size(
+                egui::pos2(cursor_x, cursor_y),
+                egui::vec2(cursor_w, cursor_h),
+            );
 
-                    ctx.output_mut(|o| {
-                        o.ime = Some(egui::output::IMEOutput {
-                            rect: cursor_rect,
-                            cursor_rect,
-                        });
-                    });
-                }
-            }
+            ctx.output_mut(|o| {
+                o.ime = Some(egui::output::IMEOutput {
+                    rect: cursor_rect,
+                    cursor_rect,
+                });
+            });
         }
 
         // 5. Render the settings panel (separate native window).
@@ -506,10 +506,10 @@ impl eframe::App for ZentermApp {
         // Save any pending config changes (window size, settings, etc.)
         // immediately so the next session starts with the correct state.
         if self.config_dirty {
-            if let Err(e) = self.config.save() {
-                log::error!("failed to save config on exit: {e}");
+            match self.config.save() {
+                Ok(()) => self.config_dirty = false,
+                Err(e) => log::error!("failed to save config on exit: {e}"),
             }
-            self.config_dirty = false;
         }
     }
 }

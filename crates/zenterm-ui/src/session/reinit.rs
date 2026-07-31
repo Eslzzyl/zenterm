@@ -133,7 +133,7 @@ impl TerminalSession {
         };
         let now = ui.input(|i| i.time);
         let elapsed = (now - last_time) as f32;
-        if elapsed < 0.0 || elapsed >= 2.0 {
+        if !(0.0..2.0).contains(&elapsed) {
             return;
         }
 

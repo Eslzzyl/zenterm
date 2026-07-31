@@ -11,14 +11,14 @@ use base64::Engine as _;
 use image::GenericImageView;
 use image::{RgbImage, load_from_memory};
 
-use zenterm_core::image::{ImageData, ImageDataType};
+use zenterm_core::image::{ImageData, ImageDataType, hash_bytes};
 
 use crate::image::ImageCache;
 
 // ── helpers ────────────────────────────────────────────────────────────
 
 fn get<'a>(keys: &BTreeMap<&'a str, &'a str>, k: &str) -> Option<&'a str> {
-    keys.get(k).map(|&s| s)
+    keys.get(k).copied()
 }
 
 fn geti<T: std::str::FromStr>(keys: &BTreeMap<&str, &str>, k: &str) -> Option<T> {
@@ -90,7 +90,7 @@ impl KittyImageData {
                 if path.starts_with("/tmp/")
                     || path.starts_with("/var/tmp/")
                     || path.starts_with("/dev/shm/")
-                    || std::env::var("TMPDIR").map_or(false, |t| path.starts_with(&t))
+                    || std::env::var("TMPDIR").is_ok_and(|t| path.starts_with(&t))
                 {
                     let _ = std::fs::remove_file(&path);
                 }
@@ -416,9 +416,8 @@ impl KittyImage {
         let key_str = std::str::from_utf8(keys_raw).ok()?;
         let mut keys: BTreeMap<&str, &str> = BTreeMap::new();
         for kv in key_str.split(',') {
-            let mut parts = kv.splitn(2, '=');
-            let k = parts.next()?;
-            let v = parts.next()?;
+            let (k, v) = kv.split_once('=')?;
+
             keys.insert(k, v);
         }
 
@@ -761,8 +760,8 @@ pub fn decode_image_frame(
         (None, Some(no)) => {
             // Look up the image_number mapping.
             // We assign via `image_cache.assign_id` which tracks number_to_id.
-            let id = image_cache.assign_id(None, Some(no));
-            id
+
+            image_cache.assign_id(None, Some(no))
         }
         (None, None) => {
             // Use image id 0 (anonymous).
@@ -849,7 +848,7 @@ pub fn decode_image_frame(
                 let base = if frame.base_frame.unwrap_or(0) == 1 {
                     data.clone()
                 } else {
-                    vec![bg.0[0], bg.0[1], bg.0[2], bg.0[3]].repeat((*width * *height) as usize)
+                    [bg.0[0], bg.0[1], bg.0[2], bg.0[3]].repeat((*width * *height) as usize)
                 };
                 let mut new_frame = image::RgbaImage::from_raw(*width, *height, base)
                     .ok_or("invalid base frame")?;
@@ -872,7 +871,7 @@ pub fn decode_image_frame(
                     ..
                 } = *guard
                 {
-                    *hashes = frames.iter().map(|f| compute_hash_trait(f)).collect();
+                    *hashes = frames.iter().map(|f| hash_bytes(f)).collect();
                 }
             }
         }
@@ -896,7 +895,7 @@ pub fn decode_image_frame(
                     .ok_or("invalid frame data")?;
                 apply_blit(&mut dest, &src, x, y, composition_mode);
                 frames[frame_no as usize - 1] = dest.into_vec();
-                hashes[frame_no as usize - 1] = compute_hash_trait(&frames[frame_no as usize - 1]);
+                hashes[frame_no as usize - 1] = hash_bytes(&frames[frame_no as usize - 1]);
             } else {
                 // Append a new frame.
                 let bg_duration =
@@ -905,9 +904,7 @@ pub fn decode_image_frame(
                     Some(n) if n > 0 && n as usize <= frames.len() => {
                         frames[n as usize - 1].clone()
                     }
-                    _ => {
-                        vec![bg.0[0], bg.0[1], bg.0[2], bg.0[3]].repeat((*width * *height) as usize)
-                    }
+                    _ => [bg.0[0], bg.0[1], bg.0[2], bg.0[3]].repeat((*width * *height) as usize),
                 };
                 let mut new_frame = image::RgbaImage::from_raw(*width, *height, base)
                     .ok_or("invalid base frame")?;
@@ -916,19 +913,12 @@ pub fn decode_image_frame(
                 apply_blit(&mut new_frame, &src, x, y, composition_mode);
                 frames.push(new_frame.into_vec());
                 durations.push(bg_duration);
-                hashes.push(compute_hash_trait(frames.last().unwrap()));
+                hashes.push(hash_bytes(frames.last().unwrap()));
             }
         }
     }
     drop(guard);
 
-    // Recompute the overall hash.
-    let _new_hash = {
-        let g = existing.data();
-        g.hash()
-    };
-    // We can't directly modify `hash` on ImageData because it's computed.
-    // For now, the hash is recomputed on access.
     Ok(())
 }
 
@@ -964,6 +954,7 @@ pub fn handle_compose_frame(
             data,
             width,
             height,
+            hash,
             ..
         } => {
             if src_frame_idx != 1 || dst_frame_idx != 1 {
@@ -990,11 +981,13 @@ pub fn handle_compose_frame(
                 frame.composition_mode,
             );
             *data = dest.into_vec();
+            *hash = hash_bytes(data);
         }
         ImageDataType::AnimRgba8 {
             width,
             height,
             frames,
+            hashes,
             ..
         } => {
             let src_ok = src_frame_idx > 0 && src_frame_idx <= frames.len();
@@ -1024,22 +1017,13 @@ pub fn handle_compose_frame(
                 frame.composition_mode,
             );
             frames[dst_frame_idx - 1] = dest.into_vec();
+            hashes[dst_frame_idx - 1] = hash_bytes(&frames[dst_frame_idx - 1]);
         }
     }
     Ok(())
 }
 
 // ── helpers ────────────────────────────────────────────────────────────
-
-fn compute_hash_trait(data: &[u8]) -> [u8; 32] {
-    use std::hash::Hasher as _;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    hasher.write(data);
-    let h = hasher.finish();
-    let mut hash = [0u8; 32];
-    hash[..8].copy_from_slice(&h.to_le_bytes());
-    hash
-}
 
 /// Copy a sub-rectangle from image data. Returns `(rgba_data, width, height)`.
 fn clip_view(
@@ -1171,17 +1155,17 @@ impl KittyAccumulator {
                     )
                 }),
             );
-            if let Some(tx) = self.transmit.as_ref() {
-                if let (Some(w), Some(h)) = (tx.width, tx.height) {
-                    let expected = w * h * 4;
-                    if data_len as u32 != expected {
-                        log::warn!(
-                            "[acc] DATA LENGTH MISMATCH: assembled {} bytes, \
+            if let Some(tx) = self.transmit.as_ref()
+                && let (Some(w), Some(h)) = (tx.width, tx.height)
+            {
+                let expected = w * h * 4;
+                if data_len as u32 != expected {
+                    log::warn!(
+                        "[acc] DATA LENGTH MISMATCH: assembled {} bytes, \
                              expected {w}x{h}*4={expected} (diff={})",
-                            data_len,
-                            data_len as i64 - expected as i64,
-                        );
-                    }
+                        data_len,
+                        data_len as i64 - expected as i64,
+                    );
                 }
             }
             if let Some(tx) = self.transmit.take() {

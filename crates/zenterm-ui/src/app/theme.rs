@@ -81,7 +81,7 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
         window_highlight_topmost: true,
         menu_corner_radius: CornerRadius::same(6),
         popup_shadow: egui::Shadow {
-            offset: [0, 8].into(),
+            offset: [0, 8],
             blur: 24,
             spread: 0,
             color: Color32::BLACK.linear_multiply(0.3),
@@ -246,16 +246,16 @@ fn extract_workspace_essence(title: &str) -> String {
     }
 
     // ① If the title looks like a path, take the last (non-empty) component.
-    if t.contains('/') || t.contains('\\') {
-        if let Some(last) = t.split(&['/', '\\'][..]).filter(|s| !s.is_empty()).last() {
-            // Also strip common file extensions for cleanliness.
-            let cleaned = if let Some((stem, _ext)) = last.rsplit_once('.') {
-                if stem.len() > 1 { stem } else { last }
-            } else {
-                last
-            };
-            return truncate_str(cleaned, 30);
-        }
+    if (t.contains('/') || t.contains('\\'))
+        && let Some(last) = t.split(&['/', '\\'][..]).rfind(|s| !s.is_empty())
+    {
+        // Also strip common file extensions for cleanliness.
+        let cleaned = if let Some((stem, _ext)) = last.rsplit_once('.') {
+            if stem.len() > 1 { stem } else { last }
+        } else {
+            last
+        };
+        return truncate_str(cleaned, 30);
     }
 
     // ② If it looks like a command line (contains spaces), take the first word.

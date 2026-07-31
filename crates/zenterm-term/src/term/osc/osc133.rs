@@ -65,9 +65,8 @@ pub(crate) fn parse_osc133(payload: &str) -> Option<SemanticPrompt> {
             let mut aid = None;
             for p in &parts[1..] {
                 if let Some((k, v)) = split_key_value(p) {
-                    match k {
-                        "aid" => aid = Some(v.to_string()),
-                        _ => {} // Unknown keys are ignored per spec.
+                    if k == "aid" {
+                        aid = Some(v.to_string());
                     }
                 } else {
                     return None;
@@ -81,11 +80,10 @@ pub(crate) fn parse_osc133(payload: &str) -> Option<SemanticPrompt> {
             let mut aid = None;
             if parts.len() >= 2 {
                 for p in &parts[2..] {
-                    if let Some((k, v)) = split_key_value(p) {
-                        match k {
-                            "aid" => aid = Some(v.to_string()),
-                            _ => {} // Unknown keys are ignored per spec.
-                        }
+                    if let Some((k, v)) = split_key_value(p)
+                        && k == "aid"
+                    {
+                        aid = Some(v.to_string());
                     }
                     // Non-key=value segments (e.g. bare "err=0") are ignored.
                 }

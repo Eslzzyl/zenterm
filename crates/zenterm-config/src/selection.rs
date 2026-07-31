@@ -8,17 +8,9 @@
 use serde::{Deserialize, Serialize};
 
 /// The `[selection]` section of the config file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SelectionConfig {
     /// Automatically copy selected text to the system clipboard.
     #[serde(default)]
     pub save_to_clipboard: bool,
-}
-
-impl Default for SelectionConfig {
-    fn default() -> Self {
-        Self {
-            save_to_clipboard: false,
-        }
-    }
 }

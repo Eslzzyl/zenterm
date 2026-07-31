@@ -62,7 +62,7 @@ fn default_blink_timeout() -> u64 {
 // ── CursorStyle ────────────────────────────────────────────────────────
 
 /// Cursor appearance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CursorStyle {
     /// Visual shape.
     #[serde(default)]
@@ -70,15 +70,6 @@ pub struct CursorStyle {
     /// Blinking mode.
     #[serde(default)]
     pub blinking: Blinking,
-}
-
-impl Default for CursorStyle {
-    fn default() -> Self {
-        Self {
-            shape: CursorShape::default(),
-            blinking: Blinking::default(),
-        }
-    }
 }
 
 /// Cursor visual shape.

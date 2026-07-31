@@ -28,7 +28,7 @@ fn snap_col(terminal: &mut Terminal, row: usize, col: usize) -> usize {
         return col;
     }
     let grid = terminal.visible_cells();
-    if grid.cell(row, col).map_or(false, |c| c.is_spacer) {
+    if grid.cell(row, col).is_some_and(|c| c.is_spacer) {
         col - 1
     } else {
         col
@@ -150,34 +150,34 @@ impl TerminalSession {
         );
 
         // ── Scrollbar: click / drag / track-click ──────────────────────
-        if let Some(pos) = response.interact_pointer_pos() {
-            if sb_rect.contains(pos) {
-                // ── Drag start on the scrollbar ──
-                if response.drag_started() {
-                    self.scrollbar_dragging = true;
-                    self.scrollbar_drag_start_y = pos.y;
-                    self.scrollbar_drag_start_offset = self.terminal.display_offset();
-                }
-                // ── Track-click (above/below thumb) → page up/down ──
-                if response.clicked() {
-                    let hist = self.terminal.history_size();
-                    if hist > 0 {
-                        let (thumb, _) = Self::scrollbar_thumb_rect(
-                            sb_rect,
-                            self.terminal.size().rows as usize,
-                            hist,
-                            self.terminal.display_offset(),
-                        );
-                        if pos.y < thumb.top() {
-                            self.terminal.scroll_display(rows as i32);
-                        } else if pos.y > thumb.bottom() {
-                            self.terminal.scroll_display(-(rows as i32));
-                        }
-                        self.terminal_dirty = true;
-                    }
-                }
-                return; // scrollbar area: don't process cell events
+        if let Some(pos) = response.interact_pointer_pos()
+            && sb_rect.contains(pos)
+        {
+            // ── Drag start on the scrollbar ──
+            if response.drag_started() {
+                self.scrollbar_dragging = true;
+                self.scrollbar_drag_start_y = pos.y;
+                self.scrollbar_drag_start_offset = self.terminal.display_offset();
             }
+            // ── Track-click (above/below thumb) → page up/down ──
+            if response.clicked() {
+                let hist = self.terminal.history_size();
+                if hist > 0 {
+                    let (thumb, _) = Self::scrollbar_thumb_rect(
+                        sb_rect,
+                        self.terminal.size().rows as usize,
+                        hist,
+                        self.terminal.display_offset(),
+                    );
+                    if pos.y < thumb.top() {
+                        self.terminal.scroll_display(rows as i32);
+                    } else if pos.y > thumb.bottom() {
+                        self.terminal.scroll_display(-(rows as i32));
+                    }
+                    self.terminal_dirty = true;
+                }
+            }
+            return; // scrollbar area: don't process cell events
         }
 
         // ── Scrollbar: drag thumb update (tracked even if pointer left the bar) ──
@@ -236,7 +236,7 @@ impl TerminalSession {
         let new_hover = if self.url_hover_underline {
             let pos = response.hover_pos();
             log::debug!("mouse: response.hover_pos()={:?}", pos);
-            pos.and_then(|p| pixel_to_cell(p))
+            pos.and_then(&pixel_to_cell)
         } else {
             None
         };
@@ -249,22 +249,21 @@ impl TerminalSession {
         }
 
         // ── Drag start / selection ─────────────────────────────────────
-        if response.drag_started() {
-            if let Some(pos) = response.interact_pointer_pos() {
-                if let Some((row, col)) = pixel_to_cell(pos) {
-                    let col = snap_col(&mut self.terminal, row, col);
-                    if mouse_reporting {
-                        let btn = 0 | mod_bits; // left button
-                        self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
-                        self.sgr_mouse_buttons.push(btn);
-                        self.send_sgr_mouse(row, col, btn, false);
-                    } else {
-                        self.terminal.clear_selection();
-                        self.terminal.start_selection(row, col);
-                        self.selecting = true;
-                        self.terminal_dirty = true;
-                    }
-                }
+        if response.drag_started()
+            && let Some(pos) = response.interact_pointer_pos()
+            && let Some((row, col)) = pixel_to_cell(pos)
+        {
+            let col = snap_col(&mut self.terminal, row, col);
+            if mouse_reporting {
+                let btn = mod_bits; // left button
+                self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
+                self.sgr_mouse_buttons.push(btn);
+                self.send_sgr_mouse(row, col, btn, false);
+            } else {
+                self.terminal.clear_selection();
+                self.terminal.start_selection(row, col);
+                self.selecting = true;
+                self.terminal_dirty = true;
             }
         }
 
@@ -280,79 +279,75 @@ impl TerminalSession {
                 .interact_pointer_pos()
                 .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos()));
             if mouse_reporting {
-                if let Some(pos) = pointer_pos {
-                    if let Some((row, col)) = pixel_to_cell(pos) {
-                        let col = snap_col(&mut self.terminal, row, col);
-                        self.send_sgr_mouse(row, col, 32 | mod_bits, false);
-                    }
+                if let Some(pos) = pointer_pos
+                    && let Some((row, col)) = pixel_to_cell(pos)
+                {
+                    let col = snap_col(&mut self.terminal, row, col);
+                    self.send_sgr_mouse(row, col, 32 | mod_bits, false);
                 }
-            } else if self.selecting {
-                if let Some(pos) = pointer_pos {
-                    // Normal: pointer inside the cell grid → update selection.
-                    if let Some((row, col)) = pixel_to_cell(pos) {
-                        let col = snap_col(&mut self.terminal, row, col);
-                        self.terminal.update_selection(row, col);
-                        self.terminal_dirty = true;
+            } else if self.selecting
+                && let Some(pos) = pointer_pos
+            {
+                // Normal: pointer inside the cell grid → update selection.
+                if let Some((row, col)) = pixel_to_cell(pos) {
+                    let col = snap_col(&mut self.terminal, row, col);
+                    self.terminal.update_selection(row, col);
+                    self.terminal_dirty = true;
+                } else {
+                    // Edge-scroll: pointer is outside the cell grid.
+                    let rel_y = pos.y - cell_area.top();
+                    let clamped = pixel_to_cell_clamped(pos);
+                    let col = snap_col(&mut self.terminal, clamped.0, clamped.1);
+                    if rel_y < 0.0 {
+                        // Above top → scroll up.
+                        let dist = -rel_y;
+                        let lines = (dist * ppp / ch).ceil().max(1.0) as i32;
+                        self.terminal.scroll_display(lines);
+                        self.terminal.update_selection(0, col);
                     } else {
-                        // Edge-scroll: pointer is outside the cell grid.
-                        let rel_y = pos.y - cell_area.top();
-                        let clamped = pixel_to_cell_clamped(pos);
-                        let col = snap_col(&mut self.terminal, clamped.0, clamped.1);
-                        if rel_y < 0.0 {
-                            // Above top → scroll up.
-                            let dist = -rel_y;
-                            let lines = (dist * ppp / ch).ceil().max(1.0) as i32;
-                            self.terminal.scroll_display(lines);
-                            self.terminal.update_selection(0, col);
-                        } else {
-                            // Below bottom → scroll down.
-                            let dist = pos.y - cell_area.bottom();
-                            let lines = (dist * ppp / ch).ceil().max(1.0) as i32;
-                            self.terminal.scroll_display(-lines);
-                            self.terminal.update_selection(rows.saturating_sub(1), col);
-                        }
-                        self.terminal_dirty = true;
+                        // Below bottom → scroll down.
+                        let dist = pos.y - cell_area.bottom();
+                        let lines = (dist * ppp / ch).ceil().max(1.0) as i32;
+                        self.terminal.scroll_display(-lines);
+                        self.terminal.update_selection(rows.saturating_sub(1), col);
                     }
+                    self.terminal_dirty = true;
                 }
             }
         }
 
         // ── Right-click → context menu, or SGR right-click ────────────
-        if response.secondary_clicked() {
-            if mouse_reporting {
-                if let Some(pos) = response.interact_pointer_pos() {
-                    if let Some((row, col)) = pixel_to_cell(pos) {
-                        let col = snap_col(&mut self.terminal, row, col);
-                        let btn = 2 | mod_bits; // right button
-                        self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
-                        self.sgr_mouse_buttons.push(btn);
-                        self.send_sgr_mouse(row, col, btn, false);
-                    }
-                }
-            }
+        if response.secondary_clicked()
+            && mouse_reporting
+            && let Some(pos) = response.interact_pointer_pos()
+            && let Some((row, col)) = pixel_to_cell(pos)
+        {
+            let col = snap_col(&mut self.terminal, row, col);
+            let btn = 2 | mod_bits; // right button
+            self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
+            self.sgr_mouse_buttons.push(btn);
+            self.send_sgr_mouse(row, col, btn, false);
         }
 
         // ── Middle-click → paste from selection (X11 convention) ──────
         if response.middle_clicked() {
             if mouse_reporting {
-                if let Some(pos) = response.interact_pointer_pos() {
-                    if let Some((row, col)) = pixel_to_cell(pos) {
-                        let col = snap_col(&mut self.terminal, row, col);
-                        let btn = 1 | mod_bits; // middle button
-                        self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
-                        self.sgr_mouse_buttons.push(btn);
-                        self.send_sgr_mouse(row, col, btn, false);
-                    }
+                if let Some(pos) = response.interact_pointer_pos()
+                    && let Some((row, col)) = pixel_to_cell(pos)
+                {
+                    let col = snap_col(&mut self.terminal, row, col);
+                    let btn = 1 | mod_bits; // middle button
+                    self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
+                    self.sgr_mouse_buttons.push(btn);
+                    self.send_sgr_mouse(row, col, btn, false);
                 }
             } else {
-                if let Some(ref mut clipboard) = self.clipboard {
-                    if let Ok(text) = clipboard.get_text() {
-                        if !text.is_empty() {
-                            if let Err(e) = self.pty.write(text.as_bytes()) {
-                                log::error!("PTY paste error: {e}");
-                            }
-                        }
-                    }
+                if let Some(ref mut clipboard) = self.clipboard
+                    && let Ok(text) = clipboard.get_text()
+                    && !text.is_empty()
+                    && let Err(e) = self.pty.write(text.as_bytes())
+                {
+                    log::error!("PTY paste error: {e}");
                 }
             }
         }
@@ -365,7 +360,7 @@ impl TerminalSession {
         // `Sense::hover()` overlay covering the root node may cause that check
         // to fail even when the pointer is physically in the terminal area.
         let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
-        let pointer_in_terminal = pointer_pos.map_or(false, |p| response.rect.contains(p));
+        let pointer_in_terminal = pointer_pos.is_some_and(|p| response.rect.contains(p));
         if pointer_in_terminal || self.scrollbar_dragging {
             log::info!(
                 "[dbg] wheel: enter processing, pointer_in_terminal={} scrollbar_dragging={} mouse_reporting={} num_events={}",
@@ -398,7 +393,7 @@ impl TerminalSession {
                     scroll_ys.len(),
                     scroll_ys,
                     pointer_pos,
-                    pointer_pos.and_then(|p| pixel_to_cell(p)),
+                    pointer_pos.and_then(&pixel_to_cell),
                 );
                 // Consume all wheel events to prevent egui from using them.
                 ui.ctx().input_mut(|i| {
@@ -550,31 +545,27 @@ impl TerminalSession {
                 if let Some(pos) = response
                     .interact_pointer_pos()
                     .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos()))
+                    && let Some((row, col)) = pixel_to_cell(pos)
                 {
-                    if let Some((row, col)) = pixel_to_cell(pos) {
-                        let col = snap_col(&mut self.terminal, row, col);
-                        // Use the last tracked button for the release encoding;
-                        // fall back to left button (0) if nothing is tracked.
-                        let base = self.sgr_mouse_buttons.last().copied().unwrap_or(0);
-                        self.sgr_mouse_buttons.pop();
-                        self.send_sgr_mouse(row, col, base | mod_bits, true);
-                    }
+                    let col = snap_col(&mut self.terminal, row, col);
+                    // Use the last tracked button for the release encoding;
+                    // fall back to left button (0) if nothing is tracked.
+                    let base = self.sgr_mouse_buttons.last().copied().unwrap_or(0);
+                    self.sgr_mouse_buttons.pop();
+                    self.send_sgr_mouse(row, col, base | mod_bits, true);
                 }
             } else {
                 self.selecting = false;
                 self.terminal_dirty = true;
 
                 // ── Auto-copy selection to clipboard ──────────────
-                if self.save_to_clipboard {
-                    if let Some(text) = self.terminal.selected_text() {
-                        if !text.is_empty() {
-                            if let Some(ref mut cb) = self.clipboard {
-                                if let Err(e) = cb.set_text(text) {
-                                    log::error!("failed to copy selection to clipboard: {e}");
-                                }
-                            }
-                        }
-                    }
+                if self.save_to_clipboard
+                    && let Some(text) = self.terminal.selected_text()
+                    && !text.is_empty()
+                    && let Some(ref mut cb) = self.clipboard
+                    && let Err(e) = cb.set_text(text)
+                {
+                    log::error!("failed to copy selection to clipboard: {e}");
                 }
             }
         }
@@ -584,15 +575,15 @@ impl TerminalSession {
         // without significant drag.  When SGR mouse is active we must
         // forward both the press and the release to the PTY.
         if response.clicked() && mouse_reporting {
-            if let Some(pos) = response.interact_pointer_pos() {
-                if let Some((row, col)) = pixel_to_cell(pos) {
-                    let col = snap_col(&mut self.terminal, row, col);
-                    let btn = 0 | mod_bits; // left button
-                    self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
-                    self.send_sgr_mouse(row, col, btn, false); // press
-                    self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
-                    self.send_sgr_mouse(row, col, btn, true); // release
-                }
+            if let Some(pos) = response.interact_pointer_pos()
+                && let Some((row, col)) = pixel_to_cell(pos)
+            {
+                let col = snap_col(&mut self.terminal, row, col);
+                let btn = mod_bits; // left button
+                self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
+                self.send_sgr_mouse(row, col, btn, false); // press
+                self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
+                self.send_sgr_mouse(row, col, btn, true); // release
             }
             return;
         }
@@ -601,23 +592,22 @@ impl TerminalSession {
         if response.clicked() && !self.selecting && !mouse_reporting {
             if self.url_open && !self.url_click_handled {
                 let ctrl = ui.ctx().input(|i| i.modifiers.ctrl || i.modifiers.mac_cmd);
-                if ctrl {
-                    if let Some(pos) = response.interact_pointer_pos() {
-                        if let Some((row, col)) = pixel_to_cell(pos) {
-                            let col = snap_col(&mut self.terminal, row, col);
-                            let line = self.terminal.line_text(row);
-                            let finder = linkify::LinkFinder::new();
-                            for link in finder.links(&line) {
-                                let start_col = line[..link.start()].chars().count();
-                                let end_col = line[..link.end()].chars().count();
-                                if col >= start_col && col < end_col {
-                                    let url = link.as_str().to_string();
-                                    log::info!("url click: opening {url}");
-                                    let _ = open::that(&url);
-                                    self.url_click_handled = true;
-                                    return;
-                                }
-                            }
+                if ctrl
+                    && let Some(pos) = response.interact_pointer_pos()
+                    && let Some((row, col)) = pixel_to_cell(pos)
+                {
+                    let col = snap_col(&mut self.terminal, row, col);
+                    let line = self.terminal.line_text(row);
+                    let finder = linkify::LinkFinder::new();
+                    for link in finder.links(&line) {
+                        let start_col = line[..link.start()].chars().count();
+                        let end_col = line[..link.end()].chars().count();
+                        if col >= start_col && col < end_col {
+                            let url = link.as_str().to_string();
+                            log::info!("url click: opening {url}");
+                            let _ = open::that(&url);
+                            self.url_click_handled = true;
+                            return;
                         }
                     }
                 }
@@ -636,17 +626,17 @@ impl TerminalSession {
             let button_pressed = !self.sgr_mouse_buttons.is_empty();
             if any_event || button_pressed {
                 let pos = ui.ctx().input(|i| i.pointer.hover_pos());
-                if let Some(pos) = pos {
-                    if let Some((row, col)) = pixel_to_cell(pos) {
-                        let col = snap_col(&mut self.terminal, row, col);
-                        if self.last_sgr_motion_pos != Some((row, col)) {
-                            // Base button: 32 (motion flag) + last tracked
-                            // base button, or 32 if nothing is pressed (pure
-                            // hover with any-event-mouse).
-                            let base = self.sgr_mouse_buttons.last().copied().unwrap_or(0);
-                            self.send_sgr_mouse(row, col, 32 | base | mod_bits, false);
-                            self.last_sgr_motion_pos = Some((row, col));
-                        }
+                if let Some(pos) = pos
+                    && let Some((row, col)) = pixel_to_cell(pos)
+                {
+                    let col = snap_col(&mut self.terminal, row, col);
+                    if self.last_sgr_motion_pos != Some((row, col)) {
+                        // Base button: 32 (motion flag) + last tracked
+                        // base button, or 32 if nothing is pressed (pure
+                        // hover with any-event-mouse).
+                        let base = self.sgr_mouse_buttons.last().copied().unwrap_or(0);
+                        self.send_sgr_mouse(row, col, 32 | base | mod_bits, false);
+                        self.last_sgr_motion_pos = Some((row, col));
                     }
                 }
             }
@@ -716,27 +706,22 @@ impl TerminalSession {
     /// Render the right-click context menu (Copy / Paste).
     pub fn render_context_menu(&mut self, _ui: &egui::Ui, response: &egui::Response) {
         response.context_menu(|ctx_ui| {
-            if self.terminal.has_selection() {
-                if ctx_ui.button("Copy").clicked() {
-                    if let Some(text) = self.terminal.selected_text() {
-                        if let Some(ref mut cb) = self.clipboard {
-                            if let Err(e) = cb.set_text(text) {
-                                log::error!("failed to copy to clipboard: {e}");
-                            }
-                        }
-                    }
-                    ctx_ui.close();
+            if self.terminal.has_selection() && ctx_ui.button("Copy").clicked() {
+                if let Some(text) = self.terminal.selected_text()
+                    && let Some(ref mut cb) = self.clipboard
+                    && let Err(e) = cb.set_text(text)
+                {
+                    log::error!("failed to copy to clipboard: {e}");
                 }
+                ctx_ui.close();
             }
             if ctx_ui.button("Paste").clicked() {
-                if let Some(ref mut clipboard) = self.clipboard {
-                    if let Ok(text) = clipboard.get_text() {
-                        if !text.is_empty() {
-                            if let Err(e) = self.pty.write(text.as_bytes()) {
-                                log::error!("PTY paste error: {e}");
-                            }
-                        }
-                    }
+                if let Some(ref mut clipboard) = self.clipboard
+                    && let Ok(text) = clipboard.get_text()
+                    && !text.is_empty()
+                    && let Err(e) = self.pty.write(text.as_bytes())
+                {
+                    log::error!("PTY paste error: {e}");
                 }
                 ctx_ui.close();
             }

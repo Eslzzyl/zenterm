@@ -39,7 +39,7 @@ impl TerminalSession {
         }
         if !batch.is_empty() {
             log::trace!("pump_pty: batching {} bytes from PTY", batch.len());
-            let replies = self.terminal.feed(&batch);
+            let replies = self.terminal.feed(batch);
             if !replies.is_empty() {
                 log::trace!("pump_pty: writing {} reply bytes", replies.len(),);
                 if let Err(e) = self.pty.write(&replies) {
@@ -58,12 +58,12 @@ impl TerminalSession {
             }
         }
 
-        if !self.pty_exited {
-            if let Some(status) = self.pty.try_wait() {
-                log::info!("shell exited with status: {status:?}, closing");
-                self.pty.close();
-                self.pty_exited = true;
-            }
+        if !self.pty_exited
+            && let Some(status) = self.pty.try_wait()
+        {
+            log::info!("shell exited with status: {status:?}, closing");
+            self.pty.close();
+            self.pty_exited = true;
         }
     }
 
@@ -83,43 +83,43 @@ impl TerminalSession {
         }
 
         // Apply pending title if it has been stable long enough.
-        if let Some((title, at)) = &self.pending_title {
-            if at.elapsed().as_secs_f64() * 1000.0 >= TITLE_DEBOUNCE_MS {
-                self.seen_terminal_title = true;
+        if let Some((title, at)) = &self.pending_title
+            && at.elapsed().as_secs_f64() * 1000.0 >= TITLE_DEBOUNCE_MS
+        {
+            self.seen_terminal_title = true;
 
-                if title.is_empty() {
-                    // Empty title → fallback to cwd basename.
-                    // This matches Ghostty's behaviour: an empty OSC title
-                    // sequence is treated as a reset, and we show the
-                    // working directory name instead.
-                    let fallback = self
-                        .cwd
-                        .as_ref()
-                        .and_then(|p| p.file_name())
-                        .and_then(|n| n.to_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_default();
-                    if self.title != fallback {
-                        log::debug!("session: empty title → fallback to cwd '{:?}'", fallback,);
-                        self.title = fallback;
-                        effects.push(SessionEffect::WindowTitle(self.title.clone()));
-                    }
-                } else if self.title != *title {
-                    log::debug!(
-                        "session: window title changed: {:?} -> {:?}",
-                        self.title,
-                        title
-                    );
-                    self.title = title.clone();
-                    effects.push(SessionEffect::WindowTitle(title.clone()));
-                } else {
-                    log::trace!(
-                        "session: window title unchanged ({:?}), skipping",
-                        self.title
-                    );
+            if title.is_empty() {
+                // Empty title → fallback to cwd basename.
+                // This matches Ghostty's behaviour: an empty OSC title
+                // sequence is treated as a reset, and we show the
+                // working directory name instead.
+                let fallback = self
+                    .cwd
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                if self.title != fallback {
+                    log::debug!("session: empty title → fallback to cwd '{:?}'", fallback,);
+                    self.title = fallback;
+                    effects.push(SessionEffect::WindowTitle(self.title.clone()));
                 }
-                self.pending_title = None;
+            } else if self.title != *title {
+                log::debug!(
+                    "session: window title changed: {:?} -> {:?}",
+                    self.title,
+                    title
+                );
+                self.title = title.clone();
+                effects.push(SessionEffect::WindowTitle(title.clone()));
+            } else {
+                log::trace!(
+                    "session: window title unchanged ({:?}), skipping",
+                    self.title
+                );
             }
+            self.pending_title = None;
         }
 
         if self.terminal.take_bell() {
@@ -192,10 +192,10 @@ impl TerminalSession {
                                 tmp_dir.join(format!("zenterm-icon-{}.png", std::process::id()));
                             if let Ok(mut file) = std::fs::File::create(&path) {
                                 use std::io::Write;
-                                if file.write_all(&icon_data).is_ok() {
-                                    if let Some(p) = path.to_str() {
-                                        n.image_path(p);
-                                    }
+                                if file.write_all(&icon_data).is_ok()
+                                    && let Some(p) = path.to_str()
+                                {
+                                    n.image_path(p);
                                 }
                             }
                         } else if let Some(icon) = icon_names.first() {
@@ -325,35 +325,34 @@ impl TerminalSession {
             }
         }
 
-        if let Some(text) = self.terminal.take_clipboard_store() {
-            if let Some(ref mut cb) = self.clipboard {
-                if let Err(e) = cb.set_text(text) {
-                    log::error!("failed to store clipboard text: {e}");
-                }
-            }
+        if let Some(text) = self.terminal.take_clipboard_store()
+            && let Some(ref mut cb) = self.clipboard
+            && let Err(e) = cb.set_text(text)
+        {
+            log::error!("failed to store clipboard text: {e}");
         }
 
-        if let Some(formatter) = self.terminal.take_clipboard_load() {
-            if let Some(ref mut cb) = self.clipboard {
-                match cb.get_text() {
-                    Ok(text) => {
-                        let seq = formatter(&text);
-                        if let Err(e) = self.pty.write(seq.as_bytes()) {
-                            log::error!("failed to write clipboard-load response: {e}");
-                        }
+        if let Some(formatter) = self.terminal.take_clipboard_load()
+            && let Some(ref mut cb) = self.clipboard
+        {
+            match cb.get_text() {
+                Ok(text) => {
+                    let seq = formatter(&text);
+                    if let Err(e) = self.pty.write(seq.as_bytes()) {
+                        log::error!("failed to write clipboard-load response: {e}");
                     }
-                    Err(e) => {
-                        log::error!("failed to read clipboard for terminal: {e}");
-                    }
+                }
+                Err(e) => {
+                    log::error!("failed to read clipboard for terminal: {e}");
                 }
             }
         }
 
         // ── OSC 7: working directory (current working directory URL) ──
-        if let Some(url) = self.terminal.take_current_directory() {
-            if let Some(path) = osc7_url_to_path(&url) {
-                self.cwd = Some(path);
-            }
+        if let Some(url) = self.terminal.take_current_directory()
+            && let Some(path) = osc7_url_to_path(&url)
+        {
+            self.cwd = Some(path);
         }
 
         // ── OSC 1337 (iTerm2 proprietary) actions ───────────────────

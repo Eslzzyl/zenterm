@@ -13,6 +13,8 @@ use portable_pty::{
 
 use zenterm_core::{Error, Result, TermSize};
 
+type DataHandler = Box<dyn Fn(&[u8]) + Send + Sync>;
+
 /// A running PTY session connected to a shell process.
 ///
 /// Ownership order in the struct is significant for [`Drop`]:
@@ -85,7 +87,7 @@ impl PtySession {
     pub fn spawn_with_handlers(
         size: TermSize,
         wakeup: Option<Box<dyn Fn() + Send + Sync>>,
-        on_data: Option<Box<dyn Fn(&[u8]) + Send + Sync>>,
+        on_data: Option<DataHandler>,
     ) -> Result<Self> {
         let pty_system = NativePtySystem::default();
 
@@ -119,13 +121,10 @@ impl PtySession {
             .map_err(|e| Error::Pty(e.to_string()))?;
 
         // Spawn a background thread that reads PTY bytes and sends them
-        // over a bounded channel to the main thread.  The bounded channel
-        // provides natural backpressure: when the main thread cannot keep
-        // up (e.g. `cat` of a huge file), capacity is exceeded and old
-        // chunks are dropped rather than allowing unbounded memory growth.
-        //
-        // The EOF signal (empty Vec) bypasses the capacity check so shell
-        // exit is never lost.
+        // over a bounded channel to the main thread. A blocking send gives
+        // the PTY a real backpressure path: output is retained in order and
+        // the shell eventually blocks on the OS PTY buffer instead of losing
+        // terminal data or growing memory without bound.
         let (tx, rx) = mpsc::sync_channel(256);
         let _reader_thread = thread::Builder::new()
             .name("pty-reader".into())
@@ -146,22 +145,9 @@ impl PtySession {
                             if let Some(ref handler) = on_data {
                                 handler(&buf[..n]);
                             } else {
-                                match tx.try_send(buf[..n].to_vec()) {
-                                    Err(mpsc::TrySendError::Disconnected(_)) => {
-                                        log::trace!("pty-reader: channel closed, exiting");
-                                        break;
-                                    }
-                                    Err(mpsc::TrySendError::Full(_)) => {
-                                        // Channel full — drop this chunk to apply
-                                        // backpressure.  Under extreme throughput
-                                        // (e.g. `cat /dev/urandom`) the terminal
-                                        // can't render this data anyway.
-                                        log::trace!(
-                                            "pty-reader: channel full, dropping {} bytes",
-                                            n
-                                        );
-                                    }
-                                    Ok(_) => {}
+                                if let Err(mpsc::SendError(_)) = tx.send(buf[..n].to_vec()) {
+                                    log::trace!("pty-reader: channel closed, exiting");
+                                    break;
                                 }
                             }
                             // Notify the event loop that data is available.

@@ -51,6 +51,7 @@ impl SharedGlyphAtlas {
     /// `ligatures_enabled` controls whether OpenType ligature features
     /// are enabled during shaping.  See
     /// [`GlyphAtlas::ligatures_enabled`].
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         font_size: f32,
         font_family: Cow<'static, str>,
@@ -169,6 +170,7 @@ impl SharedGlyphAtlas {
     /// Rebuild the atlas for a new DPI scale factor.  All cached
     /// glyphs are dropped; ASCII re-seed is the caller's
     /// responsibility.
+    #[allow(clippy::too_many_arguments)]
     pub fn reinit_for_dpi(
         &self,
         font_size: f32,
@@ -241,12 +243,12 @@ impl SharedGlyphAtlas {
 impl<'a> std::ops::Deref for GlyphAtlasGuard<'a> {
     type Target = GlyphAtlas;
     fn deref(&self) -> &Self::Target {
-        &*self.guard
+        &self.guard
     }
 }
 
 impl<'a> std::ops::DerefMut for GlyphAtlasGuard<'a> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut *self.guard
+        &mut self.guard
     }
 }

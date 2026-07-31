@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The `[terminal]` section of the config file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TerminalConfig {
     /// OSC 52 clipboard escape sequence support.
     #[serde(default)]
@@ -16,15 +16,6 @@ pub struct TerminalConfig {
 
     /// Shell to spawn.  When absent the system login shell is used.
     pub shell: Option<ShellConfig>,
-}
-
-impl Default for TerminalConfig {
-    fn default() -> Self {
-        Self {
-            osc52: Osc52Mode::default(),
-            shell: None,
-        }
-    }
 }
 
 /// OSC 52 clipboard permission level.

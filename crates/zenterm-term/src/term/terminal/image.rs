@@ -7,7 +7,7 @@ use zenterm_core::{ITermDimension, ITermFileData};
 
 use crate::image::kitty::{self, KittyImage};
 use crate::image::sixel::{self, SixelBuilder};
-use crate::image::{PlacementParams, PlacementStyle, assign_image_to_cells};
+use crate::image::{PlacementParams, PlacementRequest, PlacementStyle, assign_image_to_cells};
 
 use super::Terminal;
 use super::unicode::VirtualPlacement;
@@ -307,18 +307,18 @@ impl Terminal {
             style: PlacementStyle::Kitty,
         };
 
-        let result = assign_image_to_cells(
+        let result = assign_image_to_cells(PlacementRequest {
             data,
-            img_w,
-            img_h,
-            &params,
-            self.cell_pixel_width,
-            self.cell_pixel_height,
-            cursor.pos.column,
-            cursor.pos.line.min(rows.saturating_sub(1)),
-            cols,
-            rows,
-        );
+            image_width: img_w,
+            image_height: img_h,
+            params: &params,
+            cell_pixel_w: self.cell_pixel_width,
+            cell_pixel_h: self.cell_pixel_height,
+            cursor_col: cursor.pos.column,
+            cursor_row: cursor.pos.line.min(rows.saturating_sub(1)),
+            max_cols: cols,
+            max_rows: rows,
+        });
 
         // Store placements keyed by grid-relative line so they follow
         // content when the viewport scrolls.
@@ -487,18 +487,18 @@ impl Terminal {
             style: PlacementStyle::Iterm,
         };
 
-        let result = assign_image_to_cells(
-            image_data,
-            img_w,
-            img_h,
-            &params,
-            self.cell_pixel_width,
-            self.cell_pixel_height,
+        let result = assign_image_to_cells(PlacementRequest {
+            data: image_data,
+            image_width: img_w,
+            image_height: img_h,
+            params: &params,
+            cell_pixel_w: self.cell_pixel_width,
+            cell_pixel_h: self.cell_pixel_height,
             cursor_col,
             cursor_row,
-            cols,
-            rows,
-        );
+            max_cols: cols,
+            max_rows: rows,
+        });
 
         // Store placements.
         let display_offset = self.term.grid().display_offset() as i32;
@@ -550,7 +550,7 @@ impl Terminal {
                 ITermDimension::Cells(n) => Some(n.max(1) as usize),
                 ITermDimension::Pixels(n) => Some((n.max(1) as u32 / cell_w).max(1) as usize),
                 ITermDimension::Percent(n) => {
-                    let pct = n.max(1).min(100) as usize;
+                    let pct = n.clamp(1, 100) as usize;
                     Some((max_cols * pct / 100).max(1))
                 }
             }
@@ -561,16 +561,14 @@ impl Terminal {
                 ITermDimension::Cells(n) => Some(n.max(1) as usize),
                 ITermDimension::Pixels(n) => Some((n.max(1) as u32 / cell_h).max(1) as usize),
                 ITermDimension::Percent(n) => {
-                    let pct = n.max(1).min(100) as usize;
+                    let pct = n.clamp(1, 100) as usize;
                     Some((max_rows * pct / 100).max(1))
                 }
             }
         };
 
-        let columns =
-            calc_cols(width).unwrap_or_else(|| ((img_w + cell_w - 1) / cell_w).max(1) as usize);
-        let rows_out =
-            calc_rows(height).unwrap_or_else(|| ((img_h + cell_h - 1) / cell_h).max(1) as usize);
+        let columns = calc_cols(width).unwrap_or_else(|| img_w.div_ceil(cell_w).max(1) as usize);
+        let rows_out = calc_rows(height).unwrap_or_else(|| img_h.div_ceil(cell_h).max(1) as usize);
 
         (columns.min(max_cols), Some(rows_out.min(max_rows)))
     }
@@ -596,15 +594,13 @@ impl Terminal {
                     if v.image_id != Some(image_id) {
                         return true;
                     }
-                    placement_id.map_or(false, |p| v.placement_id != Some(p))
+                    placement_id.is_some_and(|p| v.placement_id != Some(p))
                 });
                 self.virtual_placements.retain(|(id, pid), _| {
                     *id != image_id || placement_id.is_some_and(|p| *pid != Some(p))
                 });
-                if delete {
-                    if let Some(hash) = self.image_cache.remove(image_id) {
-                        self.pending_image_deallocations.push(hash);
-                    }
+                if delete && let Some(hash) = self.image_cache.remove(image_id) {
+                    self.pending_image_deallocations.push(hash);
                 }
             }
             kitty::KittyImageDelete::ByImageNumber {
@@ -617,8 +613,7 @@ impl Terminal {
                     .image_placements
                     .iter()
                     .filter(|(_, v)| v.placement_id == placement_id)
-                    .map(|(_, v)| v.image_id)
-                    .flatten()
+                    .filter_map(|(_, v)| v.image_id)
                     .collect();
                 for id in ids {
                     self.image_placements.retain(|_, v| v.image_id != Some(id));
@@ -692,15 +687,14 @@ impl Terminal {
                                 ref frames,
                                 ..
                             } = *guard
+                                && let Some(first_frame) = frames.first()
                             {
-                                if let Some(first_frame) = frames.first() {
-                                    let new_data = zenterm_core::image::ImageDataType::new_rgba8(
-                                        first_frame.clone(),
-                                        *width,
-                                        *height,
-                                    );
-                                    *guard = new_data;
-                                }
+                                let new_data = zenterm_core::image::ImageDataType::new_rgba8(
+                                    first_frame.clone(),
+                                    *width,
+                                    *height,
+                                );
+                                *guard = new_data;
                             }
                         }
                         // Remove all placements for this image since animation changed.
@@ -735,15 +729,13 @@ impl Terminal {
                 let ids_to_delete: Vec<u32> = self
                     .image_placements
                     .iter()
-                    .filter(|(_, v)| v.image_id.map_or(false, |id| id >= first && id <= last))
+                    .filter(|(_, v)| v.image_id.is_some_and(|id| id >= first && id <= last))
                     .map(|(_, v)| v.image_id.unwrap())
                     .collect();
                 for id in ids_to_delete {
                     self.image_placements.retain(|_, v| v.image_id != Some(id));
-                    if delete {
-                        if let Some(hash) = self.image_cache.remove(id) {
-                            self.pending_image_deallocations.push(hash);
-                        }
+                    if delete && let Some(hash) = self.image_cache.remove(id) {
+                        self.pending_image_deallocations.push(hash);
                     }
                 }
             }
@@ -788,18 +780,18 @@ impl Terminal {
                     style: PlacementStyle::Sixel,
                 };
 
-                let result = assign_image_to_cells(
+                let result = assign_image_to_cells(PlacementRequest {
                     data,
-                    img_w,
-                    img_h,
-                    &par,
-                    self.cell_pixel_width,
-                    self.cell_pixel_height,
-                    cursor.pos.column,
-                    cursor.pos.line.min(rows.saturating_sub(1)),
-                    cols,
-                    rows,
-                );
+                    image_width: img_w,
+                    image_height: img_h,
+                    params: &par,
+                    cell_pixel_w: self.cell_pixel_width,
+                    cell_pixel_h: self.cell_pixel_height,
+                    cursor_col: cursor.pos.column,
+                    cursor_row: cursor.pos.line.min(rows.saturating_sub(1)),
+                    max_cols: cols,
+                    max_rows: rows,
+                });
 
                 let display_offset = self.term.grid().display_offset() as i32;
                 for (col, viewport_row, cell) in &result.cells {

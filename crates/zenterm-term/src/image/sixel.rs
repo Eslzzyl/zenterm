@@ -61,7 +61,7 @@ pub struct SixelBuilder {
 impl SixelBuilder {
     pub fn new(params: &[i64]) -> Self {
         let pan = match params.first().copied().unwrap_or(0) {
-            7 | 8 | 9 => 1,
+            7..=9 => 1,
             0 | 1 | 5 | 6 => 2,
             3 | 4 => 3,
             2 => 5,

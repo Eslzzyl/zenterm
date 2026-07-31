@@ -45,9 +45,20 @@ pub(crate) struct OscMatch {
 /// - BEL (`0x07`)
 /// - ST (`ESC \`, i.e. `0x1B 0x5C`)
 ///
-/// Sequences missing a terminator are silently ignored (assumed to be
-/// split across PTY reads and will be completed in a future batch).
+/// Sequences missing a terminator are omitted from the result. Call
+/// [`scan_oscs_with_remainder`] when the caller needs to retain them across
+/// input chunks.
+#[cfg(test)]
 pub(crate) fn scan_oscs(bytes: &[u8]) -> Vec<OscMatch> {
+    scan_oscs_with_remainder(bytes).0
+}
+
+/// Scan OSC sequences and return the start of an incomplete trailing sequence.
+///
+/// The returned offset is safe to retain and prepend to the next input chunk.
+/// At most one incomplete sequence can exist because scanning stops at its
+/// start; all complete sequences before it are returned normally.
+pub(crate) fn scan_oscs_with_remainder(bytes: &[u8]) -> (Vec<OscMatch>, Option<usize>) {
     let mut results = Vec::new();
     let mut i = 0;
 
@@ -124,14 +135,14 @@ pub(crate) fn scan_oscs(bytes: &[u8]) -> Vec<OscMatch> {
                 }
             }
             None => {
-                // Unterminated — stop scanning; the rest may be a
-                // continuation in a future batch.
-                break;
+                // Unterminated — retain the sequence so a later chunk can
+                // complete it without losing its custom side effect.
+                return (results, Some(i));
             }
         }
     }
 
-    results
+    (results, None)
 }
 
 /// Find the earliest BEL (`0x07`) or ST (`ESC \`) in `tail`.

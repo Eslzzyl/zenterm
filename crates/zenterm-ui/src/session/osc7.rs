@@ -32,8 +32,8 @@ fn percent_decode(s: &str) -> String {
     let mut bytes = s.bytes();
     while let Some(b) = bytes.next() {
         if b == b'%' {
-            let hi = bytes.next().and_then(|c| hex_val(c));
-            let lo = bytes.next().and_then(|c| hex_val(c));
+            let hi = bytes.next().and_then(hex_val);
+            let lo = bytes.next().and_then(hex_val);
             match (hi, lo) {
                 (Some(h), Some(l)) => out.push((h << 4 | l) as char),
                 _ => out.push('%'),

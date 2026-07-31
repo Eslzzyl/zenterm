@@ -11,19 +11,11 @@ use serde::{Deserialize, Serialize};
 /// Currently a placeholder — no bindings are parsed.
 /// The `keyboard` section is recognised so that a future version can
 /// add bindings without breaking existing configs.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct KeyboardConfig {
     /// Custom key bindings (not yet implemented).
     #[serde(default)]
     pub bindings: Vec<KeyBinding>,
-}
-
-impl Default for KeyboardConfig {
-    fn default() -> Self {
-        Self {
-            bindings: Vec::new(),
-        }
-    }
 }
 
 /// A single key binding (reserved for future use).

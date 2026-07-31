@@ -81,6 +81,14 @@ fn unterminated_returns_none() {
 }
 
 #[test]
+fn unterminated_returns_remainder_start() {
+    let bytes = b"text\x1b]7;file://x/y";
+    let (oscs, remainder_start) = scan_oscs_with_remainder(bytes);
+    assert!(oscs.is_empty());
+    assert_eq!(remainder_start, Some(4));
+}
+
+#[test]
 fn prefers_earliest_terminator() {
     // ST appears before BEL.
     let bytes = b"\x1b]7;file://host/path\x1b\\trailing\x07garbage";

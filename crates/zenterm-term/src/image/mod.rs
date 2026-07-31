@@ -8,7 +8,7 @@ pub mod kitty;
 pub mod placement;
 pub mod sixel;
 pub use placement::assign_image_to_cells;
-pub use placement::{PlacementParams, PlacementStyle};
+pub use placement::{PlacementParams, PlacementRequest, PlacementStyle};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -82,7 +82,7 @@ impl ImageCache {
         self.number_to_id.retain(|_, v| *v != image_id);
         if let Some(data) = self.id_to_data.remove(&image_id) {
             self.used_memory = self.used_memory.saturating_sub(data.len());
-            Some(data.hash)
+            Some(data.hash())
         } else {
             None
         }
@@ -90,7 +90,7 @@ impl ImageCache {
 
     /// Return all content hashes currently in the cache.
     pub fn all_hashes(&self) -> Vec<[u8; 32]> {
-        self.id_to_data.values().map(|d| d.hash).collect()
+        self.id_to_data.values().map(|d| d.hash()).collect()
     }
 
     /// Return all image IDs currently in the cache.

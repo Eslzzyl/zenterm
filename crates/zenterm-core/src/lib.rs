@@ -108,9 +108,10 @@ pub enum ITermUnicodeVersionOp {
 ///
 /// Used by `ITermFileData` to specify desired width/height of the
 /// rendered image.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum ITermDimension {
     /// Compute automatically from image pixel size ÷ cell pixel size.
+    #[default]
     Automatic,
     /// Fixed number of terminal cells.
     Cells(isize),
@@ -118,12 +119,6 @@ pub enum ITermDimension {
     Pixels(isize),
     /// Percentage of the terminal width/height.
     Percent(isize),
-}
-
-impl Default for ITermDimension {
-    fn default() -> Self {
-        Self::Automatic
-    }
 }
 
 /// Parsed iTerm2 file transfer / inline image data (OSC 1337 ; File=…).
@@ -236,9 +231,10 @@ pub struct KittyNotification {
 /// The kind of a prompt in the FinalTerm semantic prompt protocol (OSC 133 P).
 ///
 /// Corresponds to the `k` parameter in `ESC ] 133 ; P ; k=X ST`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SemanticPromptKind {
     /// Normal left-side primary prompt (`k=i`).
+    #[default]
     Initial,
     /// Right-aligned prompt (`k=r`).
     RightSide,
@@ -246,12 +242,6 @@ pub enum SemanticPromptKind {
     Continuation,
     /// Continuation prompt where the input cannot be edited (`k=s`).
     Secondary,
-}
-
-impl Default for SemanticPromptKind {
-    fn default() -> Self {
-        Self::Initial
-    }
 }
 
 /// Click behaviour for semantic prompt regions (OSC 133 `cl` parameter).
@@ -343,21 +333,16 @@ impl core::fmt::Display for SubpixelLayout {
 /// for sharper rendering.  Hinting is most beneficial at low DPI / small
 /// font sizes where the pixel grid is visible; at high DPI it can introduce
 /// undesirable shape distortion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HintingMode {
     /// Never apply hinting.
     None,
     /// Apply hinting at low DPI, disable at high DPI (above ~1.04×).
+    #[default]
     Auto,
     /// Always apply hinting.
     Full,
-}
-
-impl Default for HintingMode {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 /// LCD subpixel or grayscale anti-aliasing mode.
@@ -365,19 +350,14 @@ impl Default for HintingMode {
 /// Subpixel rendering gives sharper text on LCD displays but can produce
 /// colour fringing on OLED or high-DPI screens.  Grayscale mode is safer
 /// for non-LCD panels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RenderMode {
     /// LCD subpixel anti-aliasing (R/G/B per-channel coverage).
+    #[default]
     Subpixel,
     /// Standard grayscale anti-aliasing (single alpha channel).
     Grayscale,
-}
-
-impl Default for RenderMode {
-    fn default() -> Self {
-        Self::Subpixel
-    }
 }
 
 impl SubpixelLayout {

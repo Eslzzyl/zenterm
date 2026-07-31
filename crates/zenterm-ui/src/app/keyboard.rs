@@ -11,45 +11,45 @@ use zenterm_input::MappingOptions;
 use super::ZentermApp;
 impl ZentermApp {
     pub(crate) fn forward_event_to_active(&mut self, event: &egui::Event) {
-        if let Some(id) = self.active_session_id {
-            if let Some(session) = self.sessions.get_mut(&id) {
-                // Before PTY mapping, check for IME state events that
-                // update the preedit text but are not sent to the PTY.
-                if let egui::Event::Ime(ime_event) = event {
-                    match ime_event {
-                        egui::ImeEvent::Preedit(text) => {
-                            if text.is_empty() {
-                                session.preedit_text = None;
-                            } else {
-                                session.preedit_text = Some(text.clone());
-                            }
-                            // Force a full re-render so the preedit text is
-                            // drawn through the GPU glyph pipeline (the fast
-                            // path in update_cell_instances skips preedit).
-                            session.terminal_dirty = true;
-                        }
-                        egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled => {
+        if let Some(id) = self.active_session_id
+            && let Some(session) = self.sessions.get_mut(&id)
+        {
+            // Before PTY mapping, check for IME state events that
+            // update the preedit text but are not sent to the PTY.
+            if let egui::Event::Ime(ime_event) = event {
+                match ime_event {
+                    egui::ImeEvent::Preedit(text) => {
+                        if text.is_empty() {
                             session.preedit_text = None;
-                            session.terminal_dirty = true;
+                        } else {
+                            session.preedit_text = Some(text.clone());
                         }
-                        egui::ImeEvent::Enabled => {}
+                        // Force a full re-render so the preedit text is
+                        // drawn through the GPU glyph pipeline (the fast
+                        // path in update_cell_instances skips preedit).
+                        session.terminal_dirty = true;
                     }
-                }
-
-                // Build mapping options from terminal state + config.
-                let mode = session.terminal.mode();
-                let opts = MappingOptions {
-                    app_cursor: mode.contains(TermMode::APP_CURSOR),
-                    macos_option_as_alt: self.config.window.macos_option_as_alt,
-                    kitty_flags: session.terminal.kitty_keyboard_flags(),
-                };
-
-                // Map event to PTY bytes (handles Commit, Text, Key, Paste).
-                if let Some(bytes) = zenterm_input::InputMapper::map(event, &opts) {
-                    if let Err(e) = session.pty.write(&bytes) {
-                        log::error!("PTY write error: {e}");
+                    egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled => {
+                        session.preedit_text = None;
+                        session.terminal_dirty = true;
                     }
+                    egui::ImeEvent::Enabled => {}
                 }
+            }
+
+            // Build mapping options from terminal state + config.
+            let mode = session.terminal.mode();
+            let opts = MappingOptions {
+                app_cursor: mode.contains(TermMode::APP_CURSOR),
+                macos_option_as_alt: self.config.window.macos_option_as_alt,
+                kitty_flags: session.terminal.kitty_keyboard_flags(),
+            };
+
+            // Map event to PTY bytes (handles Commit, Text, Key, Paste).
+            if let Some(bytes) = zenterm_input::InputMapper::map(event, &opts)
+                && let Err(e) = session.pty.write(&bytes)
+            {
+                log::error!("PTY write error: {e}");
             }
         }
     }
@@ -129,10 +129,12 @@ impl ZentermApp {
                         }
                     }
                     // Cmd/Ctrl+, → toggle settings panel
-                    if (modifiers.ctrl || modifiers.mac_cmd) && !modifiers.shift && !modifiers.alt {
-                        if *key == egui::Key::Comma {
-                            s = true;
-                        }
+                    if (modifiers.ctrl || modifiers.mac_cmd)
+                        && !modifiers.shift
+                        && !modifiers.alt
+                        && *key == egui::Key::Comma
+                    {
+                        s = true;
                     }
                     // Ctrl+1..9 → switch to workspace by index
                     if modifiers.ctrl && !modifiers.shift && !modifiers.alt {
@@ -182,19 +184,19 @@ impl ZentermApp {
             return true;
         }
         // Workspace switching shortcuts.
-        if let Some(idx) = ws_switch {
-            if let Some(ws) = self.workspaces.workspaces.get(idx) {
-                let ws_id = ws.id;
-                self.workspaces.switch_to(ws_id);
-                self.active_session_id = self
-                    .workspaces
-                    .active_workspace()
-                    .all_tab_ids()
-                    .first()
-                    .copied();
-                self.mark_layout_dirty();
-                return true;
-            }
+        if let Some(idx) = ws_switch
+            && let Some(ws) = self.workspaces.workspaces.get(idx)
+        {
+            let ws_id = ws.id;
+            self.workspaces.switch_to(ws_id);
+            self.active_session_id = self
+                .workspaces
+                .active_workspace()
+                .all_tab_ids()
+                .first()
+                .copied();
+            self.mark_layout_dirty();
+            return true;
         }
         if let Some(dir) = ws_cycle {
             let len = self.workspaces.workspaces.len();
@@ -255,88 +257,81 @@ impl ZentermApp {
                 log::error!("[clipboard] active_session_id is None");
             }
         }
-        if paste {
-            if let Some(id) = self.active_session_id {
-                if let Some(session) = self.sessions.get_mut(&id) {
-                    if let Some(ref mut cb) = session.clipboard {
-                        if let Ok(text) = cb.get_text() {
-                            if !text.is_empty() {
-                                if let Err(e) = session.pty.write(text.as_bytes()) {
-                                    log::error!("PTY paste error: {e}");
-                                }
-                                return true;
-                            }
-                        }
-                    }
-                }
+        if paste
+            && let Some(id) = self.active_session_id
+            && let Some(session) = self.sessions.get_mut(&id)
+            && let Some(ref mut cb) = session.clipboard
+            && let Ok(text) = cb.get_text()
+            && !text.is_empty()
+        {
+            if let Err(e) = session.pty.write(text.as_bytes()) {
+                log::error!("PTY paste error: {e}");
             }
+            return true;
         }
 
         // ── Terminal scroll shortcuts (PageUp/Down/Home/End) ─────
         let no_ui_focus = !ctx.memory(|m| m.focused().is_some());
-        if no_ui_focus {
-            if let Some(id) = self.active_session_id {
-                if let Some(session) = self.sessions.get_mut(&id) {
-                    if !session.terminal.mode().contains(TermMode::ALT_SCREEN) {
-                        log::info!(
-                            "[dbg] keyboard: NOT alt_screen → consuming PageUp/Down for scrollback"
-                        );
-                        let rows = session.terminal.size().rows as i32;
-                        let mut scrolled = false;
-                        ctx.input(|input| {
-                            for event in &input.events {
-                                if let egui::Event::Key {
-                                    key, pressed: true, ..
-                                } = event
-                                {
-                                    match key {
-                                        egui::Key::PageUp => {
-                                            session.terminal.scroll_display(rows);
-                                            scrolled = true;
-                                        }
-                                        egui::Key::PageDown => {
-                                            session.terminal.scroll_display(-rows);
-                                            scrolled = true;
-                                        }
-                                        egui::Key::Home => {
-                                            session.terminal.scroll_to_top();
-                                            scrolled = true;
-                                        }
-                                        egui::Key::End => {
-                                            session.terminal.scroll_to_bottom();
-                                            scrolled = true;
-                                        }
-                                        _ => {}
-                                    }
+        if no_ui_focus
+            && let Some(id) = self.active_session_id
+            && let Some(session) = self.sessions.get_mut(&id)
+        {
+            if !session.terminal.mode().contains(TermMode::ALT_SCREEN) {
+                log::info!("[dbg] keyboard: NOT alt_screen → consuming PageUp/Down for scrollback");
+                let rows = session.terminal.size().rows as i32;
+                let mut scrolled = false;
+                ctx.input(|input| {
+                    for event in &input.events {
+                        if let egui::Event::Key {
+                            key, pressed: true, ..
+                        } = event
+                        {
+                            match key {
+                                egui::Key::PageUp => {
+                                    session.terminal.scroll_display(rows);
+                                    scrolled = true;
                                 }
+                                egui::Key::PageDown => {
+                                    session.terminal.scroll_display(-rows);
+                                    scrolled = true;
+                                }
+                                egui::Key::Home => {
+                                    session.terminal.scroll_to_top();
+                                    scrolled = true;
+                                }
+                                egui::Key::End => {
+                                    session.terminal.scroll_to_bottom();
+                                    scrolled = true;
+                                }
+                                _ => {}
                             }
-                        });
-                        if scrolled {
-                            session.terminal_dirty = true;
-                            // Consume the scroll keys so they aren't forwarded to the PTY.
-                            ctx.input_mut(|i| {
-                                i.events.retain(|e| {
-                                    !matches!(
-                                        e,
-                                        egui::Event::Key {
-                                            key: egui::Key::PageUp
-                                                | egui::Key::PageDown
-                                                | egui::Key::Home
-                                                | egui::Key::End,
-                                            pressed: true,
-                                            ..
-                                        }
-                                    )
-                                })
-                            });
-                            return true;
                         }
-                    } else {
-                        log::info!(
-                            "[dbg] keyboard: ALT_SCREEN active → PageUp/Down/Home/End will be forwarded to PTY"
-                        );
                     }
+                });
+                if scrolled {
+                    session.terminal_dirty = true;
+                    // Consume the scroll keys so they aren't forwarded to the PTY.
+                    ctx.input_mut(|i| {
+                        i.events.retain(|e| {
+                            !matches!(
+                                e,
+                                egui::Event::Key {
+                                    key: egui::Key::PageUp
+                                        | egui::Key::PageDown
+                                        | egui::Key::Home
+                                        | egui::Key::End,
+                                    pressed: true,
+                                    ..
+                                }
+                            )
+                        })
+                    });
+                    return true;
                 }
+            } else {
+                log::info!(
+                    "[dbg] keyboard: ALT_SCREEN active → PageUp/Down/Home/End will be forwarded to PTY"
+                );
             }
         }
 

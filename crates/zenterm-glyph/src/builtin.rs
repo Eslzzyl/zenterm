@@ -189,7 +189,7 @@ fn line_width(w: u32, _h: u32, underline_thickness: f32) -> u32 {
 }
 
 /// Set a single pixel in the buffer.
-fn set_pixel(buf: &mut [u8], w: u32, _h: u32, x: u32, y: u32, val: u8) {
+fn set_pixel(buf: &mut [u8], w: u32, x: u32, y: u32, val: u8) {
     let idx = (y * w + x) as usize;
     if idx < buf.len() {
         buf[idx] = val;
@@ -197,10 +197,10 @@ fn set_pixel(buf: &mut [u8], w: u32, _h: u32, x: u32, y: u32, val: u8) {
 }
 
 /// Draw a filled rectangle region.
-fn fill_region(buf: &mut [u8], buf_w: u32, _buf_h: u32, x: u32, y: u32, rw: u32, rh: u32, val: u8) {
+fn fill_region(buf: &mut [u8], buf_w: u32, x: u32, y: u32, rw: u32, rh: u32, val: u8) {
     for row in y..y + rh {
         for col in x..x + rw {
-            set_pixel(buf, buf_w, _buf_h, col, row, val);
+            set_pixel(buf, buf_w, col, row, val);
         }
     }
 }
@@ -214,7 +214,6 @@ fn draw_hline_segment(
     y: u32,
     length: u32,
     thickness: u32,
-    val: u8,
 ) {
     if length == 0 {
         return;
@@ -224,7 +223,7 @@ fn draw_hline_segment(
         if row < h {
             let end_x = (start_x + length).min(w);
             if start_x < end_x {
-                fill_region(buf, w, h, start_x, row, end_x - start_x, 1, val);
+                fill_region(buf, w, start_x, row, end_x - start_x, 1, 255);
             }
         }
     }
@@ -239,7 +238,6 @@ fn draw_vline_segment(
     start_y: u32,
     length: u32,
     thickness: u32,
-    val: u8,
 ) {
     if length == 0 {
         return;
@@ -249,20 +247,20 @@ fn draw_vline_segment(
         if col < w {
             let end_y = (start_y + length).min(h);
             if start_y < end_y {
-                fill_region(buf, w, h, col, start_y, 1, end_y - start_y, val);
+                fill_region(buf, w, col, start_y, 1, end_y - start_y, 255);
             }
         }
     }
 }
 
 /// Draw a horizontal line across the full width at row `y`.
-fn draw_hline(buf: &mut [u8], w: u32, h: u32, y: u32, thickness: u32, val: u8) {
-    draw_hline_segment(buf, w, h, 0, y, w, thickness, val);
+fn draw_hline(buf: &mut [u8], w: u32, h: u32, y: u32, thickness: u32) {
+    draw_hline_segment(buf, w, h, 0, y, w, thickness);
 }
 
 /// Draw a vertical line across the full height at column `x`.
-fn draw_vline(buf: &mut [u8], w: u32, h: u32, x: u32, thickness: u32, val: u8) {
-    draw_vline_segment(buf, w, h, x, 0, h, thickness, val);
+fn draw_vline(buf: &mut [u8], w: u32, h: u32, x: u32, thickness: u32) {
+    draw_vline_segment(buf, w, h, x, 0, h, thickness);
 }
 
 // ── Glyph generators ────────────────────────────────────────────────────
@@ -291,16 +289,16 @@ fn half_block(w: u32, h: u32, by: f32, which: Half) -> BuiltinGlyph {
     let mut data = vec![0u8; (w * h) as usize];
     match which {
         Half::Upper => {
-            fill_region(&mut data, w, h, 0, 0, w, h / 2, 255);
+            fill_region(&mut data, w, 0, 0, w, h / 2, 255);
         }
         Half::Lower => {
-            fill_region(&mut data, w, h, 0, h / 2, w, h - h / 2, 255);
+            fill_region(&mut data, w, 0, h / 2, w, h - h / 2, 255);
         }
         Half::Left => {
-            fill_region(&mut data, w, h, 0, 0, w / 2, h, 255);
+            fill_region(&mut data, w, 0, 0, w / 2, h, 255);
         }
         Half::Right => {
-            fill_region(&mut data, w, h, w / 2, 0, w - w / 2, h, 255);
+            fill_region(&mut data, w, w / 2, 0, w - w / 2, h, 255);
         }
     }
     builtin_result(w, h, by, data)
@@ -309,50 +307,50 @@ fn half_block(w: u32, h: u32, by: f32, which: Half) -> BuiltinGlyph {
 // ── Quadrant helpers ────────────────────────────────────────────────────
 
 fn quad_rect(w: u32, h: u32) -> (u32, u32) {
-    ((w + 1) / 2, (h + 1) / 2)
+    (w.div_ceil(2), h.div_ceil(2))
 }
 
 fn quadrant_lower_left(w: u32, h: u32, by: f32) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
-    fill_region(&mut data, w, h, 0, hh, hw, h - hh, 255);
+    fill_region(&mut data, w, 0, hh, hw, h - hh, 255);
     builtin_result(w, h, by, data)
 }
 
 fn quadrant_lower_right(w: u32, h: u32, by: f32) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
-    fill_region(&mut data, w, h, hw, hh, w - hw, h - hh, 255);
+    fill_region(&mut data, w, hw, hh, w - hw, h - hh, 255);
     builtin_result(w, h, by, data)
 }
 
 fn quadrant_upper_left(w: u32, h: u32, by: f32) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
-    fill_region(&mut data, w, h, 0, 0, hw, hh, 255);
+    fill_region(&mut data, w, 0, 0, hw, hh, 255);
     builtin_result(w, h, by, data)
 }
 
 fn quadrant_upper_right(w: u32, h: u32, by: f32) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
-    fill_region(&mut data, w, h, hw, 0, w - hw, hh, 255);
+    fill_region(&mut data, w, hw, 0, w - hw, hh, 255);
     builtin_result(w, h, by, data)
 }
 
 fn quadrant_two_diagonal(w: u32, h: u32, by: f32) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
-    fill_region(&mut data, w, h, 0, 0, hw, hh, 255); // UL
-    fill_region(&mut data, w, h, hw, hh, w - hw, h - hh, 255); // LR
+    fill_region(&mut data, w, 0, 0, hw, hh, 255); // UL
+    fill_region(&mut data, w, hw, hh, w - hw, h - hh, 255); // LR
     builtin_result(w, h, by, data)
 }
 
 fn quadrant_two_diagonal_mirror(w: u32, h: u32, by: f32) -> BuiltinGlyph {
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
-    fill_region(&mut data, w, h, hw, 0, w - hw, hh, 255); // UR
-    fill_region(&mut data, w, h, 0, hh, hw, h - hh, 255); // LL
+    fill_region(&mut data, w, hw, 0, w - hw, hh, 255); // UR
+    fill_region(&mut data, w, 0, hh, hw, h - hh, 255); // LL
     builtin_result(w, h, by, data)
 }
 
@@ -361,16 +359,16 @@ fn quadrant_three(w: u32, h: u32, by: f32, ul: bool, ur: bool, ll: bool, lr: boo
     let (hw, hh) = quad_rect(w, h);
     let mut data = vec![0u8; (w * h) as usize];
     if ul {
-        fill_region(&mut data, w, h, 0, 0, hw, hh, 255);
+        fill_region(&mut data, w, 0, 0, hw, hh, 255);
     }
     if ur {
-        fill_region(&mut data, w, h, hw, 0, w - hw, hh, 255);
+        fill_region(&mut data, w, hw, 0, w - hw, hh, 255);
     }
     if ll {
-        fill_region(&mut data, w, h, 0, hh, hw, h - hh, 255);
+        fill_region(&mut data, w, 0, hh, hw, h - hh, 255);
     }
     if lr {
-        fill_region(&mut data, w, h, hw, hh, w - hw, h - hh, 255);
+        fill_region(&mut data, w, hw, hh, w - hw, h - hh, 255);
     }
     builtin_result(w, h, by, data)
 }
@@ -383,7 +381,7 @@ fn hline(w: u32, h: u32, by: f32, heavy: bool, underline_thickness: f32) -> Buil
     let lw = line_width(w, h, underline_thickness);
     let sw = if heavy { lw * 2 } else { lw };
     let y = h / 2;
-    draw_hline(&mut data, w, h, y.saturating_sub(sw / 2), sw, 255);
+    draw_hline(&mut data, w, h, y.saturating_sub(sw / 2), sw);
     builtin_result(w, h, by, data)
 }
 
@@ -393,7 +391,7 @@ fn vline(w: u32, h: u32, by: f32, heavy: bool, underline_thickness: f32) -> Buil
     let lw = line_width(w, h, underline_thickness);
     let sw = if heavy { lw * 2 } else { lw };
     let x = w / 2;
-    draw_vline(&mut data, w, h, x.saturating_sub(sw / 2), sw, 255);
+    draw_vline(&mut data, w, h, x.saturating_sub(sw / 2), sw);
     builtin_result(w, h, by, data)
 }
 
@@ -432,23 +430,23 @@ fn corner(
     match which {
         Corner::DownRight => {
             // ┌: right horizontal + bottom vertical
-            draw_hline_segment(&mut data, w, h, x0, y0, w.saturating_sub(x0), sw, 255);
-            draw_vline_segment(&mut data, w, h, x0, y0, h.saturating_sub(y0), sw, 255);
+            draw_hline_segment(&mut data, w, h, x0, y0, w.saturating_sub(x0), sw);
+            draw_vline_segment(&mut data, w, h, x0, y0, h.saturating_sub(y0), sw);
         }
         Corner::DownLeft => {
             // ┐: left horizontal + bottom vertical
-            draw_hline_segment(&mut data, w, h, 0, y0, x1, sw, 255);
-            draw_vline_segment(&mut data, w, h, x0, y0, h.saturating_sub(y0), sw, 255);
+            draw_hline_segment(&mut data, w, h, 0, y0, x1, sw);
+            draw_vline_segment(&mut data, w, h, x0, y0, h.saturating_sub(y0), sw);
         }
         Corner::UpRight => {
             // └: right horizontal + top vertical
-            draw_hline_segment(&mut data, w, h, x0, y0, w.saturating_sub(x0), sw, 255);
-            draw_vline_segment(&mut data, w, h, x0, 0, y1, sw, 255);
+            draw_hline_segment(&mut data, w, h, x0, y0, w.saturating_sub(x0), sw);
+            draw_vline_segment(&mut data, w, h, x0, 0, y1, sw);
         }
         Corner::UpLeft => {
             // ┘: left horizontal + top vertical
-            draw_hline_segment(&mut data, w, h, 0, y0, x1, sw, 255);
-            draw_vline_segment(&mut data, w, h, x0, 0, y1, sw, 255);
+            draw_hline_segment(&mut data, w, h, 0, y0, x1, sw);
+            draw_vline_segment(&mut data, w, h, x0, 0, y1, sw);
         }
     }
     builtin_result(w, h, by, data)
@@ -487,23 +485,23 @@ fn t_junction(
     match ttype {
         TType::Left => {
             // ├: full vertical + right horizontal
-            draw_vline(&mut data, w, h, x0, sw, 255);
-            draw_hline_segment(&mut data, w, h, x0, y0, w.saturating_sub(x0), sw, 255);
+            draw_vline(&mut data, w, h, x0, sw);
+            draw_hline_segment(&mut data, w, h, x0, y0, w.saturating_sub(x0), sw);
         }
         TType::Right => {
             // ┤: full vertical + left horizontal
-            draw_vline(&mut data, w, h, x0, sw, 255);
-            draw_hline_segment(&mut data, w, h, 0, y0, x1, sw, 255);
+            draw_vline(&mut data, w, h, x0, sw);
+            draw_hline_segment(&mut data, w, h, 0, y0, x1, sw);
         }
         TType::Down => {
             // ┬: full horizontal + bottom vertical
-            draw_hline(&mut data, w, h, y0, sw, 255);
-            draw_vline_segment(&mut data, w, h, x0, y0, h.saturating_sub(y0), sw, 255);
+            draw_hline(&mut data, w, h, y0, sw);
+            draw_vline_segment(&mut data, w, h, x0, y0, h.saturating_sub(y0), sw);
         }
         TType::Up => {
             // ┴: full horizontal + top vertical
-            draw_hline(&mut data, w, h, y0, sw, 255);
-            draw_vline_segment(&mut data, w, h, x0, 0, y1, sw, 255);
+            draw_hline(&mut data, w, h, y0, sw);
+            draw_vline_segment(&mut data, w, h, x0, 0, y1, sw);
         }
     }
     builtin_result(w, h, by, data)
@@ -518,8 +516,8 @@ fn cross(w: u32, h: u32, by: f32, heavy: bool, underline_thickness: f32) -> Buil
     let sw = if heavy { lw * 2 } else { lw };
     let cx = w / 2;
     let cy = h / 2;
-    draw_hline(&mut data, w, h, cy.saturating_sub(sw / 2), sw, 255);
-    draw_vline(&mut data, w, h, cx.saturating_sub(sw / 2), sw, 255);
+    draw_hline(&mut data, w, h, cy.saturating_sub(sw / 2), sw);
+    draw_vline(&mut data, w, h, cx.saturating_sub(sw / 2), sw);
     builtin_result(w, h, by, data)
 }
 

@@ -805,17 +805,16 @@ fn render_background_section(ui: &mut egui::Ui, bg: &mut BackgroundConfig) {
                     .hint_text("Select or type a path…")
                     .desired_width(220.0),
             );
-            if ui.button("Browse…").clicked() {
-                if let Some(picked) = rfd::FileDialog::new()
+            if ui.button("Browse…").clicked()
+                && let Some(picked) = rfd::FileDialog::new()
                     .set_title("Select Background Image")
                     .add_filter(
                         "Images",
                         &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "ico"],
                     )
                     .pick_file()
-                {
-                    path = picked.display().to_string();
-                }
+            {
+                path = picked.display().to_string();
             }
         });
     });

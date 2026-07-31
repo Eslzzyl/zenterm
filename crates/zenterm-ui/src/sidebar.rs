@@ -221,7 +221,7 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                egui::Frame::popup(&*ctx.global_style())
+                egui::Frame::popup(&ctx.global_style())
                     .inner_margin(egui::Margin::symmetric(16, 12))
                     .show(ui, |ui| {
                         ui.set_min_width(280.0);

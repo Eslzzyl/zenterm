@@ -28,10 +28,10 @@ pub fn list_monospace_families() -> Vec<String> {
     let mut families: Vec<String> = Vec::new();
 
     for face in db.faces() {
-        if face.monospaced || is_monospaced_by_os2(&face.source, &mut seen_file) {
-            if let Some((name, _)) = face.families.first() {
-                families.push(name.clone());
-            }
+        if (face.monospaced || is_monospaced_by_os2(&face.source, &mut seen_file))
+            && let Some((name, _)) = face.families.first()
+        {
+            families.push(name.clone());
         }
     }
 

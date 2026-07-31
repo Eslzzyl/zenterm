@@ -8,6 +8,7 @@ use zenterm_render::glyph_type;
 ///
 /// Skips emission when the background matches `default_bg` (no-op
 /// optimisation), unless `force` is set (block cursor rendering).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_background_quad(
     instances: &mut Vec<CellInstance>,
     col: usize,

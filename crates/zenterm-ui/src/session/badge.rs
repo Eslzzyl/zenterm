@@ -49,7 +49,7 @@ pub fn render_badge(template: &str, session: &TerminalSession) -> String {
                     let resolved = resolve_var(&var_name, session);
                     result.push_str(&resolved);
                 }
-                Some(&(_, c)) if c == '\\' => {
+                Some(&(_, '\\')) => {
                     // Escaped backslash — emit single backslash.
                     chars.next();
                     result.push('\\');

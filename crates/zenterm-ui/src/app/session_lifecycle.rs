@@ -163,14 +163,15 @@ impl ZentermApp {
 
         // 3. Close workspaces that are now empty (keep at least one).
         for ws_id in &exit_ws_ids {
-            if let Some(ws) = self.workspaces.find_workspace(*ws_id) {
-                if ws.all_tab_ids().is_empty() && self.workspaces.workspaces.len() > 1 {
-                    log::info!(
-                        "handle_side_effects: workspace '{}' is empty, closing it",
-                        ws.name,
-                    );
-                    self.workspaces.close_workspace(*ws_id);
-                }
+            if let Some(ws) = self.workspaces.find_workspace(*ws_id)
+                && ws.all_tab_ids().is_empty()
+                && self.workspaces.workspaces.len() > 1
+            {
+                log::info!(
+                    "handle_side_effects: workspace '{}' is empty, closing it",
+                    ws.name,
+                );
+                self.workspaces.close_workspace(*ws_id);
             }
         }
 

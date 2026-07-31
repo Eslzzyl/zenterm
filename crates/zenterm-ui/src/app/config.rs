@@ -19,13 +19,14 @@ impl ZentermApp {
             return;
         }
         const DEBOUNCE_MS: u64 = 500;
-        if let Some(at) = self.last_config_save_at {
-            if at.elapsed() >= Duration::from_millis(DEBOUNCE_MS) {
-                if let Err(e) = self.config.save() {
-                    log::error!("failed to save config: {e}");
-                }
-                self.config_dirty = false;
+        if let Some(at) = self.last_config_save_at
+            && at.elapsed() >= Duration::from_millis(DEBOUNCE_MS)
+        {
+            match self.config.save() {
+                Ok(()) => self.config_dirty = false,
+                Err(e) => log::error!("failed to save config: {e}"),
             }
+            self.last_config_save_at = Some(Instant::now());
         }
     }
 

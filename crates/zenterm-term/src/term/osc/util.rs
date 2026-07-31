@@ -19,8 +19,7 @@ pub(super) fn base64_encode(input: &[u8]) -> String {
 ///
 /// Returns `(key, value)` if `s` contains `=`, otherwise `None`.
 pub(super) fn split_key_value(s: &str) -> Option<(&str, &str)> {
-    let mut parts = s.splitn(2, '=');
-    let key = parts.next()?;
-    let val = parts.next()?;
+    let (key, val) = s.split_once('=')?;
+
     Some((key, val))
 }

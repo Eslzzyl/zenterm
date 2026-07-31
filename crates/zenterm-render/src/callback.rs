@@ -272,16 +272,16 @@ impl CallbackTrait for TerminalWgpuCallback {
                     bg_data.width,
                     bg_data.height,
                 );
-                if let Ok(mut rp_guard) = self.render_pass.lock() {
-                    if let Some(ref mut rp) = *rp_guard {
-                        rp.update_background_texture(
-                            &self.device,
-                            &self.queue,
-                            &bg_data.data,
-                            bg_data.width,
-                            bg_data.height,
-                        );
-                    }
+                if let Ok(mut rp_guard) = self.render_pass.lock()
+                    && let Some(ref mut rp) = *rp_guard
+                {
+                    rp.update_background_texture(
+                        &self.device,
+                        &self.queue,
+                        &bg_data.data,
+                        bg_data.width,
+                        bg_data.height,
+                    );
                 }
                 self.shared.background_gen.fetch_add(1, Ordering::Release);
                 log::debug!("bg: prepare total took {:?}", _t0.elapsed());
@@ -301,31 +301,28 @@ impl CallbackTrait for TerminalWgpuCallback {
             let background_active = guard.background_active;
             drop(guard);
 
-            if !instances.is_empty() {
-                if let Ok(rp_guard) = self.render_pass.lock() {
-                    if let Some(ref rp) = *rp_guard {
-                        rp.update_instances(&self.queue, &instances);
-                        log::trace!(
-                            "callback prepare: uploaded {} instances (gen {})",
-                            instances.len(),
-                            current_gen,
-                        );
-                    } else {
-                        log::warn!(
-                            "callback prepare: render_pass is None, cannot upload instances"
-                        );
-                    }
+            if !instances.is_empty()
+                && let Ok(rp_guard) = self.render_pass.lock()
+            {
+                if let Some(ref rp) = *rp_guard {
+                    rp.update_instances(&self.queue, &instances);
+                    log::trace!(
+                        "callback prepare: uploaded {} instances (gen {})",
+                        instances.len(),
+                        current_gen,
+                    );
+                } else {
+                    log::warn!("callback prepare: render_pass is None, cannot upload instances");
                 }
             }
 
             // Pass atlas ranges and background_active to the render pass.
-            if !atlas_ranges.is_empty() || background_active {
-                if let Ok(mut rp_guard) = self.render_pass.lock() {
-                    if let Some(ref mut rp) = *rp_guard {
-                        rp.set_atlas_ranges(atlas_ranges);
-                        rp.set_background_active(background_active);
-                    }
-                }
+            if (!atlas_ranges.is_empty() || background_active)
+                && let Ok(mut rp_guard) = self.render_pass.lock()
+                && let Some(ref mut rp) = *rp_guard
+            {
+                rp.set_atlas_ranges(atlas_ranges);
+                rp.set_background_active(background_active);
             }
         } else {
             log::trace!(
@@ -353,10 +350,10 @@ impl CallbackTrait for TerminalWgpuCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         _callback_resources: &CallbackResources,
     ) {
-        if let Ok(rp_guard) = self.render_pass.lock() {
-            if let Some(ref rp) = *rp_guard {
-                rp.draw_to_pass(render_pass);
-            }
+        if let Ok(rp_guard) = self.render_pass.lock()
+            && let Some(ref rp) = *rp_guard
+        {
+            rp.draw_to_pass(render_pass);
         }
     }
 }

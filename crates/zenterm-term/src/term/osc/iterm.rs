@@ -81,11 +81,7 @@ pub(crate) fn parse_iterm_proprietary(payload: &str) -> Option<ITermProprietary>
         });
     }
 
-    let p1_empty = match p1 {
-        Some(v) if v.is_empty() => true,
-        None => true,
-        _ => false,
-    };
+    let p1_empty = matches!(p1, Some("") | None);
 
     // ── Copy=;base64data ───────────────────────────────────────────
     if parts.len() >= 2 && keyword == "Copy" && p1_empty {
@@ -102,50 +98,52 @@ pub(crate) fn parse_iterm_proprietary(payload: &str) -> Option<ITermProprietary>
     }
 
     // ── ReportVariable=base64name ──────────────────────────────────
-    if parts.len() == 1 && keyword == "ReportVariable" {
-        if let Some(v) = p1 {
-            let name = String::from_utf8(base64_decode(v.as_bytes()).ok()?).ok()?;
-            return Some(ITermProprietary::ReportVariable(name));
-        }
+    if parts.len() == 1
+        && keyword == "ReportVariable"
+        && let Some(v) = p1
+    {
+        let name = String::from_utf8(base64_decode(v.as_bytes()).ok()?).ok()?;
+        return Some(ITermProprietary::ReportVariable(name));
     }
 
     // ── SetUserVar=name=base64value ────────────────────────────────
-    if parts.len() == 1 && keyword == "SetUserVar" {
-        if let Some(v) = p1 {
-            let mut inner = v.splitn(2, '=');
-            let name = inner.next()?;
-            let b64_value = inner.next()?;
-            let value = String::from_utf8(base64_decode(b64_value.as_bytes()).ok()?).ok()?;
-            return Some(ITermProprietary::SetUserVar {
-                name: name.to_string(),
-                value,
-            });
-        }
+    if parts.len() == 1
+        && keyword == "SetUserVar"
+        && let Some(v) = p1
+    {
+        let (name, b64_value) = v.split_once('=')?;
+
+        let value = String::from_utf8(base64_decode(b64_value.as_bytes()).ok()?).ok()?;
+        return Some(ITermProprietary::SetUserVar {
+            name: name.to_string(),
+            value,
+        });
     }
 
     // ── UnicodeVersion=N / push [label] / pop [label] ─────────────
-    if parts.len() == 1 && keyword == "UnicodeVersion" {
-        if let Some(v) = p1 {
-            let mut inner = v.splitn(2, ' ');
-            let op = inner.next();
-            let label = inner.next().map(String::from);
-            match op {
-                Some("push") => {
+    if parts.len() == 1
+        && keyword == "UnicodeVersion"
+        && let Some(v) = p1
+    {
+        let mut inner = v.splitn(2, ' ');
+        let op = inner.next();
+        let label = inner.next().map(String::from);
+        match op {
+            Some("push") => {
+                return Some(ITermProprietary::UnicodeVersion(
+                    ITermUnicodeVersionOp::Push(label),
+                ));
+            }
+            Some("pop") => {
+                return Some(ITermProprietary::UnicodeVersion(
+                    ITermUnicodeVersionOp::Pop(label),
+                ));
+            }
+            _ => {
+                if let Ok(n) = v.parse::<u8>() {
                     return Some(ITermProprietary::UnicodeVersion(
-                        ITermUnicodeVersionOp::Push(label),
+                        ITermUnicodeVersionOp::Set(n),
                     ));
-                }
-                Some("pop") => {
-                    return Some(ITermProprietary::UnicodeVersion(
-                        ITermUnicodeVersionOp::Pop(label),
-                    ));
-                }
-                _ => {
-                    if let Ok(n) = v.parse::<u8>() {
-                        return Some(ITermProprietary::UnicodeVersion(
-                            ITermUnicodeVersionOp::Set(n),
-                        ));
-                    }
                 }
             }
         }
@@ -187,7 +185,7 @@ fn parse_iterm_file(parts: &[&str]) -> Option<ITermProprietary> {
         if idx == last {
             // Last element: split on `:` to extract base64 data.
             let colon = param.find(':')?;
-            data = Some(base64_decode(param[colon + 1..].as_bytes()).ok()?);
+            data = Some(base64_decode(&param.as_bytes()[colon + 1..]).ok()?);
             let args = &param[..colon];
             if !args.is_empty() {
                 insert_file_param(args, &mut params);

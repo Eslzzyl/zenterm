@@ -255,10 +255,10 @@ impl TerminalSession {
     /// 4. `"terminal"` — ultimate hardcoded fallback
     pub fn title_effective(&self) -> String {
         // ① Manual override
-        if let Some(ref t) = self.title_override {
-            if !t.is_empty() {
-                return t.clone();
-            }
+        if let Some(ref t) = self.title_override
+            && !t.is_empty()
+        {
+            return t.clone();
         }
 
         // ② Terminal / initial title (non-empty)
@@ -272,12 +272,11 @@ impl TerminalSession {
         }
 
         // ③ Inferred from cwd basename
-        if let Some(ref cwd) = self.cwd {
-            if let Some(name) = cwd.file_name().and_then(|n| n.to_str()) {
-                if !name.is_empty() {
-                    return name.to_string();
-                }
-            }
+        if let Some(ref cwd) = self.cwd
+            && let Some(name) = cwd.file_name().and_then(|n| n.to_str())
+            && !name.is_empty()
+        {
+            return name.to_string();
         }
 
         // ④ Ultimate fallback

@@ -79,7 +79,7 @@ pub enum ThemePreference {
 // ── Primary colours ────────────────────────────────────────────────────
 
 /// `[colors.primary]` — the two core terminal colours.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PrimaryColors {
     /// Default text colour (hex `"#rrggbb"`).
     pub foreground: Option<String>,
@@ -92,21 +92,10 @@ pub struct PrimaryColors {
     pub bright_foreground: Option<String>,
 }
 
-impl Default for PrimaryColors {
-    fn default() -> Self {
-        Self {
-            foreground: None,
-            background: None,
-            dim_foreground: None,
-            bright_foreground: None,
-        }
-    }
-}
-
 // ── Cursor colours ─────────────────────────────────────────────────────
 
 /// `[colors.cursor]` — colours for the terminal cursor.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CursorColors {
     /// Colour for the text under the cursor.  `"CellBackground"` means
     /// "use the cell's background colour" (inverse video).
@@ -116,19 +105,10 @@ pub struct CursorColors {
     pub cursor: Option<String>,
 }
 
-impl Default for CursorColors {
-    fn default() -> Self {
-        Self {
-            text: None,
-            cursor: None,
-        }
-    }
-}
-
 // ── Selection colours ──────────────────────────────────────────────────
 
 /// `[colors.selection]` — colours for selected text.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SelectionColors {
     /// Foreground colour of selected text.
     pub foreground: Option<String>,
@@ -136,20 +116,11 @@ pub struct SelectionColors {
     pub background: Option<String>,
 }
 
-impl Default for SelectionColors {
-    fn default() -> Self {
-        Self {
-            foreground: None,
-            background: None,
-        }
-    }
-}
-
 // ── ANSI 16-colour palette ─────────────────────────────────────────────
 
 /// The 8-colour ANSI palette (used for both `[colors.normal]` and
 /// `[colors.bright]`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AnsiColors {
     pub black: Option<String>,
     pub red: Option<String>,
@@ -159,21 +130,6 @@ pub struct AnsiColors {
     pub magenta: Option<String>,
     pub cyan: Option<String>,
     pub white: Option<String>,
-}
-
-impl Default for AnsiColors {
-    fn default() -> Self {
-        Self {
-            black: None,
-            red: None,
-            green: None,
-            yellow: None,
-            blue: None,
-            magenta: None,
-            cyan: None,
-            white: None,
-        }
-    }
 }
 
 // ── Conversion helpers ─────────────────────────────────────────────────

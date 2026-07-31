@@ -52,27 +52,24 @@ fn apply_metadata(meta: &HashMap<String, String>, acc: &mut KittyAccumulator) {
         match key.as_str() {
             "f" => {
                 // Application name — base64 encoded.
-                if let Ok(decoded) = base64_decode(value.as_bytes()) {
-                    if let Ok(s) = String::from_utf8(decoded) {
+                if let Ok(decoded) = base64_decode(value.as_bytes())
+                    && let Ok(s) = String::from_utf8(decoded) {
                         acc.app_name = Some(s);
                     }
-                }
             }
             "n" => {
                 // Icon name — base64 encoded.
-                if let Ok(decoded) = base64_decode(value.as_bytes()) {
-                    if let Ok(s) = String::from_utf8(decoded) {
+                if let Ok(decoded) = base64_decode(value.as_bytes())
+                    && let Ok(s) = String::from_utf8(decoded) {
                         acc.icon_names.push(s);
                     }
-                }
             }
             "t" => {
                 // Notification type — base64 encoded.
-                if let Ok(decoded) = base64_decode(value.as_bytes()) {
-                    if let Ok(s) = String::from_utf8(decoded) {
+                if let Ok(decoded) = base64_decode(value.as_bytes())
+                    && let Ok(s) = String::from_utf8(decoded) {
                         acc.notification_types.push(s);
                     }
-                }
             }
             "u" => {
                 acc.urgency = match value.as_str() {
@@ -90,11 +87,10 @@ fn apply_metadata(meta: &HashMap<String, String>, acc: &mut KittyAccumulator) {
             }
             "s" => {
                 // Sound name — base64 encoded.
-                if let Ok(decoded) = base64_decode(value.as_bytes()) {
-                    if let Ok(s) = String::from_utf8(decoded) {
+                if let Ok(decoded) = base64_decode(value.as_bytes())
+                    && let Ok(s) = String::from_utf8(decoded) {
                         acc.sound = Some(s);
                     }
-                }
             }
             "a" => {
                 // Actions: comma-separated, may have leading `-`.
@@ -115,12 +111,11 @@ fn apply_metadata(meta: &HashMap<String, String>, acc: &mut KittyAccumulator) {
                 // Auto-close timeout: -1 = default, 0 = never, >0 = ms.
                 acc.timeout_ms = value.parse::<i32>().unwrap_or(-1);
             }
-            "g" => {
+            "g"
                 // Icon cache identifier.
-                if is_valid_identifier(value) {
+                if is_valid_identifier(value) => {
                     acc.icon_g = Some(value.clone());
                 }
-            }
             _ => {
                 // Unknown keys are ignored per spec.
             }
@@ -209,10 +204,7 @@ impl KittyNotificationState {
                 self.accumulators.remove(id).unwrap_or_default()
             } else {
                 // Intermediate chunk: clone out, then re-insert after update.
-                self.accumulators
-                    .entry(id.clone())
-                    .or_insert_with(KittyAccumulator::default)
-                    .clone()
+                self.accumulators.entry(id.clone()).or_default().clone()
             }
         } else {
             // No identifier — this is a standalone notification.
@@ -243,28 +235,25 @@ impl KittyNotificationState {
                 }
             }
             Some("icon") => {
-                if is_base64 {
-                    if let Ok(icon_bytes) = base64_decode(data.as_bytes()) {
+                if is_base64
+                    && let Ok(icon_bytes) = base64_decode(data.as_bytes()) {
                         acc.icon_data = icon_bytes;
                         // Cache under `g` key if provided.
-                        if let Some(ref g) = acc.icon_g {
-                            if !g.is_empty() {
+                        if let Some(ref g) = acc.icon_g
+                            && !g.is_empty() {
                                 self.icon_cache.insert(g.clone(), acc.icon_data.clone());
                             }
-                        }
                     }
-                }
             }
-            Some("buttons") => {
+            Some("buttons")
                 // Buttons are separated by U+2028 (LINE SEPARATOR).
-                if !decoded_data.is_empty() {
+                if !decoded_data.is_empty() => {
                     acc.buttons = decoded_data
                         .split('\u{2028}')
                         .map(|s| s.to_string())
                         .filter(|s| !s.is_empty())
                         .collect();
                 }
-            }
             _ => {} // Unknown p= type — ignored per spec.
         }
 

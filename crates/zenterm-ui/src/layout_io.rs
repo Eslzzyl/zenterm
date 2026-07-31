@@ -19,7 +19,7 @@
 //! Write failure (permission denied, disk full) → log at `error`,
 //! leave the in-memory state untouched.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -54,6 +54,38 @@ pub struct PersistedWorkspace {
     pub name: String,
     /// The dock tree for this workspace.
     pub dock: DockState<SessionId>,
+}
+
+impl PersistedLayout {
+    /// Validate invariants that serde cannot express but the runtime relies on.
+    fn is_valid(&self) -> bool {
+        if self.workspaces.is_empty() {
+            return false;
+        }
+
+        let mut workspace_ids = HashSet::new();
+        let mut session_ids = HashSet::new();
+        let mut max_workspace_id = 0;
+        let mut max_session_id = 0;
+
+        for workspace in &self.workspaces {
+            if !workspace_ids.insert(workspace.id) {
+                return false;
+            }
+            max_workspace_id = max_workspace_id.max(workspace.id);
+
+            for (_, session_id) in workspace.dock.iter_all_tabs() {
+                if !session_ids.insert(session_id.0) {
+                    return false;
+                }
+                max_session_id = max_session_id.max(session_id.0);
+            }
+        }
+
+        workspace_ids.contains(&self.active_workspace_id)
+            && self.next_workspace_id > max_workspace_id
+            && self.next_session_id > max_session_id
+    }
 }
 
 /// Per-session metadata persisted across restarts.
@@ -121,7 +153,11 @@ impl LayoutIo {
             }
         };
         match serde_json::from_str::<PersistedLayout>(&content) {
-            Ok(p) if p.version == SCHEMA_VERSION => Some(p),
+            Ok(p) if p.version == SCHEMA_VERSION && p.is_valid() => Some(p),
+            Ok(p) if p.version == SCHEMA_VERSION => {
+                log::warn!("LayoutIo::load_layout: invalid workspace/session invariants; ignoring");
+                None
+            }
             Ok(p) => {
                 log::warn!(
                     "LayoutIo::load_layout: schema mismatch (file v{}, expected v{}); ignoring",
@@ -320,6 +356,21 @@ mod tests {
         let dir = tempdir();
         let io = LayoutIo::with_dir(dir);
         let json = r#"{"version":999}"#;
+        std::fs::write(io.dock_path(), json).unwrap();
+        assert!(io.load_layout().is_none());
+    }
+
+    #[test]
+    fn invalid_active_workspace_returns_none() {
+        let dir = tempdir();
+        let io = LayoutIo::with_dir(dir);
+        let json = r#"{
+            "version": 1,
+            "active_workspace_id": 99,
+            "next_session_id": 1,
+            "next_workspace_id": 1,
+            "workspaces": [{"id": 0, "name": "default", "dock": {"nodes": [], "tree": {}}}]
+        }"#;
         std::fs::write(io.dock_path(), json).unwrap();
         assert!(io.load_layout().is_none());
     }

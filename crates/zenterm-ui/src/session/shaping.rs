@@ -96,13 +96,12 @@ pub(crate) fn glyph_grid_num_cells(
         let col = run_start + ci;
         // If this char's right neighbour is a spacer, it's a wide
         // character (CJK / emoji) and contributes 2 cells.
-        if col + 1 < cols {
-            if let Some(next) = grid.cell(row, col + 1) {
-                if next.is_spacer {
-                    total += 2;
-                    continue;
-                }
-            }
+        if col + 1 < cols
+            && let Some(next) = grid.cell(row, col + 1)
+            && next.is_spacer
+        {
+            total += 2;
+            continue;
         }
         total += 1;
     }
@@ -140,12 +139,11 @@ pub(crate) fn detect_run_end(grid: &GridView, row: usize, start_col: usize, cols
     // that the per-char path handles them with the correct 2-cell width
     // (num_cells from is_spacer check).  If a wide char were part of a
     // ligature run, its strip would get 1-cell width instead.
-    if start_col + 1 < cols {
-        if let Some(next) = grid.cell(row, start_col + 1) {
-            if next.is_spacer {
-                return start_col + 1;
-            }
-        }
+    if start_col + 1 < cols
+        && let Some(next) = grid.cell(row, start_col + 1)
+        && next.is_spacer
+    {
+        return start_col + 1;
     }
 
     let mut col = start_col + 1;
@@ -166,12 +164,11 @@ pub(crate) fn detect_run_end(grid: &GridView, row: usize, start_col: usize, cols
         // neighbour is a spacer, the cell occupies 2 cells and must
         // form its own single-cell run so that the per-char path
         // handles it with the correct 2-cell width.
-        if col + 1 < cols {
-            if let Some(next) = grid.cell(row, col + 1) {
-                if next.is_spacer {
-                    break;
-                }
-            }
+        if col + 1 < cols
+            && let Some(next) = grid.cell(row, col + 1)
+            && next.is_spacer
+        {
+            break;
         }
         col += 1;
     }

@@ -91,7 +91,7 @@ impl KittyKeyboardFlags {
 ///
 /// These are determined by the terminal state (DEC modes) and user
 /// configuration, and are passed to [`InputMapper::map`] on each call.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct MappingOptions {
     /// DEC mode 1 — application cursor keys.
     ///
@@ -114,16 +114,6 @@ pub struct MappingOptions {
     /// using the progressive CSI-u format.  When `None` or all flags
     /// are zero, the classic xterm encoding is used.
     pub kitty_flags: Option<KittyKeyboardFlags>,
-}
-
-impl Default for MappingOptions {
-    fn default() -> Self {
-        Self {
-            app_cursor: false,
-            macos_option_as_alt: false,
-            kitty_flags: None,
-        }
-    }
 }
 
 impl MappingOptions {
@@ -165,33 +155,25 @@ impl InputMapper {
         // the progressive CSI-u encoder.  Text events are still passed
         // through as raw UTF-8 unless REPORT_ALL_KEYS_AS_ESCAPE_CODES
         // is set (in which case they are also intercepted).
-        if let Some(kitty_flags) = opts.kitty_flags {
-            if kitty_flags != KittyKeyboardFlags::NONE {
-                if let egui::Event::Key {
-                    key,
-                    physical_key: pk,
-                    pressed,
-                    repeat,
-                    modifiers,
-                    ..
-                } = event
-                {
-                    return encode_kitty(
-                        *key,
-                        *pk,
-                        *pressed,
-                        *repeat,
-                        *modifiers,
-                        kitty_flags,
-                        opts,
-                    );
-                }
-                // In REPORT_ALL mode we also encode Text events as CSI u.
-                if kitty_flags.contains(KittyKeyboardFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES) {
-                    if let egui::Event::Text(text) = event {
-                        return encode_kitty_text(text, kitty_flags, opts);
-                    }
-                }
+        if let Some(kitty_flags) = opts.kitty_flags
+            && kitty_flags != KittyKeyboardFlags::NONE
+        {
+            if let egui::Event::Key {
+                key,
+                physical_key: pk,
+                pressed,
+                repeat,
+                modifiers,
+                ..
+            } = event
+            {
+                return encode_kitty(*key, *pk, *pressed, *repeat, *modifiers, kitty_flags, opts);
+            }
+            // In REPORT_ALL mode we also encode Text events as CSI u.
+            if kitty_flags.contains(KittyKeyboardFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES)
+                && let egui::Event::Text(text) = event
+            {
+                return encode_kitty_text(text, kitty_flags, opts);
             }
         }
 
@@ -374,24 +356,22 @@ fn legacy_ctrl_fallback(event: &egui::Event, opts: &MappingOptions) -> Option<Ve
                 return Some(vec![code]);
             }
             // Try physical key fallback for non-Latin layouts.
-            if let Some(pk) = physical_key {
-                if pk != key {
-                    if let Some(code) = key_to_ctrl_code(pk) {
-                        return Some(vec![code]);
-                    }
-                }
+            if let Some(pk) = physical_key
+                && pk != key
+                && let Some(code) = key_to_ctrl_code(pk)
+            {
+                return Some(vec![code]);
             }
             // Ctrl+digit / Ctrl+symbol → extended C0 codes
             if let Some(code) = key_to_ctrl_extended(key) {
                 return Some(vec![code]);
             }
             // Try physical key fallback for extended codes too.
-            if let Some(pk) = physical_key {
-                if pk != key {
-                    if let Some(code) = key_to_ctrl_extended(pk) {
-                        return Some(vec![code]);
-                    }
-                }
+            if let Some(pk) = physical_key
+                && pk != key
+                && let Some(code) = key_to_ctrl_extended(pk)
+            {
+                return Some(vec![code]);
             }
         }
 
@@ -410,15 +390,14 @@ fn legacy_ctrl_fallback(event: &egui::Event, opts: &MappingOptions) -> Option<Ve
                     return Some(vec![0x1b, byte]);
                 }
                 // Try physical key fallback for Alt too.
-                if let Some(pk) = physical_key {
-                    if pk != key {
-                        if let Some(mut byte) = key_to_ascii(pk) {
-                            if shift {
-                                byte = byte.to_ascii_uppercase();
-                            }
-                            return Some(vec![0x1b, byte]);
-                        }
+                if let Some(pk) = physical_key
+                    && pk != key
+                    && let Some(mut byte) = key_to_ascii(pk)
+                {
+                    if shift {
+                        byte = byte.to_ascii_uppercase();
                     }
+                    return Some(vec![0x1b, byte]);
                 }
             }
         }

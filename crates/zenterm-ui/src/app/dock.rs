@@ -355,7 +355,7 @@ impl ZentermApp {
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
-                    egui::Frame::popup(&*ctx.global_style())
+                    egui::Frame::popup(&ctx.global_style())
                         .inner_margin(egui::Margin::symmetric(16, 12))
                         .show(ui, |ui| {
                             ui.set_min_width(280.0);
@@ -374,10 +374,10 @@ impl ZentermApp {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     if ui.button("OK").clicked() {
-                                        if !buf.is_empty() {
-                                            if let Some(s) = self.sessions.get_mut(&rename_id) {
-                                                s.title_override = Some(buf.clone());
-                                            }
+                                        if !buf.is_empty()
+                                            && let Some(s) = self.sessions.get_mut(&rename_id)
+                                        {
+                                            s.title_override = Some(buf.clone());
                                         }
                                         self.pending_rename = None;
                                         ui.ctx().data_mut(|d| {

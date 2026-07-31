@@ -226,12 +226,12 @@ pub(crate) fn process_ligature_run(
                         // stretch when advance > bitmap_width (e.g. narrow
                         // chars like 'i', 'l', '|' or contextual alternates
                         // with negative bearing).
-                        strip_w = (a_right - a_left) as f32;
+                        strip_w = a_right - a_left;
                     }
 
                     let mut v_min = (a_top + 0.5) / slot_size;
                     let mut v_max = (a_bot - 0.5) / slot_size;
-                    let glyph_h = (a_bot - a_top) as f32;
+                    let glyph_h = a_bot - a_top;
                     let sbx = sg.entry.bearing_x;
                     let sby = sg.entry.bearing_y;
 
@@ -261,7 +261,7 @@ pub(crate) fn process_ligature_run(
                         let r_top = (clipped_top - glyph_y_px) / scaled_h;
                         let r_bot = (clipped_bot - glyph_y_px) / scaled_h;
                         let v_range = v_max - v_min;
-                        v_min = v_min + v_range * r_top;
+                        v_min += v_range * r_top;
                         v_max = v_min + v_range * (r_bot - r_top);
                         glyph_y_px = clipped_top;
                         scaled_h = clipped_h;
@@ -280,7 +280,7 @@ pub(crate) fn process_ligature_run(
                         let r_left = (clipped_left - glyph_x_px) / scaled_w;
                         let r_right = (clipped_right - glyph_x_px) / scaled_w;
                         let u_range = u_max - u_min;
-                        u_min = u_min + u_range * r_left;
+                        u_min += u_range * r_left;
                         u_max = u_min + u_range * (r_right - r_left);
                         glyph_x_px = clipped_left;
                         scaled_w = clipped_w;

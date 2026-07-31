@@ -33,11 +33,15 @@ pub mod allocate;
 pub mod atlas_impl;
 pub mod builtin;
 pub mod font_list;
+mod image_atlas;
+mod metrics;
 pub mod rasterize;
 
 // All `impl GlyphAtlas` blocks live in sub-modules:
-// - `atlas_impl` — core methods (new, shaping, rasterization, accessors)
+// - `atlas_impl` — construction, shaping, and glyph rasterization
 // - `allocate`   — texture growth (`grow_atlas`)
+// - `metrics`    — font measurements and cell geometry
+// - `image_atlas` — image allocation and eviction
 // - `rasterize`  — low-level swash rasterization (`rasterize_swash`)
 
 /// The type of content stored in a glyph's atlas entry.

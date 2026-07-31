@@ -310,7 +310,7 @@ impl TerminalRenderPass {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &vs_module,
-                entry_point: Some("vs_main".into()),
+                entry_point: Some("vs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 buffers: &[
                     // Vertex buffer (per-vertex quad corners)
@@ -382,7 +382,7 @@ impl TerminalRenderPass {
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &fs_module,
-                entry_point: Some("fs_main".into()),
+                entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
@@ -459,7 +459,7 @@ impl TerminalRenderPass {
                 buf.extend_from_slice(
                     &data[row * unpadded as usize..(row + 1) * unpadded as usize],
                 );
-                buf.extend(std::iter::repeat(0u8).take(padding as usize));
+                buf.extend(std::iter::repeat_n(0u8, padding as usize));
             }
             buf
         } else {

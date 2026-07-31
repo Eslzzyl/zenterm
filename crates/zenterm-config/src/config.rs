@@ -27,7 +27,7 @@ use crate::window::WindowConfig;
 ///
 /// Every section is optional in TOML — missing sections fall back to
 /// [`Default`] values that mirror the original hardcoded behaviour.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub window: WindowConfig,
@@ -185,9 +185,25 @@ impl Config {
             })?;
         }
 
-        let content = toml::to_string_pretty(self).map_err(|e| ConfigError::Serialize(e))?;
-
-        fs::write(&path, &content).map_err(|e| ConfigError::Io { path, source: e })?;
+        let content = toml::to_string_pretty(self).map_err(ConfigError::Serialize)?;
+        let tmp_path = path.with_extension("tmp");
+        fs::write(&tmp_path, &content).map_err(|e| ConfigError::Io {
+            path: tmp_path.clone(),
+            source: e,
+        })?;
+        match fs::rename(&tmp_path, &path) {
+            Ok(()) => {}
+            Err(rename_error) if cfg!(windows) => {
+                let _ = fs::remove_file(&path);
+                fs::rename(&tmp_path, &path).map_err(|_| ConfigError::Io {
+                    path,
+                    source: rename_error,
+                })?;
+            }
+            Err(source) => {
+                return Err(ConfigError::Io { path, source });
+            }
+        }
 
         Ok(())
     }
@@ -219,23 +235,6 @@ impl Config {
     /// Returns `true` if any section differs from `other`.
     pub fn differs_from(&self, other: &Self) -> bool {
         self != other
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            window: WindowConfig::default(),
-            font: FontConfig::default(),
-            colors: ColorsConfig::default(),
-            cursor: CursorConfig::default(),
-            selection: SelectionConfig::default(),
-            mouse: MouseConfig::default(),
-            terminal: TerminalConfig::default(),
-            keyboard: KeyboardConfig::default(),
-            ui: UiConfig::default(),
-            background: BackgroundConfig::default(),
-        }
     }
 }
 
