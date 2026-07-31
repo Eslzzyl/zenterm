@@ -195,11 +195,8 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
     });
 
     // ── Rename dialog (modal, rendered outside the vertical layout) ──
-    let dialog_ws_id: Option<WorkspaceId> = ui.data(|d| {
-        d.get_temp::<u64>(DIALOG_WS_KEY.into())
-            .filter(|id| *id != 0)
-            .map(WorkspaceId)
-    });
+    let dialog_ws_id: Option<WorkspaceId> =
+        ui.data(|d| d.get_temp::<u64>(DIALOG_WS_KEY.into()).map(WorkspaceId));
 
     if let Some(ws_id) = dialog_ws_id {
         let buf_id = dialog_buf_key(ws_id);

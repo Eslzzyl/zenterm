@@ -135,8 +135,10 @@ impl ZentermApp {
                         self.mark_layout_dirty();
                     }
                     if let Some(ws_id) = queued_switch_ws {
-                        self.workspaces.switch_to(ws_id);
-                        self.mark_layout_dirty();
+                        if self.workspaces.switch_to(ws_id) {
+                            self.focus_first_tab_in_active_workspace();
+                            self.mark_layout_dirty();
+                        }
                     }
                     if queued_new_tab {
                         self.spawn_session();
@@ -146,24 +148,20 @@ impl ZentermApp {
                         self.mark_layout_dirty();
                     }
                     if let Some(ws_id) = queued_close_ws {
-                        // Collect sessions to close from the workspace.
-                        let sessions_to_close: Vec<SessionId> = self
-                            .workspaces
-                            .find_workspace(ws_id)
-                            .map(|ws| ws.all_tab_ids())
-                            .unwrap_or_default();
-                        self.workspaces.close_workspace(ws_id);
-                        for id in sessions_to_close {
-                            self.sessions.remove(&id);
+                        // `close_workspace` migrates its tabs into the
+                        // surviving workspace.  Keep those sessions alive;
+                        // the dock still owns their IDs after the move.
+                        if self.workspaces.close_workspace(ws_id) {
+                            let active_workspace_id = self.workspaces.active_workspace_id;
+                            let active_session_is_visible = self
+                                .active_session_id
+                                .and_then(|id| self.workspaces.find_tab_workspace(id))
+                                .is_some_and(|ws| ws.id == active_workspace_id);
+                            if !active_session_is_visible {
+                                self.focus_first_tab_in_active_workspace();
+                            }
+                            self.mark_layout_dirty();
                         }
-                        // Re-focus on the now-active workspace.
-                        self.active_session_id = self
-                            .workspaces
-                            .active_workspace()
-                            .all_tab_ids()
-                            .first()
-                            .copied();
-                        self.mark_layout_dirty();
                     }
                 });
         }
@@ -262,8 +260,10 @@ impl ZentermApp {
                 }
 
                 // ── Render tabs (nested scope to drop viewer early) ──
-                {
+                let dock_changed = {
                     let ws = self.workspaces.active_workspace_mut();
+                    let before = serde_json::to_vec(&ws.dock)
+                        .expect("DockState<SessionId> should serialize");
                     let mut area = DockArea::new(&mut ws.dock)
                         .style(style)
                         .show_close_buttons(self.config.ui.show_close_tab_button)
@@ -282,7 +282,14 @@ impl ZentermApp {
                         background_active: self.background_image_loaded,
                     };
                     area.show_inside(ui, &mut viewer);
-                } // viewer dropped → self.sessions borrow released
+                    let after = serde_json::to_vec(&ws.dock)
+                        .expect("DockState<SessionId> should serialize");
+                    before != after
+                }; // viewer dropped → self.sessions borrow released
+                if dock_changed {
+                    self.workspaces.active_workspace_mut().mark_changed();
+                    self.mark_layout_dirty();
+                }
 
                 // Paint terminal cells after DockArea. Cell geometry is
                 // limited to tab bodies, so it does not cover the bars.

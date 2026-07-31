@@ -296,13 +296,12 @@ impl WorkspaceManager {
 
         self.workspaces.remove(idx);
 
-        // Fix the active workspace pointer.
+        // Fix the active workspace pointer.  `migrate_to` is an index in
+        // the pre-removal vector; after removing the first workspace, its
+        // successor shifts into index 0.
         if self.active_workspace_id == id {
-            self.active_workspace_id = self
-                .workspaces
-                .get(migrate_to.min(self.workspaces.len() - 1))
-                .unwrap()
-                .id;
+            let active_index_after_remove = if idx == 0 { 0 } else { idx - 1 };
+            self.active_workspace_id = self.workspaces.get(active_index_after_remove).unwrap().id;
         }
 
         true
@@ -409,6 +408,44 @@ mod tests {
         let last_id = mgr.workspaces[0].id;
         assert!(!mgr.close_workspace(last_id));
         assert_eq!(mgr.workspaces.len(), 1);
+    }
+
+    #[test]
+    fn close_first_active_workspace_selects_migration_target() {
+        let mut mgr = WorkspaceManager::new();
+        let first_id = mgr.active_workspace_id;
+        let first_tab = mgr.new_session_id();
+        mgr.active_workspace_mut().new_tab(first_tab);
+
+        let second_id = mgr.create_workspace("second");
+        let second_tab = mgr.new_session_id();
+        mgr.active_workspace_mut().new_tab(second_tab);
+
+        let third_id = mgr.create_workspace("third");
+        let third_tab = mgr.new_session_id();
+        mgr.active_workspace_mut().new_tab(third_tab);
+
+        mgr.switch_to(first_id);
+        assert!(mgr.close_workspace(first_id));
+
+        assert_eq!(mgr.active_workspace_id, second_id);
+        assert_eq!(mgr.workspaces.len(), 2);
+        assert!(
+            mgr.find_workspace(second_id)
+                .unwrap()
+                .all_tab_ids()
+                .contains(&first_tab)
+        );
+        assert!(
+            mgr.find_workspace(second_id)
+                .unwrap()
+                .all_tab_ids()
+                .contains(&second_tab)
+        );
+        assert_eq!(
+            mgr.find_workspace(third_id).unwrap().all_tab_ids(),
+            vec![third_tab]
+        );
     }
 
     #[test]

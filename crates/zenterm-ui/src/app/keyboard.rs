@@ -189,12 +189,7 @@ impl ZentermApp {
         {
             let ws_id = ws.id;
             self.workspaces.switch_to(ws_id);
-            self.active_session_id = self
-                .workspaces
-                .active_workspace()
-                .all_tab_ids()
-                .first()
-                .copied();
+            self.focus_first_tab_in_active_workspace();
             self.mark_layout_dirty();
             return true;
         }
@@ -210,12 +205,7 @@ impl ZentermApp {
                 let new_idx = ((current_idx as isize + dir).rem_euclid(len as isize)) as usize;
                 let ws_id = self.workspaces.workspaces[new_idx].id;
                 self.workspaces.switch_to(ws_id);
-                self.active_session_id = self
-                    .workspaces
-                    .active_workspace()
-                    .all_tab_ids()
-                    .first()
-                    .copied();
+                self.focus_first_tab_in_active_workspace();
                 self.mark_layout_dirty();
                 return true;
             }

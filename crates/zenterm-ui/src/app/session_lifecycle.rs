@@ -61,6 +61,18 @@ impl ZentermApp {
         self.mark_layout_dirty();
     }
 
+    /// Focus the first tab in the active workspace, or clear focus when it
+    /// has no tabs.  Workspace changes must update both pieces of state:
+    /// the dock selection and the session used for keyboard input.
+    pub(crate) fn focus_first_tab_in_active_workspace(&mut self) {
+        self.active_session_id = self
+            .workspaces
+            .active_workspace()
+            .all_tab_ids()
+            .first()
+            .copied();
+    }
+
     /// Switch the active tab to the given `(node, tab)` pair in the
     /// active workspace.
     #[allow(dead_code)]
@@ -173,6 +185,15 @@ impl ZentermApp {
                 );
                 self.workspaces.close_workspace(*ws_id);
             }
+        }
+
+        let active_workspace_id = self.workspaces.active_workspace_id;
+        let active_session_is_visible = self
+            .active_session_id
+            .and_then(|id| self.workspaces.find_tab_workspace(id))
+            .is_some_and(|ws| ws.id == active_workspace_id);
+        if !active_session_is_visible {
+            self.focus_first_tab_in_active_workspace();
         }
 
         // 4. If no workspace has any tabs left, close the application.
