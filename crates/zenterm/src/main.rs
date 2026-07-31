@@ -33,10 +33,20 @@ fn main() -> eframe::Result<()> {
     // Estimate a window size that accommodates the desired terminal grid.
     let initial_size = estimate_window_size(&config);
 
+    // Embed the platform-neutral icon so `cargo run` uses the same artwork as
+    // packaged builds. Platform-specific installers derive their native icon
+    // formats from this asset.
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/runtime/zenterm.png"
+    )))
+    .expect("embedded application icon must be a valid PNG");
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(initial_size)
             .with_title(&config.window.title)
+            .with_icon(icon)
             .with_decorations(config.window.decorations)
             .with_transparent(false)
             .with_resizable(true),

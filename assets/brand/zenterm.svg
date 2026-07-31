@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Zenterm application icon</title>
+  <desc>A minimal terminal prompt and underline cursor on a light background.</desc>
+  <rect width="1024" height="1024" fill="#B8D3DC"/>
+  <g transform="translate(52 0)">
+    <path d="M220 380L370 512 220 644" fill="none" stroke="#26323A" stroke-width="88" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M480 644H700" fill="none" stroke="#26323A" stroke-width="88" stroke-linecap="square"/>
+  </g>
+</svg>

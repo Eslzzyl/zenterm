@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Zenterm
+Exec=zenterm
+Icon=org.eu.eslzzyl.zenterm
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupNotify=true

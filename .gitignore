@@ -1,3 +1,4 @@
 /target
+.venv/
 debug.log
 .DS_Store
