@@ -171,8 +171,12 @@ impl<'a> TabViewer for TabViewerContext<'a> {
                 (sel.b() * 255.0).round().clamp(0.0, 255.0) as u8,
                 (sel.a() * 255.0).round().clamp(0.0, 255.0) as u8,
             );
-            ui.painter()
-                .rect_stroke(cell_rect, 0.0, Stroke::new(1.0, accent), StrokeKind::Inside);
+            ui.painter().rect_stroke(
+                cell_rect,
+                0.0,
+                Stroke::new(1.0_f32, accent),
+                StrokeKind::Inside,
+            );
         }
     }
 

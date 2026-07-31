@@ -145,7 +145,7 @@ impl Config {
 
         let config: Config = toml::from_str(&content).map_err(|e| ConfigError::Parse {
             path: path.clone(),
-            source: e,
+            source: Box::new(e),
         })?;
 
         log::info!("loaded config from {:?}", path);
@@ -256,7 +256,7 @@ pub enum ConfigError {
     Parse {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
 
     /// TOML serialisation error (should not happen in practice).

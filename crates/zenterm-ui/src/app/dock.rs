@@ -182,7 +182,7 @@ impl ZentermApp {
                 // Set the shared dock viewport on every session so
                 // `update_cell_instances` uses it for clip-space
                 // conversion.
-                for (_, session) in self.sessions.iter_mut() {
+                for session in self.sessions.values_mut() {
                     session.set_dock_viewport(dock_origin_px, dock_size_px);
                 }
 
@@ -286,7 +286,7 @@ impl ZentermApp {
                 // 2 seconds.  Painted after the wgpu callback so it
                 // appears on top of the terminal content.
                 let ppp = ui.ctx().pixels_per_point();
-                for (_, session) in self.sessions.iter() {
+                for session in self.sessions.values() {
                     if session.last_resize_at.is_some() {
                         let rect = egui::Rect::from_min_size(
                             egui::pos2(
@@ -305,7 +305,7 @@ impl ZentermApp {
                 // ── Badge overlay (OSC 1337 SetBadgeFormat) ────────────
                 // Renders a large text label in the top-right corner of
                 // each session's viewport.
-                for (_, session) in self.sessions.iter() {
+                for session in self.sessions.values() {
                     if let Some(ref template) = session.badge_format {
                         let text = crate::session::render_badge(template, session);
                         if !text.is_empty() {

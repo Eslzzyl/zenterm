@@ -208,24 +208,47 @@ pub fn find_font_path(db: &fontdb::Database, family_name: &str) -> Option<std::p
 mod tests {
     use super::*;
 
+    fn default_test_family(families: &[String]) -> String {
+        if cfg!(target_os = "windows") {
+            "Consolas".into()
+        } else if cfg!(target_os = "macos") {
+            "Menlo".into()
+        } else {
+            families
+                .first()
+                .cloned()
+                .expect("expected at least one monospace font")
+        }
+    }
+
     #[test]
     fn monospace_list_is_nonempty() {
         let families = list_monospace_families();
         assert!(!families.is_empty(), "expected at least one monospace font");
-        // macOS always ships Menlo.
-        assert!(
-            families.iter().any(|f| f.contains("Menlo")),
-            "Menlo should be present on macOS: {:?}",
-            families
-        );
+
+        if cfg!(target_os = "windows") {
+            assert!(
+                families.iter().any(|f| f == "Consolas"),
+                "Consolas should be present on Windows: {:?}",
+                families
+            );
+        } else if cfg!(target_os = "macos") {
+            assert!(
+                families.iter().any(|f| f == "Menlo"),
+                "Menlo should be present on macOS: {:?}",
+                families
+            );
+        }
     }
 
     #[test]
     fn find_font_path_works() {
+        let families = list_monospace_families();
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
-        let path = find_font_path(&db, "Menlo");
-        assert!(path.is_some(), "Menlo should have a file path");
+        let family = default_test_family(&families);
+        let path = find_font_path(&db, &family);
+        assert!(path.is_some(), "{family} should have a file path");
         assert!(
             path.as_ref().unwrap().exists(),
             "path should exist: {:?}",
@@ -235,11 +258,20 @@ mod tests {
 
     #[test]
     fn find_font_source_has_correct_index() {
+        let families = list_monospace_families();
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
-        let src = find_font_source(&db, "Menlo");
-        assert!(src.is_some(), "Menlo should have a font source");
-        // Menlo.ttc normally has Regular at index 0.
-        assert_eq!(src.unwrap().index, 0, "Menlo Regular should be index 0");
+        let family = default_test_family(&families);
+        let src = find_font_source(&db, &family);
+        assert!(src.is_some(), "{family} should have a font source");
+
+        let src = src.unwrap();
+        let data = std::fs::read(&src.path).expect("font source should be readable");
+        let face = ttf_parser::Face::parse(&data, src.index)
+            .expect("font source should contain the selected face");
+        assert!(
+            face.units_per_em() > 0,
+            "selected face should have valid metrics"
+        );
     }
 }

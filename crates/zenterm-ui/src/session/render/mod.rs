@@ -262,7 +262,7 @@ impl TerminalSession {
                         start_col,
                         end_col,
                         link.as_str(),
-                        &line,
+                        line,
                     );
                     self.url_spans.push(UrlSpan {
                         row: r,

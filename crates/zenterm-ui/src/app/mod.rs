@@ -322,7 +322,7 @@ impl eframe::App for ZentermApp {
         // 0.5. DPI change.
         let current_ppp = ctx.pixels_per_point();
         if (current_ppp - self.pixels_per_point).abs() > 0.01 {
-            for (_, session) in self.sessions.iter_mut() {
+            for session in self.sessions.values_mut() {
                 session.reinit_for_dpi(current_ppp, self.config.font.ligatures);
             }
             self.pixels_per_point = current_ppp;
@@ -358,7 +358,7 @@ impl eframe::App for ZentermApp {
         // elapsed time since `blink_epoch`, so no per-frame state is
         // needed — the timer merely ensures we wake up to re-render when
         // the phase toggles.
-        for (_, session) in self.sessions.iter_mut() {
+        for session in self.sessions.values_mut() {
             let blinking = session.terminal.cursor().style.blinking
                 && !matches!(
                     session.terminal.cursor().style.shape,

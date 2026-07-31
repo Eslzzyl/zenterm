@@ -151,20 +151,18 @@ pub(crate) fn scan_oscs_with_remainder(bytes: &[u8]) -> (Vec<OscMatch>, Option<u
 fn find_terminator(tail: &[u8]) -> Option<usize> {
     let mut j = 0;
     loop {
-        match memchr2(0x07, 0x1B, &tail[j..]) {
-            Some(off) => {
-                let abs = j + off;
-                if tail[abs] == 0x07 {
-                    return Some(abs);
-                }
-                // `0x1B` — possible ST start.
-                if abs + 1 < tail.len() && tail[abs + 1] == b'\\' {
-                    return Some(abs);
-                }
-                // Stray ESC — skip past it.
-                j = abs + 1;
+        {
+            let off = memchr2(0x07, 0x1B, &tail[j..])?;
+            let abs = j + off;
+            if tail[abs] == 0x07 {
+                return Some(abs);
             }
-            None => return None,
+            // `0x1B` — possible ST start.
+            if abs + 1 < tail.len() && tail[abs + 1] == b'\\' {
+                return Some(abs);
+            }
+            // Stray ESC — skip past it.
+            j = abs + 1;
         }
     }
 }

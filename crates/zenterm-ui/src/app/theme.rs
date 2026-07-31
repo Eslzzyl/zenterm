@@ -77,7 +77,7 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
             Color32::from_rgb(235, 235, 235)
         },
         window_corner_radius: CornerRadius::same(8),
-        window_stroke: Stroke::new(1.0, border),
+        window_stroke: Stroke::new(1.0_f32, border),
         window_highlight_topmost: true,
         menu_corner_radius: CornerRadius::same(6),
         popup_shadow: egui::Shadow {
@@ -93,7 +93,7 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
                 accent.b(),
                 if dark_mode { 55 } else { 40 },
             ),
-            stroke: Stroke::new(1.0, text_color),
+            stroke: Stroke::new(1.0_f32, text_color),
         },
         weak_text_alpha: 0.65,
         weak_text_color: Some(weak_text),
@@ -105,40 +105,40 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
             noninteractive: egui::style::WidgetVisuals {
                 weak_bg_fill: Color32::TRANSPARENT,
                 bg_fill: ui_bg,
-                bg_stroke: Stroke::new(1.0, border),
-                fg_stroke: Stroke::new(1.0, text_color),
+                bg_stroke: Stroke::new(1.0_f32, border),
+                fg_stroke: Stroke::new(1.0_f32, text_color),
                 corner_radius: rounding,
                 expansion: 0.0,
             },
             inactive: egui::style::WidgetVisuals {
                 weak_bg_fill: Color32::TRANSPARENT,
                 bg_fill: ui_bg,
-                bg_stroke: Stroke::new(1.0, border),
-                fg_stroke: Stroke::new(1.0, text_color),
+                bg_stroke: Stroke::new(1.0_f32, border),
+                fg_stroke: Stroke::new(1.0_f32, text_color),
                 corner_radius: rounding,
                 expansion: 0.0,
             },
             hovered: egui::style::WidgetVisuals {
                 weak_bg_fill: Color32::TRANSPARENT,
                 bg_fill: hover_bg,
-                bg_stroke: Stroke::new(1.0, accent),
-                fg_stroke: Stroke::new(1.5, text_color),
+                bg_stroke: Stroke::new(1.0_f32, accent),
+                fg_stroke: Stroke::new(1.5_f32, text_color),
                 corner_radius: small_rounding,
                 expansion: 1.0,
             },
             active: egui::style::WidgetVisuals {
                 weak_bg_fill: Color32::TRANSPARENT,
                 bg_fill: active_bg,
-                bg_stroke: Stroke::new(1.0, accent),
-                fg_stroke: Stroke::new(2.0, text_color),
+                bg_stroke: Stroke::new(1.0_f32, accent),
+                fg_stroke: Stroke::new(2.0_f32, text_color),
                 corner_radius: small_rounding,
                 expansion: 0.0,
             },
             open: egui::style::WidgetVisuals {
                 weak_bg_fill: Color32::TRANSPARENT,
                 bg_fill: open_bg,
-                bg_stroke: Stroke::new(1.0, accent),
-                fg_stroke: Stroke::new(1.0, text_color),
+                bg_stroke: Stroke::new(1.0_f32, accent),
+                fg_stroke: Stroke::new(1.0_f32, text_color),
                 corner_radius: rounding,
                 expansion: 0.0,
             },
@@ -190,7 +190,7 @@ impl ZentermApp {
             self.last_system_dark = system_dark;
             self.default_bg = theme_bg_to_color32(&new_theme);
             let scheme = ColorScheme::from_theme(&new_theme);
-            for (_, session) in self.sessions.iter_mut() {
+            for session in self.sessions.values_mut() {
                 session.terminal.set_scheme(scheme.clone());
                 session.default_bg = self.default_bg;
                 session.terminal_dirty = true;

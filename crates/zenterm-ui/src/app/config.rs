@@ -92,7 +92,7 @@ impl ZentermApp {
 
         if changes.colors {
             let scheme = ColorScheme::from_theme(&self.theme);
-            for (_, session) in self.sessions.iter_mut() {
+            for session in self.sessions.values_mut() {
                 session.terminal.set_scheme(scheme.clone());
                 session.default_bg = self.default_bg;
             }
@@ -100,14 +100,14 @@ impl ZentermApp {
 
         // Propagate selection config changes.
         if changes.selection {
-            for (_, session) in self.sessions.iter_mut() {
+            for session in self.sessions.values_mut() {
                 session.save_to_clipboard = self.config.selection.save_to_clipboard;
             }
         }
 
         // Apply per-session config changes.
         if changes.font || changes.cursor || changes.colors {
-            for (_, session) in self.sessions.iter_mut() {
+            for session in self.sessions.values_mut() {
                 session
                     .apply_config_change(self.config.font.size, self.config.cursor.blink_interval);
                 session.terminal_dirty = true;
@@ -130,7 +130,7 @@ impl ZentermApp {
             );
             self.atlas.seed_ascii();
             self.atlas.sync_to_gpu();
-            for (_, session) in self.sessions.iter_mut() {
+            for session in self.sessions.values_mut() {
                 session.cell_width = cw;
                 session.cell_height = ch;
             }

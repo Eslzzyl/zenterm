@@ -129,7 +129,7 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
                     ui.painter().rect_stroke(
                         card_rect,
                         corner_radius,
-                        egui::Stroke::new(1.0, border_color),
+                        egui::Stroke::new(1.0_f32, border_color),
                         egui::StrokeKind::Inside,
                     );
 
