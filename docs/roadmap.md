@@ -65,7 +65,7 @@
     - Workspace abstraction: `WorkspaceManager` with named workspace grouping
     - Sidebar shows workspace → tab tree (hierarchical, not flat)
     - Workspace operations: create, rename (double-click or context menu), switch, close
-    - Close workspace migrates tabs to another workspace
+    - Close workspace closes all tabs owned by it
     - Auto-naming based on current directory
     - Keyboard shortcuts: `Ctrl+1..9` switch by index, `Ctrl+Tab` cycle
     - Session restoration: all persisted tabs are re-created on startup

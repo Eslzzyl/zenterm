@@ -148,10 +148,20 @@ impl ZentermApp {
                         self.mark_layout_dirty();
                     }
                     if let Some(ws_id) = queued_close_ws {
-                        // `close_workspace` migrates its tabs into the
-                        // surviving workspace.  Keep those sessions alive;
-                        // the dock still owns their IDs after the move.
+                        let sessions_to_close = self
+                            .workspaces
+                            .find_workspace(ws_id)
+                            .map(|ws| ws.all_tab_ids())
+                            .unwrap_or_default();
                         if self.workspaces.close_workspace(ws_id) {
+                            // Closing a workspace also closes every session
+                            // that was owned by it.  Only remove sessions
+                            // after the manager confirms the workspace was
+                            // actually removed, so closing the last workspace
+                            // remains a no-op.
+                            for id in sessions_to_close {
+                                self.sessions.remove(&id);
+                            }
                             let active_workspace_id = self.workspaces.active_workspace_id;
                             let active_session_is_visible = self
                                 .active_session_id

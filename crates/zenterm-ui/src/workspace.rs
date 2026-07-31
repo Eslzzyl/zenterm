@@ -264,10 +264,8 @@ impl WorkspaceManager {
         }
     }
 
-    /// Close a workspace.  Tabs in the closed workspace are migrated
-    /// to the previous workspace (or the next one if it was the first).
-    /// The active workspace pointer is updated if the closed workspace
-    /// was active.
+    /// Close a workspace and discard all tabs owned by it.  The active
+    /// workspace pointer is updated if the closed workspace was active.
     ///
     /// Returns `false` if there is only one workspace left (refuse to
     /// close the last one) or the id was not found.
@@ -280,25 +278,10 @@ impl WorkspaceManager {
             None => return false,
         };
 
-        // Determine where to migrate tabs.
-        let migrate_to = if idx > 0 { idx - 1 } else { idx + 1 };
-
-        // Collect session ids from the workspace being closed.
-        let tabs: Vec<SessionId> = self.workspaces[idx].all_tab_ids();
-
-        // Migrate tabs into the target workspace.
-        for tab_id in tabs {
-            self.workspaces[migrate_to]
-                .dock
-                .push_to_focused_leaf(tab_id);
-            self.workspaces[migrate_to].mark_changed();
-        }
-
         self.workspaces.remove(idx);
 
-        // Fix the active workspace pointer.  `migrate_to` is an index in
-        // the pre-removal vector; after removing the first workspace, its
-        // successor shifts into index 0.
+        // Fix the active workspace pointer.  After removing the first
+        // workspace, its successor shifts into index 0.
         if self.active_workspace_id == id {
             let active_index_after_remove = if idx == 0 { 0 } else { idx - 1 };
             self.active_workspace_id = self.workspaces.get(active_index_after_remove).unwrap().id;
@@ -381,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn close_workspace_migrates_tabs() {
+    fn close_workspace_drops_tabs() {
         let mut mgr = WorkspaceManager::new();
         let ws0_id = mgr.workspaces[0].id;
         let dev_id = mgr.create_workspace("dev");
@@ -396,10 +379,10 @@ mod tests {
         assert_eq!(mgr.workspaces.len(), 1);
         assert_eq!(mgr.active_workspace_id, ws0_id);
 
-        // Tabs should have migrated to "default".
+        // Tabs from the closed workspace must not appear in the survivor.
         let tabs = mgr.active_workspace().all_tab_ids();
-        assert!(tabs.contains(&s1));
-        assert!(tabs.contains(&s2));
+        assert!(!tabs.contains(&s1));
+        assert!(!tabs.contains(&s2));
     }
 
     #[test]
@@ -411,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn close_first_active_workspace_selects_migration_target() {
+    fn close_first_active_workspace_selects_next_workspace() {
         let mut mgr = WorkspaceManager::new();
         let first_id = mgr.active_workspace_id;
         let first_tab = mgr.new_session_id();
@@ -434,14 +417,9 @@ mod tests {
             mgr.find_workspace(second_id)
                 .unwrap()
                 .all_tab_ids()
-                .contains(&first_tab)
-        );
-        assert!(
-            mgr.find_workspace(second_id)
-                .unwrap()
-                .all_tab_ids()
                 .contains(&second_tab)
         );
+        assert!(!mgr.all_tab_ids().contains(&first_tab));
         assert_eq!(
             mgr.find_workspace(third_id).unwrap().all_tab_ids(),
             vec![third_tab]
