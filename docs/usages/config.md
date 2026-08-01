@@ -19,7 +19,6 @@ Controls the appearance and initial size of the terminal window.
 | `padding` | `{ x, y }` | `{ x = 8, y = 6 }` | Inner padding between the window edge and the terminal grid, in logical pixels at 1× DPI. |
 | `title` | `string` | `"Zenterm"` | Window title. The terminal can override this via OSC 0 / OSC 2 escape sequences. |
 | `decorations` | `bool` | `true` | Show window decorations (title bar + borders). |
-| `startup_mode` | `string` | `"Windowed"` | Initial window state. One of: `"Windowed"`, `"Maximized"`, `"Fullscreen"`. |
 
 ### Example
 
@@ -29,7 +28,6 @@ dimensions = { columns = 120, lines = 40 }
 padding = { x = 4, y = 4 }
 title = "Terminal"
 decorations = true
-startup_mode = "Maximized"
 ```
 
 ---
@@ -68,18 +66,15 @@ image_mode = "Cover"
 
 ## `[font]` — Font settings
 
-Configure the typeface, size, and spacing.
+Configure the typeface and rendering.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `size` | `float` | `18.0` | Font size in **logical pixels at 1× DPI**. On a standard display a value of `18.0` produces an 18 px font; on a 2× Retina display it produces 36 px. Roughly equivalent to 13.5 pt at 96 DPI. |
 | `normal` | `{ family, style? }` | platform-dependent¹ | The regular (normal-weight) font face. |
-| `bold` | `{ family?, style? }` | — | Bold font face. Falls back to `normal` when absent. |
-| `italic` | `{ family?, style? }` | — | Italic font face. Falls back to `normal` when absent. |
-| `bold_italic` | `{ family?, style? }` | — | Bold-italic font face. Falls back to `normal` when absent. |
-| `offset` | `{ x, y }` | `{ x = 0, y = 0 }` | Extra horizontal / vertical spacing applied to every character, in logical pixels at 1× DPI. |
-| `glyph_offset` | `{ x, y }` | `{ x = 0, y = 0 }` | Per-glyph offset within each cell, in logical pixels at 1× DPI. |
-| `builtin_box_drawing` | `bool` | `true` | Use the built-in software renderer for box-drawing characters (U+2500–U+257F) and block elements (U+2580–U+259F). When `false` these code points are looked up from the configured font like any other character. |
+| `ligatures` | `bool` | `true` | Enable OpenType ligature features (`liga`, `clig`). |
+| `hinting` | `string` | `"Auto"` | Font hinting mode. One of: `"None"` (smoothest), `"Auto"` (low-DPI only), `"Full"` (sharpest). |
+| `render_mode` | `string` | `"Subpixel"` | Anti-aliasing mode. One of: `"Subpixel"` (LCD RGB subpixel, sharpest on LCD), `"Grayscale"` (better on OLED / high-DPI). |
 
 > ① **Default font family by platform:**
 > - **macOS:** `"Menlo"`
@@ -99,11 +94,9 @@ Configure the typeface, size, and spacing.
 [font]
 size = 14.0
 normal = { family = "JetBrains Mono", style = "Regular" }
-bold = { family = "JetBrains Mono", style = "Bold" }
-italic = { family = "JetBrains Mono", style = "Italic" }
-offset = { x = 0, y = 0 }
-glyph_offset = { x = 0, y = 0 }
-builtin_box_drawing = true
+ligatures = true
+hinting = "Auto"
+render_mode = "Subpixel"
 ```
 
 ---
@@ -120,7 +113,6 @@ Controls all colours used by the terminal.
 | `selection` | `{ ... }` | — | Selection highlight colours. |
 | `normal` | `{ ... }` | — | 8 normal (dark) ANSI colours. |
 | `bright` | `{ ... }` | — | 8 bright ANSI colours. |
-| `dim` | `{ ... }` | ❌ | 8 dim ANSI colours. Optional — when absent dims are auto-calculated from normal colours. |
 
 All colour values are hex strings in `"#rrggbb"` or `"#rgb"` format.
 Setting a colour to `"CellBackground"` or `"CellForeground"` (for cursor colours)
@@ -270,63 +262,6 @@ save_to_clipboard = true
 
 ---
 
-## `[mouse]` — Mouse behaviour
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `hide_when_typing` | `bool` | `false` | Hide the mouse cursor while the user is typing. The cursor reappears when the mouse is moved. |
-
-```toml
-[mouse]
-hide_when_typing = true
-```
-
----
-
-## `[terminal]` — Terminal behaviour
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `osc52` | `string` | `"CopyPaste"` | OSC 52 clipboard escape permission. One of: `"Disabled"`, `"OnlyPaste"`, `"OnlyCopy"`, `"CopyPaste"`. |
-| `shell` | `{ program, args? }` | — | Override the shell spawned by the terminal. When absent the system login shell is used. |
-
-### `[terminal.shell]` `{ program, args? }`
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `program` | `string` | ✅ | Path to the executable (e.g. `"/bin/zsh"`, `"/usr/bin/fish"`). |
-| `args` | `string[]` | ❌ | Command-line arguments passed to the program. |
-
-### Example
-
-```toml
-[terminal]
-osc52 = "CopyPaste"
-
-[terminal.shell]
-program = "/bin/zsh"
-args = ["-l"]
-```
-
----
-
-## `[keyboard]` — Key bindings
-
-> ⚠ **Not yet implemented.** The `[keyboard]` section is recognised so that
-> a future version can add custom key bindings without breaking existing
-> config files. Currently all key handling uses the built-in mappings.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `bindings` | `KeyBinding[]` | `[]` | Custom key bindings (reserved). |
-
-```toml
-[keyboard]
-bindings = []
-```
-
----
-
 ## `[ui]` — UI chrome (tabs + sidebar)
 
 Controls the optional **multi-tab workspace** and **cmux-style
@@ -344,7 +279,6 @@ behaves exactly like a single-terminal emulator (Phase 1).
 | `sidebar_max_width` | `float` | `480.0` | Maximum sidebar width (user-resize clamp). |
 | `show_add_tab_button` | `bool` | `true` | Show the `+` button on the tab bar. |
 | `show_close_tab_button` | `bool` | `true` | Show a `×` close button on each tab. |
-| `tab_close_on_middle_click` | `bool` | `true` | Allow middle-click on a tab to close it. |
 | `restore_layout_on_startup` | `bool` | `true` | Restore the dock layout from `~/.config/zenterm/dock.json` on startup when present. |
 | `persist_layout` | `bool` | `true` | Persist dock layout / session metadata to disk as the user mutates them. |
 | `layout_debounce_ms` | `int` | `500` | Debounce window (milliseconds) between a layout mutation and the disk write. |
@@ -405,12 +339,10 @@ dimensions = { columns = 120, lines = 40 }
 padding = { x = 4, y = 4 }
 title = "Zenterm"
 decorations = true
-startup_mode = "Windowed"
 
 [font]
 size = 14.0
 normal = { family = "JetBrains Mono" }
-builtin_box_drawing = true
 
 [colors]
 theme = "Dark"
@@ -447,12 +379,6 @@ blink_timeout = 5
 
 [selection]
 save_to_clipboard = false
-
-[mouse]
-hide_when_typing = false
-
-[terminal]
-osc52 = "CopyPaste"
 
 [ui]
 tabs_enabled = true
@@ -496,4 +422,4 @@ Sidebar-only shortcuts:
 | **Unknown TOML keys** | Silently ignored (serde `deny_unknown_fields` is not set). |
 | **Empty file** | Same as "file not found" — all defaults. |
 | **Field type mismatch** | TOML parse error → logged + fallback/defaults. |
-| **Window setting change (hot-reload)** | Some window settings (`dimensions`, `decorations`, `startup_mode`) require a restart. Font, colours, and cursor changes apply immediately. |
+| **Window setting change (hot-reload)** | Some window settings (`dimensions`, `decorations`, `title`) require a restart. Font, colours, and cursor changes apply immediately. |

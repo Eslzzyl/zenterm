@@ -28,10 +28,6 @@ pub struct WindowConfig {
     #[serde(default = "default_decorations")]
     pub decorations: bool,
 
-    /// Initial window state.
-    #[serde(default)]
-    pub startup_mode: StartupMode,
-
     /// macOS-only: treat the Option key as Alt.
     ///
     /// When `true`, Option+key behaves like Alt+key, sending `ESC` +
@@ -61,7 +57,6 @@ impl Default for WindowConfig {
             padding: WindowPadding::default(),
             title: default_title(),
             decorations: default_decorations(),
-            startup_mode: StartupMode::default(),
             macos_option_as_alt: false,
             last_window_size: None,
         }
@@ -72,16 +67,12 @@ impl WindowConfig {
     /// Returns `true` if a change to this section requires restarting
     /// the application to fully take effect.
     ///
-    /// Window dimensions, decorations, and startup mode are baked into
-    /// the `eframe::NativeOptions` passed at startup and cannot be
+    /// Window title and decorations are baked into the
+    /// `eframe::ViewportBuilder` passed at startup and cannot be
     /// changed at runtime.
     pub fn needs_restart(&self) -> bool {
-        // These fields require a restart:
-        //   - dimensions (initial window sizing)
-        //   - decorations (native window chrome)
-        //   - startup_mode (windowed/maximized/fullscreen)
-        // Padding and title can be changed at runtime.
-        false
+        let defaults = Self::default();
+        self.decorations != defaults.decorations || self.title != defaults.title
     }
 }
 
@@ -137,16 +128,4 @@ impl Default for WindowPadding {
     fn default() -> Self {
         Self { x: 8.0, y: 6.0 }
     }
-}
-
-/// Initial window state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum StartupMode {
-    #[default]
-    #[serde(rename = "Windowed")]
-    Windowed,
-    #[serde(rename = "Maximized")]
-    Maximized,
-    #[serde(rename = "Fullscreen")]
-    Fullscreen,
 }

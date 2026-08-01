@@ -14,10 +14,7 @@ use crate::background::BackgroundConfig;
 use crate::colors::ColorsConfig;
 use crate::cursor::CursorConfig;
 use crate::font::FontConfig;
-use crate::keyboard::KeyboardConfig;
-use crate::mouse::MouseConfig;
 use crate::selection::SelectionConfig;
-use crate::terminal::TerminalConfig;
 use crate::ui::UiConfig;
 use crate::window::WindowConfig;
 
@@ -44,15 +41,6 @@ pub struct Config {
     #[serde(default)]
     pub selection: SelectionConfig,
 
-    #[serde(default)]
-    pub mouse: MouseConfig,
-
-    #[serde(default)]
-    pub terminal: TerminalConfig,
-
-    #[serde(default)]
-    pub keyboard: KeyboardConfig,
-
     /// UI chrome (tabs + sidebar).  Defaults to all-off.
     #[serde(default)]
     pub ui: UiConfig,
@@ -75,9 +63,6 @@ pub struct ConfigChanges {
     pub colors: bool,
     pub cursor: bool,
     pub selection: bool,
-    pub mouse: bool,
-    pub terminal: bool,
-    pub keyboard: bool,
     pub ui: bool,
 
     /// Background image or image rendering options changed.
@@ -85,7 +70,7 @@ pub struct ConfigChanges {
 
     /// `true` when any changed section **requires an application
     /// restart** to take full effect (e.g. window decorations,
-    /// startup mode, initial dimensions).
+    /// initial dimensions).
     pub needs_restart: bool,
 }
 
@@ -223,9 +208,6 @@ impl Config {
             colors: self.colors != other.colors,
             cursor: self.cursor != other.cursor,
             selection: self.selection != other.selection,
-            mouse: self.mouse != other.mouse,
-            terminal: self.terminal != other.terminal,
-            keyboard: self.keyboard != other.keyboard,
             ui: self.ui != other.ui,
             background: self.background != other.background,
             needs_restart: self.window.needs_restart() || other.window.needs_restart(),

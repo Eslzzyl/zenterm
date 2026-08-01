@@ -17,12 +17,9 @@ use zenterm_config::colors::{
 };
 use zenterm_config::cursor::{Blinking, CursorConfig, CursorShape};
 use zenterm_config::font::{FontConfig, FontDescription};
-use zenterm_config::keyboard::KeyboardConfig;
-use zenterm_config::mouse::MouseConfig;
 use zenterm_config::selection::SelectionConfig;
-use zenterm_config::terminal::{Osc52Mode, ShellConfig, TerminalConfig};
 use zenterm_config::ui::{SidebarPosition, UiConfig};
-use zenterm_config::window::{StartupMode, WindowConfig};
+use zenterm_config::window::WindowConfig;
 use zenterm_core::{HintingMode, RenderMode};
 
 use crate::settings_widgets;
@@ -37,9 +34,6 @@ pub enum SettingsSection {
     Colors,
     Cursor,
     Selection,
-    Mouse,
-    Terminal,
-    Keyboard,
     Ui,
     Background,
 }
@@ -52,9 +46,6 @@ impl SettingsSection {
         Self::Colors,
         Self::Cursor,
         Self::Selection,
-        Self::Mouse,
-        Self::Terminal,
-        Self::Keyboard,
         Self::Ui,
         Self::Background,
     ];
@@ -66,9 +57,6 @@ impl SettingsSection {
             Self::Colors => "Colors",
             Self::Cursor => "Cursor",
             Self::Selection => "Selection",
-            Self::Mouse => "Mouse",
-            Self::Terminal => "Terminal",
-            Self::Keyboard => "Keyboard",
             Self::Ui => "UI",
             Self::Background => "Background",
         }
@@ -268,9 +256,6 @@ fn render_section(
         SettingsSection::Colors => render_colors_section(ui, &mut cfg.colors),
         SettingsSection::Cursor => render_cursor_section(ui, &mut cfg.cursor),
         SettingsSection::Selection => render_selection_section(ui, &mut cfg.selection),
-        SettingsSection::Mouse => render_mouse_section(ui, &mut cfg.mouse),
-        SettingsSection::Terminal => render_terminal_section(ui, &mut cfg.terminal),
-        SettingsSection::Keyboard => render_keyboard_section(ui, &mut cfg.keyboard),
         SettingsSection::Ui => render_ui_section(ui, &mut cfg.ui),
         SettingsSection::Background => render_background_section(ui, &mut cfg.background),
     }
@@ -301,17 +286,6 @@ fn render_window_section(ui: &mut egui::Ui, w: &mut WindowConfig) {
         &mut w.decorations,
         "Show window title bar and borders (requires restart)",
     );
-    settings_widgets::combo_setting(
-        ui,
-        "Startup Mode",
-        &mut w.startup_mode,
-        &[
-            (StartupMode::Windowed, "Windowed"),
-            (StartupMode::Maximized, "Maximized"),
-            (StartupMode::Fullscreen, "Fullscreen"),
-        ],
-        "Initial window state (requires restart)",
-    );
 }
 
 // ── Font section ─────────────────────────────────────────────────────────
@@ -322,7 +296,7 @@ fn render_font_section(
     font_families: &[String],
     registered_fonts: &HashSet<String>,
 ) {
-    settings_widgets::section_header(ui, "Font", "Terminal typeface and spacing.");
+    settings_widgets::section_header(ui, "Font", "Terminal typeface and rendering.");
     settings_widgets::drag_f32(
         ui,
         "Size",
@@ -331,55 +305,9 @@ fn render_font_section(
         "Font size in logical pixels at 1× DPI",
     );
     render_font_description(ui, "Normal", &mut f.normal, font_families, registered_fonts);
-    render_opt_font_description(ui, "Bold", &mut f.bold, font_families, registered_fonts);
-    render_opt_font_description(ui, "Italic", &mut f.italic, font_families, registered_fonts);
-    render_opt_font_description(
-        ui,
-        "Bold Italic",
-        &mut f.bold_italic,
-        font_families,
-        registered_fonts,
-    );
-
-    ui.add_space(8.0);
-    settings_widgets::section_header(ui, "Spacing", "");
-    settings_widgets::drag_f32(
-        ui,
-        "Offset X",
-        &mut f.offset.x,
-        0.25,
-        "Extra horizontal spacing per character",
-    );
-    settings_widgets::drag_f32(
-        ui,
-        "Offset Y",
-        &mut f.offset.y,
-        0.25,
-        "Extra vertical spacing per character",
-    );
-    settings_widgets::drag_f32(
-        ui,
-        "Glyph Offset X",
-        &mut f.glyph_offset.x,
-        0.25,
-        "Per-glyph horizontal offset",
-    );
-    settings_widgets::drag_f32(
-        ui,
-        "Glyph Offset Y",
-        &mut f.glyph_offset.y,
-        0.25,
-        "Per-glyph vertical offset",
-    );
 
     ui.add_space(8.0);
     settings_widgets::section_header(ui, "Features", "");
-    settings_widgets::bool_setting(
-        ui,
-        "Built-in Box Drawing",
-        &mut f.builtin_box_drawing,
-        "Use software-rendered box-drawing / block characters",
-    );
     settings_widgets::bool_setting(
         ui,
         "Ligatures",
@@ -428,31 +356,6 @@ fn render_font_description(
     );
 }
 
-fn render_opt_font_description(
-    ui: &mut egui::Ui,
-    label: &str,
-    opt: &mut Option<FontDescription>,
-    font_families: &[String],
-    registered_fonts: &HashSet<String>,
-) {
-    let mut enabled = opt.is_some();
-    settings_widgets::bool_setting(
-        ui,
-        &format!("{label} – Enable"),
-        &mut enabled,
-        &format!("Override the {label} font face"),
-    );
-    if enabled {
-        let fd = opt.get_or_insert_with(|| FontDescription {
-            family: "Menlo".into(),
-            style: None,
-        });
-        render_font_description(ui, label, fd, font_families, registered_fonts);
-    } else {
-        *opt = None;
-    }
-}
-
 // ── Colors section ───────────────────────────────────────────────────────
 
 fn render_colors_section(ui: &mut egui::Ui, c: &mut ColorsConfig) {
@@ -488,14 +391,6 @@ fn render_colors_section(ui: &mut egui::Ui, c: &mut ColorsConfig) {
     ui.add_space(8.0);
     settings_widgets::section_header(ui, "Bright ANSI", "The 8 bright ANSI colours.");
     render_ansi_colors(ui, &mut c.bright);
-
-    ui.add_space(8.0);
-    settings_widgets::section_header(
-        ui,
-        "Dim ANSI",
-        "Optional dim variant (auto-calculated when absent).",
-    );
-    render_opt_ansi_colors(ui, &mut c.dim);
 }
 
 fn render_primary_colors(ui: &mut egui::Ui, p: &mut PrimaryColors) {
@@ -554,17 +449,6 @@ fn render_ansi_colors(ui: &mut egui::Ui, a: &mut AnsiColors) {
     settings_widgets::color_hex_setting(ui, "Magenta", &mut a.magenta, "");
     settings_widgets::color_hex_setting(ui, "Cyan", &mut a.cyan, "");
     settings_widgets::color_hex_setting(ui, "White", &mut a.white, "");
-}
-
-fn render_opt_ansi_colors(ui: &mut egui::Ui, opt: &mut Option<AnsiColors>) {
-    let mut enabled = opt.is_some();
-    settings_widgets::bool_setting(ui, "Override Dim ANSI", &mut enabled, "");
-    if enabled {
-        let a = opt.get_or_insert_with(AnsiColors::default);
-        render_ansi_colors(ui, a);
-    } else {
-        *opt = None;
-    }
 }
 
 // ── Cursor section ───────────────────────────────────────────────────────
@@ -635,76 +519,6 @@ fn render_selection_section(ui: &mut egui::Ui, s: &mut SelectionConfig) {
     );
 }
 
-// ── Mouse section ────────────────────────────────────────────────────────
-
-fn render_mouse_section(ui: &mut egui::Ui, m: &mut MouseConfig) {
-    settings_widgets::section_header(ui, "Mouse", "Mouse interaction settings.");
-    settings_widgets::bool_setting(
-        ui,
-        "Hide When Typing",
-        &mut m.hide_when_typing,
-        "Hide the mouse cursor while the user is typing",
-    );
-}
-
-// ── Terminal section ─────────────────────────────────────────────────────
-
-fn render_terminal_section(ui: &mut egui::Ui, t: &mut TerminalConfig) {
-    settings_widgets::section_header(ui, "Terminal", "Terminal emulation behaviour.");
-    settings_widgets::combo_setting(
-        ui,
-        "OSC 52 Mode",
-        &mut t.osc52,
-        &[
-            (Osc52Mode::Disabled, "Disabled"),
-            (Osc52Mode::OnlyPaste, "Only Paste"),
-            (Osc52Mode::OnlyCopy, "Only Copy"),
-            (Osc52Mode::CopyPaste, "Copy && Paste"),
-        ],
-        "Clipboard access via OSC 52 escape sequences",
-    );
-
-    ui.add_space(8.0);
-    settings_widgets::section_header(ui, "Shell", "Override the default login shell.");
-    let mut shell_enabled = t.shell.is_some();
-    settings_widgets::bool_setting(ui, "Override Shell", &mut shell_enabled, "");
-    if shell_enabled {
-        let shell = t.shell.get_or_insert_with(|| ShellConfig {
-            program: "bash".into(),
-            args: Vec::new(),
-        });
-        settings_widgets::text_setting(
-            ui,
-            "Program",
-            &mut shell.program,
-            "Path to the shell executable",
-        );
-        // Render args as a comma-separated string.
-        let mut args_str = shell.args.join(", ");
-        settings_widgets::text_setting(
-            ui,
-            "Arguments",
-            &mut args_str,
-            "Comma-separated command-line arguments",
-        );
-        shell.args = args_str
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-    } else {
-        t.shell = None;
-    }
-}
-
-// ── Keyboard section ─────────────────────────────────────────────────────
-
-fn render_keyboard_section(ui: &mut egui::Ui, _k: &mut KeyboardConfig) {
-    settings_widgets::section_header(ui, "Keyboard", "Custom key bindings.");
-    ui.label("Custom key bindings are not yet implemented.");
-    ui.label("This section is reserved for future use.");
-}
-
 // ── UI section ───────────────────────────────────────────────────────────
 
 fn render_ui_section(ui: &mut egui::Ui, u: &mut UiConfig) {
@@ -720,12 +534,6 @@ fn render_ui_section(ui: &mut egui::Ui, u: &mut UiConfig) {
         ui,
         "Show Close Tab Button",
         &mut u.show_close_tab_button,
-        "",
-    );
-    settings_widgets::bool_setting(
-        ui,
-        "Close on Middle Click",
-        &mut u.tab_close_on_middle_click,
         "",
     );
 

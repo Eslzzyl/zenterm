@@ -25,7 +25,7 @@ impl ZentermApp {
             id,
             size,
             scheme,
-            self.config.cursor.blink_interval,
+            &self.config.cursor,
             self.config.selection.save_to_clipboard,
             self.default_bg,
             self.gpu.clone(),

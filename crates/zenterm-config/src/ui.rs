@@ -84,10 +84,6 @@ pub struct UiConfig {
     #[serde(default = "default_true")]
     pub show_close_tab_button: bool,
 
-    /// Allow middle-click on a tab title to close that tab.
-    #[serde(default = "default_true")]
-    pub tab_close_on_middle_click: bool,
-
     /// Restore tab layout from `~/.config/zenterm/dock.json` on
     /// startup when present.
     #[serde(default = "default_true")]
@@ -116,7 +112,6 @@ impl Default for UiConfig {
             sidebar_max_width: default_sidebar_max_width(),
             show_add_tab_button: default_true(),
             show_close_tab_button: default_true(),
-            tab_close_on_middle_click: default_true(),
             restore_layout_on_startup: default_true(),
             persist_layout: default_true(),
             layout_debounce_ms: default_layout_debounce_ms(),

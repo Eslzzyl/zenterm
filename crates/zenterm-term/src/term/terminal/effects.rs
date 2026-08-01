@@ -30,13 +30,36 @@ impl Terminal {
         let point = self.term.grid().cursor.point;
         let display_offset = self.term.grid().display_offset();
         let viewport_line = point.line.0 + display_offset as i32;
+        let mut style = self.term.cursor_style();
+        // Only force the configured shape when the terminal is still
+        // showing the construction-time default (i.e. it has not picked
+        // a different shape via DECSCUSR).  An explicit escape-sequence
+        // shape always wins.
+        if style.shape == self.fallback_shape {
+            style.shape = self.prefs_shape;
+        }
+        // Apply the configured blinking policy on top of the
+        // escape-sequence state.
+        match self.blink_policy {
+            super::BlinkPolicy::Off => style.blinking = false,
+            super::BlinkPolicy::On => style.blinking = true,
+            super::BlinkPolicy::Terminal => {}
+        }
         CursorInfo {
             pos: TermPos::new(viewport_line.max(0) as usize, point.column.0),
-            style: self.term.cursor_style(),
+            style,
             visible: self.term.mode().contains(TermMode::SHOW_CURSOR),
             cursor_bg: self.scheme.cursor_bg,
             cursor_fg: self.scheme.cursor_fg,
         }
+    }
+
+    /// Update the default cursor appearance (shape + blinking policy).
+    /// Called live when the user edits the cursor settings.
+    pub fn set_cursor_prefs(&mut self, prefs: super::CursorPrefs) {
+        self.prefs_shape = prefs.shape;
+        self.blink_policy = prefs.blink;
+        self.damage.mark_all();
     }
 
     pub fn mode(&self) -> TermMode {

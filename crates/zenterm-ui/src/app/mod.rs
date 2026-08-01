@@ -180,7 +180,7 @@ impl ZentermApp {
             first_id,
             size,
             scheme.clone(),
-            config.cursor.blink_interval,
+            &config.cursor,
             config.selection.save_to_clipboard,
             default_bg,
             gpu.clone(),
@@ -235,7 +235,7 @@ impl ZentermApp {
                 *sid,
                 size,
                 scheme.clone(),
-                config.cursor.blink_interval,
+                &config.cursor,
                 config.selection.save_to_clipboard,
                 default_bg,
                 gpu.clone(),
@@ -371,7 +371,17 @@ impl eframe::App for ZentermApp {
         // elapsed time since `blink_epoch`, so no per-frame state is
         // needed — the timer merely ensures we wake up to re-render when
         // the phase toggles.
+        //
+        // Window focus is propagated to every session here so the render
+        // pass can draw the hollow cursor when the window is unfocused.
+        let window_focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
         for session in self.sessions.values_mut() {
+            if session.window_focused != window_focused {
+                // Focus changes must invalidate the cached instances so
+                // the hollow cursor appears/disappears immediately.
+                session.window_focused = window_focused;
+                session.terminal_dirty = true;
+            }
             let blinking = session.terminal.cursor().style.blinking
                 && !matches!(
                     session.terminal.cursor().style.shape,

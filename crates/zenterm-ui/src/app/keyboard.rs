@@ -14,6 +14,15 @@ impl ZentermApp {
         if let Some(id) = self.active_session_id
             && let Some(session) = self.sessions.get_mut(&id)
         {
+            // User input counts as activity — restart the cursor blink
+            // timeout window.
+            if matches!(
+                event,
+                egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::Paste(_)
+            ) {
+                session.blink_epoch = std::time::Instant::now();
+            }
+
             // Before PTY mapping, check for IME state events that
             // update the preedit text but are not sent to the PTY.
             if let egui::Event::Ime(ime_event) = event {

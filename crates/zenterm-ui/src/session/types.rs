@@ -111,9 +111,23 @@ pub struct TerminalSession {
     pub terminal_dirty: bool,
     pub last_resize_at: Option<f64>,
     pub blink_interval: u64,
+    /// Blink timeout in seconds (0 = blink forever).  Blinking stops
+    /// once this long has elapsed since the last activity.
+    /// (mirrors `config.cursor.blink_timeout`).
+    pub blink_timeout: u64,
+    /// Thickness of the Beam/Underline cursor as a fraction of cell
+    /// height (mirrors `config.cursor.thickness`).
+    pub cursor_thickness: f32,
+    /// Show a hollow cursor when the window is unfocused
+    /// (mirrors `config.cursor.unfocused_hollow`).
+    pub unfocused_hollow: bool,
+    /// Whether the application window currently has OS focus.  Updated
+    /// by the app layer before rendering each frame.
+    pub window_focused: bool,
     /// Epoch timestamp for time-based cursor blink phase computation.
     /// Replaces the old `frame_count`-based approach so we don't need
-    /// to increment a counter every frame.
+    /// to increment a counter every frame.  Reset on user activity so
+    /// the blink timeout measures idle time.
     pub blink_epoch: std::time::Instant,
     /// Automatically copy selected text to the system clipboard
     /// (mirrors `config.selection.save_to_clipboard`).

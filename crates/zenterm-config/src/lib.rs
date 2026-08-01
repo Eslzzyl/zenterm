@@ -38,10 +38,7 @@ pub mod background;
 pub mod colors;
 pub mod cursor;
 pub mod font;
-pub mod keyboard;
-pub mod mouse;
 pub mod selection;
-pub mod terminal;
 pub mod ui;
 pub mod window;
 

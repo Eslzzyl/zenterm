@@ -155,14 +155,24 @@ impl TerminalSession {
             // is consistent regardless of frame rate.  This replaces the
             // old `frame_count / blink_interval` approach which required
             // incrementing a counter every frame.
+            //
+            // `blink_timeout` (seconds, 0 = forever) stops the blinking
+            // once the terminal has been idle that long; `blink_epoch`
+            // is reset on user activity.
             let elapsed = self.blink_epoch.elapsed().as_millis();
-            let period = (self.blink_interval as u128).max(100) * 2;
-            (elapsed % period) < period / 2
+            let timeout_ms = self.blink_timeout.saturating_mul(1000) as u128;
+            if timeout_ms > 0 && elapsed >= timeout_ms {
+                true
+            } else {
+                let period = (self.blink_interval as u128).max(100) * 2;
+                (elapsed % period) < period / 2
+            }
         } else {
             true
         };
         let cursor_visible = cursor.visible && blink_on;
         let cursor_shape = cursor.style.shape;
+        let hollow_cursor = self.unfocused_hollow && !self.window_focused;
 
         let sel_range: Option<SelectionRange> = self.terminal.selection_range();
         let sel_bg = self.terminal.selection_bg();
@@ -357,6 +367,7 @@ impl TerminalSession {
                 let is_blank = ch_char == ' ';
                 let is_cursor = cursor_visible && row == cursor_row && col == cursor_col;
                 let is_block_cursor = is_cursor && matches!(cursor_shape, CursorShape::Block);
+                let is_hollow_cursor = is_block_cursor && hollow_cursor;
                 let is_sel = sel_range.as_ref().is_some_and(|range| {
                     let grid_line = (row as i32) - (display_offset as i32);
                     let pt = alacritty_terminal::index::Point::new(
@@ -366,7 +377,7 @@ impl TerminalSession {
                     range.contains(pt)
                 });
 
-                let (draw_fg, draw_bg) = if is_block_cursor {
+                let (draw_fg, draw_bg) = if is_block_cursor && !is_hollow_cursor {
                     // Use the theme/OSC-specified cursor colours.  When
                     // cursor_fg is None, fall back to the cell's own
                     // foreground (classic inverse-video behaviour).
@@ -448,6 +459,8 @@ impl TerminalSession {
                         cursor_row,
                         cursor_col,
                         cursor_shape,
+                        hollow_cursor,
+                        self.cursor_thickness,
                         cursor_bg,
                         display_offset,
                         sel_range.as_ref(),
@@ -526,7 +539,7 @@ impl TerminalSession {
                         num_cells,
                         cell_bg,
                         default_bg,
-                        is_block_cursor,
+                        is_block_cursor && !is_hollow_cursor,
                         x_off,
                         y_off,
                         x_scale,
@@ -680,6 +693,8 @@ impl TerminalSession {
                         cursor_row,
                         cursor_col,
                         cursor_shape,
+                        hollow_cursor,
+                        self.cursor_thickness,
                         cursor_bg,
                         display_offset,
                         sel_range.as_ref(),

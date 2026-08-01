@@ -30,30 +30,6 @@ pub struct FontConfig {
     #[serde(default = "default_normal_font")]
     pub normal: FontDescription,
 
-    /// Bold font face.  Falls back to `normal` when absent.
-    pub bold: Option<FontDescription>,
-
-    /// Italic font face.  Falls back to `normal` when absent.
-    pub italic: Option<FontDescription>,
-
-    /// Bold-italic font face.  Falls back to `normal` when absent.
-    pub bold_italic: Option<FontDescription>,
-
-    /// Extra horizontal / vertical spacing applied to every character
-    /// (in *logical pixels* at 1× DPI).
-    #[serde(default)]
-    pub offset: GlyphOffset,
-
-    /// Per-glyph offset within each cell (logical pixels at 1× DPI).
-    #[serde(default)]
-    pub glyph_offset: GlyphOffset,
-
-    /// Use the built-in software renderer for box-drawing characters
-    /// (U+2500–U+257F and U+2580–U+259F).  When disabled these code
-    /// points are looked up from the font like any other character.
-    #[serde(default = "default_builtin_box_drawing")]
-    pub builtin_box_drawing: bool,
-
     /// Enable OpenType ligature features (`liga`, `clig`).
     ///
     /// When `true`, consecutive same-style characters are shaped as a
@@ -98,12 +74,6 @@ impl Default for FontConfig {
         Self {
             size: default_font_size(),
             normal: default_normal_font(),
-            bold: None,
-            italic: None,
-            bold_italic: None,
-            offset: GlyphOffset::default(),
-            glyph_offset: GlyphOffset::default(),
-            builtin_box_drawing: default_builtin_box_drawing(),
             ligatures: default_ligatures(),
             hinting: HintingMode::default(),
             render_mode: RenderMode::default(),
@@ -113,10 +83,6 @@ impl Default for FontConfig {
 
 fn default_font_size() -> f32 {
     18.0
-}
-
-fn default_builtin_box_drawing() -> bool {
-    true
 }
 
 /// Default: ligatures on.
@@ -161,22 +127,5 @@ fn default_font_family() -> String {
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         "monospace".into()
-    }
-}
-
-// ── GlyphOffset ────────────────────────────────────────────────────────
-
-/// An x/y offset applied to glyphs (in logical pixels at 1× DPI).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct GlyphOffset {
-    #[serde(default)]
-    pub x: f32,
-    #[serde(default)]
-    pub y: f32,
-}
-
-impl Default for GlyphOffset {
-    fn default() -> Self {
-        Self { x: 0.0, y: 0.0 }
     }
 }

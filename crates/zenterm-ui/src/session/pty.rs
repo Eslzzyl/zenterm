@@ -47,6 +47,9 @@ impl TerminalSession {
                 }
             }
             self.terminal_dirty = true;
+            // Shell output counts as activity — restart the cursor
+            // blink timeout window.
+            self.blink_epoch = std::time::Instant::now();
         }
 
         // Drain Kitty OSC 99 notification responses (a=report, c=1,

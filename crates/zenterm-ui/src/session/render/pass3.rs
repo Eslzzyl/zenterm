@@ -27,6 +27,8 @@ pub(crate) fn emit_deco_for_cell(
     cursor_row: usize,
     cursor_col: usize,
     cursor_shape: CursorShape,
+    hollow_cursor: bool,
+    cursor_thickness: f32,
     cursor_bg: Rgba,
     _display_offset: usize,
     sel_range: Option<&SelectionRange>,
@@ -58,7 +60,7 @@ pub(crate) fn emit_deco_for_cell(
         range.contains(pt)
     });
 
-    let (draw_fg, _draw_bg) = if is_block_cursor {
+    let (draw_fg, _draw_bg) = if is_block_cursor && !hollow_cursor {
         (cursor_bg, cell.fg)
     } else {
         (cell.fg, cell.bg)
@@ -146,7 +148,7 @@ pub(crate) fn emit_deco_for_cell(
     // ── Pass 4: cursor style decorations (Beam / Underline) ──
     if is_cursor && !is_block_cursor {
         let cursor_color = [cursor_bg.r(), cursor_bg.g(), cursor_bg.b(), 1.0];
-        let thickness = 2.0_f32.max((ch * 0.08).round());
+        let thickness = (ch * cursor_thickness).max(1.0);
         let cx_px = x_off + (col as f32 * cw).round();
         let cy_px = y_off + (row as f32 * ch).round();
 
@@ -182,5 +184,32 @@ pub(crate) fn emit_deco_for_cell(
             }
             _ => {}
         }
+    }
+
+    // ── Hollow block cursor (window unfocused + configured) ─────────
+    // Draw a thin outline around the cell instead of filling it.
+    if is_cursor && is_block_cursor && hollow_cursor {
+        let cursor_color = [cursor_bg.r(), cursor_bg.g(), cursor_bg.b(), 1.0];
+        let border = 1.0_f32.max((ch * 0.03).round());
+        let cx_px = x_off + (col as f32 * cw).round();
+        let cy_px = y_off + (row as f32 * ch).round();
+        let mut push_bar = |x: f32, y: f32, w: f32, h: f32| {
+            deco_instances.push(CellInstance {
+                clip_pos: [px_to_clip_x(x), px_to_clip_y(y)],
+                uv_min: [0.0; 2],
+                uv_max: [0.0; 2],
+                clip_cell_size: [w * x_scale, h * y_scale],
+                glyph_size: [0.0; 2],
+                glyph_offset: [0.0; 2],
+                fg_color: cursor_color,
+                bg_color: cursor_color,
+                flags: glyph_type::SOLID,
+            });
+        };
+        // Top / bottom / left / right bars.
+        push_bar(cx_px, cy_px, cw, border);
+        push_bar(cx_px, cy_px + ch - border, cw, border);
+        push_bar(cx_px, cy_px, border, ch);
+        push_bar(cx_px + cw - border, cy_px, border, ch);
     }
 }

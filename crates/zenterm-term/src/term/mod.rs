@@ -16,7 +16,7 @@ mod terminal;
 
 pub use color_scheme::ColorScheme;
 pub use grid_view::{CursorInfo, GridView};
-pub use terminal::Terminal;
+pub use terminal::{BlinkPolicy, CursorPrefs, Terminal};
 
 // ── Newtype wrapper to implement `Dimensions` for `TermSize` ─────────
 

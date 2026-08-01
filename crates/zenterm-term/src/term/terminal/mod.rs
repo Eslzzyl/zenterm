@@ -40,6 +40,37 @@ use self::unicode::VirtualPlacement;
 
 type ClipboardLoad = Arc<dyn Fn(&str) -> String + Sync + Send + 'static>;
 
+/// Cursor appearance preferences injected by the UI layer (mirrors
+/// `[cursor]` in the config file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CursorPrefs {
+    /// Default cursor shape.  The terminal's own `DECSCUSR` escape
+    /// sequences override this per-session once received.
+    pub shape: vte::ansi::CursorShape,
+    /// Blinking policy applied on top of the escape-sequence state.
+    pub blink: BlinkPolicy,
+}
+
+/// Cursor blinking policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlinkPolicy {
+    /// Never blink — overrides the terminal's blink state.
+    Off,
+    /// Always blink — overrides the terminal's blink state.
+    On,
+    /// Follow the terminal's cursor-blinking escape sequence.
+    Terminal,
+}
+
+impl Default for CursorPrefs {
+    fn default() -> Self {
+        Self {
+            shape: vte::ansi::CursorShape::Block,
+            blink: BlinkPolicy::Terminal,
+        }
+    }
+}
+
 /// The terminal state machine.
 ///
 /// Owns `alacritty_terminal::Term` for grid state and `vte::ansi::Processor`
@@ -106,6 +137,14 @@ pub struct Terminal {
     /// Most recent ConEmu OSC 9;4 progress-bar state.
     /// Populated by [`Self::feed`]; consumed via [`Self::take_progress`].
     pending_progress: Option<Progress>,
+    /// Cursor blinking policy (see [`BlinkPolicy`]).
+    blink_policy: BlinkPolicy,
+    /// Cursor shape baked into `TermConfig` at construction.  Used to
+    /// detect "terminal still showing the default shape" in [`Self::cursor`].
+    fallback_shape: vte::ansi::CursorShape,
+    /// Currently configured cursor shape (updatable via
+    /// [`Self::set_cursor_prefs`]).
+    prefs_shape: vte::ansi::CursorShape,
     /// Most recent FinalTerm OSC 133 semantic prompt marker.
     /// Populated by [`Self::feed`]; consumed via [`Self::take_semantic_prompt`].
     pending_semantic_prompt: Option<SemanticPrompt>,
@@ -138,9 +177,15 @@ pub struct Terminal {
 
 impl Terminal {
     /// Create a new terminal with the given dimensions.
-    pub fn new(size: TermSize, scheme: ColorScheme) -> Self {
+    pub fn new(size: TermSize, scheme: ColorScheme, cursor: CursorPrefs) -> Self {
         let config = TermConfig {
             kitty_keyboard: true,
+            default_cursor_style: vte::ansi::CursorStyle {
+                shape: cursor.shape,
+                // The fallback default never blinks; `BlinkPolicy` is
+                // enforced in [`Self::cursor`] on top of this.
+                blinking: false,
+            },
             ..TermConfig::default()
         };
         let dim = TermDimensions(size);
@@ -184,6 +229,9 @@ impl Terminal {
             pending_progress: None,
             pending_semantic_prompt: None,
             pending_fresh_line: false,
+            blink_policy: cursor.blink,
+            fallback_shape: cursor.shape,
+            prefs_shape: cursor.shape,
             kitty_state: KittyNotificationState::default(),
             pending_kitty_notification: None,
             pending_iterm_action: None,
@@ -524,7 +572,7 @@ mod tests {
     #[test]
     fn custom_osc_survives_feed_boundary() {
         let size = TermSize::new(24, 80, 0, 0);
-        let mut terminal = Terminal::new(size, ColorScheme::default());
+        let mut terminal = Terminal::new(size, ColorScheme::default(), CursorPrefs::default());
 
         terminal.feed(b"\x1b]7;file://host/tmp");
         assert_eq!(terminal.take_current_directory(), None);
@@ -539,7 +587,7 @@ mod tests {
     #[test]
     fn osc_dispatch_continues_after_cursor_color() {
         let size = TermSize::new(24, 80, 0, 0);
-        let mut terminal = Terminal::new(size, ColorScheme::default());
+        let mut terminal = Terminal::new(size, ColorScheme::default(), CursorPrefs::default());
 
         terminal.feed(b"\x1b]12;#010203\x07\x1b]7;file://host/next\x07");
 
@@ -547,5 +595,36 @@ mod tests {
             terminal.take_current_directory().as_deref(),
             Some("file://host/next")
         );
+    }
+
+    #[test]
+    fn blink_policy_overrides_terminal_state() {
+        let size = TermSize::new(24, 80, 0, 0);
+
+        // Off policy: never blink, even after DECSCUSR requests it.
+        let mut off = Terminal::new(
+            size,
+            ColorScheme::default(),
+            CursorPrefs {
+                shape: vte::ansi::CursorShape::Block,
+                blink: BlinkPolicy::Off,
+            },
+        );
+        off.feed(b"\x1b[?12h"); // ATTRIBUTE_BLINK: set blinking
+        off.feed(b"\x1b[5 q"); // DECSCUSR: blinking block
+        assert!(!off.cursor().style.blinking);
+
+        // On policy: always blink, even after DECSCUSR disables it.
+        let mut on = Terminal::new(
+            size,
+            ColorScheme::default(),
+            CursorPrefs {
+                shape: vte::ansi::CursorShape::Block,
+                blink: BlinkPolicy::On,
+            },
+        );
+        on.feed(b"\x1b[?12l"); // ATTRIBUTE_BLINK: unset blinking
+        on.feed(b"\x1b[0 q"); // DECSCUSR: steady block
+        assert!(on.cursor().style.blinking);
     }
 }

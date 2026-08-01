@@ -4,9 +4,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc;
 
+use zenterm_config::cursor::{Blinking, CursorConfig, CursorShape};
 use zenterm_core::size::TermSize;
 use zenterm_render::callback::CallbackHandle;
-use zenterm_term::{ColorScheme, Terminal};
+use zenterm_term::{BlinkPolicy, ColorScheme, CursorPrefs, Terminal};
 
 use super::types::{NotificationState, SessionId, TerminalSession};
 use crate::glyph_cache::SharedGlyphAtlas;
@@ -41,6 +42,24 @@ fn detect_shell_name() -> String {
 }
 
 impl TerminalSession {
+    /// Map the config cursor shape to the terminal's shape type.
+    pub(crate) fn map_cursor_shape(shape: CursorShape) -> alacritty_terminal::vte::ansi::CursorShape {
+        match shape {
+            CursorShape::Block => alacritty_terminal::vte::ansi::CursorShape::Block,
+            CursorShape::Beam => alacritty_terminal::vte::ansi::CursorShape::Beam,
+            CursorShape::Underline => alacritty_terminal::vte::ansi::CursorShape::Underline,
+        }
+    }
+
+    /// Map the config blinking mode to a terminal blink policy.
+    pub(crate) fn map_blink_policy(blinking: Blinking) -> BlinkPolicy {
+        match blinking {
+            Blinking::Off => BlinkPolicy::Off,
+            Blinking::On => BlinkPolicy::On,
+            Blinking::Terminal => BlinkPolicy::Terminal,
+        }
+    }
+
     /// Construct a new session: spawn a PTY, initialise the terminal,
     /// measure cell geometry, and wire the wgpu callback.
     ///
@@ -52,7 +71,7 @@ impl TerminalSession {
         id: SessionId,
         size: TermSize,
         scheme: ColorScheme,
-        blink_interval: u64,
+        cursor: &CursorConfig,
         save_to_clipboard: bool,
         default_bg: egui::Color32,
         gpu: SharedGpuContext,
@@ -70,7 +89,14 @@ impl TerminalSession {
         };
         let mut pty = zenterm_pty::PtySession::spawn_with_wakeup(size, Some(wakeup))
             .expect("failed to spawn PTY");
-        let mut terminal = Terminal::new(size, scheme);
+        let mut terminal = Terminal::new(
+            size,
+            scheme,
+            CursorPrefs {
+                shape: Self::map_cursor_shape(cursor.style.shape),
+                blink: Self::map_blink_policy(cursor.style.blinking),
+            },
+        );
 
         let (cell_width, cell_height) = atlas.cell_size();
         let cell_w = cell_width.ceil() as u32;
@@ -116,7 +142,11 @@ impl TerminalSession {
             selecting: false,
             terminal_dirty: true,
             last_resize_at: None,
-            blink_interval,
+            blink_interval: cursor.blink_interval,
+            blink_timeout: cursor.blink_timeout,
+            cursor_thickness: cursor.thickness,
+            unfocused_hollow: cursor.unfocused_hollow,
+            window_focused: true,
             save_to_clipboard,
             clipboard: arboard::Clipboard::new().ok(),
             blink_epoch: std::time::Instant::now(),

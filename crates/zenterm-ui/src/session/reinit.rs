@@ -1,8 +1,10 @@
 //! Viewport, DPI, resize, and configuration methods for [`TerminalSession`].
 
+use zenterm_config::cursor::CursorConfig;
 use zenterm_core::size::TermSize;
 
 use super::types::TerminalSession;
+use zenterm_term::CursorPrefs;
 
 impl TerminalSession {
     // ── Viewport (dock) helpers ─────────────────────────────────────
@@ -64,9 +66,31 @@ impl TerminalSession {
     }
 
     /// Forward `apply_config_change`-style updates to per-session state.
-    pub fn apply_config_change(&mut self, font_size: f32, blink_interval: u64) {
-        if blink_interval != self.blink_interval {
-            self.blink_interval = blink_interval;
+    pub fn apply_config_change(&mut self, font_size: f32, cursor: &CursorConfig) {
+        let mut dirty = false;
+        if cursor.blink_interval != self.blink_interval {
+            self.blink_interval = cursor.blink_interval;
+            dirty = true;
+        }
+        if cursor.blink_timeout != self.blink_timeout {
+            self.blink_timeout = cursor.blink_timeout;
+            dirty = true;
+        }
+        if cursor.thickness != self.cursor_thickness {
+            self.cursor_thickness = cursor.thickness;
+            dirty = true;
+        }
+        if cursor.unfocused_hollow != self.unfocused_hollow {
+            self.unfocused_hollow = cursor.unfocused_hollow;
+            dirty = true;
+        }
+        self.terminal.set_cursor_prefs(CursorPrefs {
+            shape: Self::map_cursor_shape(cursor.style.shape),
+            blink: Self::map_blink_policy(cursor.style.blinking),
+        });
+        if dirty {
+            self.blink_epoch = std::time::Instant::now();
+            self.terminal_dirty = true;
         }
         // Font size changes that don't cross a DPI threshold are
         // ignored here: `reinit_for_dpi` handles the physical rebuild.

@@ -8,7 +8,9 @@ pub mod image;
 
 mod term;
 
+pub use term::BlinkPolicy;
 pub use term::ColorScheme;
 pub use term::CursorInfo;
+pub use term::CursorPrefs;
 pub use term::GridView;
 pub use term::Terminal;

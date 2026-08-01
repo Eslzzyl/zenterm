@@ -50,6 +50,8 @@ pub(crate) fn process_ligature_run(
     cursor_row: usize,
     cursor_col: usize,
     cursor_shape: CursorShape,
+    hollow_cursor: bool,
+    cursor_thickness: f32,
     cursor_bg: Rgba,
     display_offset: usize,
     sel_range: Option<&SelectionRange>,
@@ -126,6 +128,8 @@ pub(crate) fn process_ligature_run(
                             cursor_row,
                             cursor_col,
                             cursor_shape,
+                            hollow_cursor,
+                            cursor_thickness,
                             cursor_bg,
                             display_offset,
                             sel_range,
@@ -155,6 +159,7 @@ pub(crate) fn process_ligature_run(
                     // ── Per-cell cursor / selection state ──
                     let c_is_cursor = cursor_visible && row == cursor_row && cell_col == cursor_col;
                     let c_is_block = c_is_cursor && matches!(cursor_shape, CursorShape::Block);
+                    let c_is_hollow = c_is_block && hollow_cursor;
                     let c_is_sel = sel_range.is_some_and(|range| {
                         let grid_line = (row as i32) - (display_offset as i32);
                         let pt = alacritty_terminal::index::Point::new(
@@ -164,7 +169,7 @@ pub(crate) fn process_ligature_run(
                         range.contains(pt)
                     });
 
-                    let (c_fg, c_bg) = if c_is_block {
+                    let (c_fg, c_bg) = if c_is_block && !c_is_hollow {
                         (c.bg, c.fg)
                     } else {
                         (c.fg, c.bg)
@@ -186,7 +191,7 @@ pub(crate) fn process_ligature_run(
                         1.0,
                         c_bg_color,
                         default_bg,
-                        c_is_block,
+                        c_is_block && !c_is_hollow,
                         x_off,
                         y_off,
                         x_scale,
@@ -332,6 +337,8 @@ pub(crate) fn process_ligature_run(
                         cursor_row,
                         cursor_col,
                         cursor_shape,
+                        hollow_cursor,
+                        cursor_thickness,
                         cursor_bg,
                         display_offset,
                         sel_range,
@@ -363,6 +370,8 @@ pub(crate) fn process_ligature_run(
                     cursor_row,
                     cursor_col,
                     cursor_shape,
+                    hollow_cursor,
+                    cursor_thickness,
                     cursor_bg,
                     display_offset,
                     sel_range,

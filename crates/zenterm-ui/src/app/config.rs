@@ -108,8 +108,7 @@ impl ZentermApp {
         // Apply per-session config changes.
         if changes.font || changes.cursor || changes.colors {
             for session in self.sessions.values_mut() {
-                session
-                    .apply_config_change(self.config.font.size, self.config.cursor.blink_interval);
+                session.apply_config_change(self.config.font.size, &self.config.cursor);
                 session.terminal_dirty = true;
             }
         }

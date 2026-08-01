@@ -44,10 +44,6 @@ pub struct ColorsConfig {
     /// Bright ANSI colours.
     #[serde(default)]
     pub bright: AnsiColors,
-
-    /// Dim ANSI colours (optional — auto-calculated when absent).
-    #[serde(default)]
-    pub dim: Option<AnsiColors>,
 }
 
 impl Default for ColorsConfig {
@@ -59,7 +55,6 @@ impl Default for ColorsConfig {
             selection: SelectionColors::default(),
             normal: AnsiColors::default(),
             bright: AnsiColors::default(),
-            dim: None,
         }
     }
 }
