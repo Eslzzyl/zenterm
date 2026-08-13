@@ -2,7 +2,7 @@
 
 use alacritty_terminal::vte::ansi::{Handler, NamedColor};
 
-use zenterm_core::{ITermProprietary, ITermUnicodeVersionOp, SemanticPrompt};
+use zenterm_core::{ITermProprietary, ITermUnicodeVersionOp};
 
 use crate::term::osc::{OscMatch, parse_conemu_progress, parse_iterm_proprietary, parse_osc133};
 
@@ -74,14 +74,10 @@ impl Terminal {
             }
             133 => {
                 if let Some(prompt) = parse_osc133(&osc.payload) {
-                    match &prompt {
-                        SemanticPrompt::FreshLine
-                        | SemanticPrompt::FreshLineAndStartPrompt { .. }
-                        | SemanticPrompt::MarkEndOfCommandWithFreshLine { .. } => {
-                            self.pending_fresh_line = true;
-                        }
-                        _ => {}
-                    }
+                    // OSC 133 is semantic metadata. The shell is
+                    // responsible for emitting the actual cursor motion
+                    // and line breaks; injecting CR/LF here would alter the
+                    // visible terminal state and breaks fish redraws.
                     self.pending_semantic_prompt = Some(prompt);
                 }
             }

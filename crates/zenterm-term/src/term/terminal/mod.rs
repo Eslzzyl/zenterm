@@ -148,9 +148,6 @@ pub struct Terminal {
     /// Most recent FinalTerm OSC 133 semantic prompt marker.
     /// Populated by [`Self::feed`]; consumed via [`Self::take_semantic_prompt`].
     pending_semantic_prompt: Option<SemanticPrompt>,
-    /// Flag indicating a fresh-line (\r\n) should be injected before the
-    /// next batch of PTY bytes.  Set by OSC 133 commands L, A, N.
-    pending_fresh_line: bool,
     /// Kitty OSC 99 notification state — manages chunked notification
     /// accumulation and query responses.
     kitty_state: KittyNotificationState,
@@ -228,7 +225,6 @@ impl Terminal {
             pending_notification: None,
             pending_progress: None,
             pending_semantic_prompt: None,
-            pending_fresh_line: false,
             blink_policy: cursor.blink,
             fallback_shape: cursor.shape,
             prefs_shape: cursor.shape,
@@ -302,30 +298,11 @@ impl Terminal {
         }
         let t_osc_elapsed = t_osc_start.elapsed();
 
-        // ── Fresh-line injection ─────────────────────────────────────────
-        // OSC 133 commands L, A, and N signal that the terminal should
-        // perform a fresh line (\r\n) before processing subsequent output.
-        let injected_vec;
-        let vt_bytes: &[u8] = if self.pending_fresh_line {
-            self.pending_fresh_line = false;
-            injected_vec = {
-                let mut v = Vec::with_capacity(2 + bytes.len());
-                v.push(b'\r');
-                v.push(b'\n');
-                v.extend_from_slice(bytes);
-                v
-            };
-            &injected_vec
-        } else {
-            bytes
-        };
-
         // ── VT parser + OSC dispatch (interleaved) ──────────────────────
         // Process the byte stream incrementally so each OSC handler sees
         // the terminal state (cursor position etc.) AFTER the bytes that
         // precede the OSC have been parsed by the VT parser.
         let t_vt_start = std::time::Instant::now();
-        let shift = vt_bytes.len() - bytes.len();
         let mut prev_vt_off = 0;
 
         for osc in &oscs {
@@ -336,18 +313,18 @@ impl Terminal {
             let vt_osc_start = if crosses_feed_boundary {
                 0
             } else {
-                (osc.byte_start - osc_prefix_len) + shift
+                osc.byte_start - osc_prefix_len
             };
             let vt_osc_end = if crosses_feed_boundary {
                 0
             } else {
-                (osc.byte_end - osc_prefix_len) + shift
+                osc.byte_end - osc_prefix_len
             };
 
             // Process bytes before this OSC (cursor positioning, text, etc.).
             if !crosses_feed_boundary && vt_osc_start > prev_vt_off {
                 self.processor
-                    .advance(&mut self.term, &vt_bytes[prev_vt_off..vt_osc_start]);
+                    .advance(&mut self.term, &bytes[prev_vt_off..vt_osc_start]);
             }
 
             self.dispatch_osc(osc, &mut replies);
@@ -361,9 +338,9 @@ impl Terminal {
         }
 
         // Process remaining bytes after the last OSC.
-        if prev_vt_off < vt_bytes.len() {
+        if prev_vt_off < bytes.len() {
             self.processor
-                .advance(&mut self.term, &vt_bytes[prev_vt_off..]);
+                .advance(&mut self.term, &bytes[prev_vt_off..]);
         }
         let t_vt_elapsed = t_vt_start.elapsed();
 
@@ -626,5 +603,19 @@ mod tests {
         on.feed(b"\x1b[?12l"); // ATTRIBUTE_BLINK: unset blinking
         on.feed(b"\x1b[0 q"); // DECSCUSR: steady block
         assert!(on.cursor().style.blinking);
+    }
+
+    #[test]
+    fn osc133_markers_do_not_inject_a_line_break() {
+        let size = TermSize::new(24, 80, 0, 0);
+        let mut terminal = Terminal::new(size, ColorScheme::default(), CursorPrefs::default());
+
+        // fish emits OSC 133;A before drawing its prompt. The marker is
+        // metadata only: the following redraw must stay on the same row.
+        terminal.feed(b"prompt\x1b]133;A\x07");
+        terminal.feed(b"x");
+
+        assert_eq!(&terminal.line_text(0)[..7], "promptx");
+        assert!(terminal.line_text(1).trim().is_empty());
     }
 }
