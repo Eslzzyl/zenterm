@@ -1,0 +1,261 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the v prefix"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve release ref
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      ref: ${{ steps.resolve.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag and verify version
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
+              echo "Invalid version: $INPUT_VERSION" >&2
+              exit 1
+            fi
+            REF="v${INPUT_VERSION}"
+            git fetch --force origin "refs/tags/${REF}:refs/tags/${REF}"
+          else
+            REF="$GITHUB_REF_NAME"
+          fi
+
+          git checkout --detach "$REF"
+          VERSION="${REF#v}"
+          CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c '
+          import json
+          import sys
+          data = json.load(sys.stdin)
+          print(next(p["version"] for p in data["packages"] if p["name"] == "zenterm"))
+          ')"
+
+          if [[ "$VERSION" != "$CARGO_VERSION" ]]; then
+            echo "Tag version ($VERSION) does not match Cargo version ($CARGO_VERSION)" >&2
+            exit 1
+          fi
+
+          echo "tag=$REF" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }} ${{ matrix.arch }}
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            arch: x86_64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            formats: deb,appimage
+            expected_packages: 2
+          - platform: macos
+            arch: x86_64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            formats: dmg
+            expected_packages: 1
+          - platform: macos
+            arch: aarch64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            formats: dmg
+            expected_packages: 1
+          - platform: windows
+            arch: x86_64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            formats: nsis,wix
+            expected_packages: 2
+          - platform: windows
+            arch: aarch64
+            runner: windows-11-vs2026-arm
+            target: aarch64-pc-windows-msvc
+            formats: nsis,wix
+            expected_packages: 2
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libdbus-1-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libgtk-3-dev \
+            libudev-dev \
+            libwayland-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxcb-render-util0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            pkg-config \
+            patchelf
+
+      - name: Install cargo-packager
+        shell: bash
+        run: cargo install cargo-packager --locked --version 0.11.8
+
+      - name: Build application and installers
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          FORMATS: ${{ matrix.formats }}
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p dist
+
+          cargo build --package zenterm --release --locked --target "$TARGET"
+          cargo packager \
+            --packages zenterm \
+            --release \
+            --target "$TARGET" \
+            --formats "$FORMATS" \
+            --out-dir dist \
+            --binaries-dir "target/$TARGET/release"
+
+      - name: Normalize and validate package names
+        shell: bash
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+          EXPECTED_PACKAGES: ${{ matrix.expected_packages }}
+        run: |
+          set -euo pipefail
+
+          find_packages() {
+            find dist -type f \( \
+              -name '*.AppImage' -o \
+              -name '*.deb' -o \
+              -name '*.dmg' -o \
+              -name '*.exe' -o \
+              -name '*.msi' \)
+          }
+
+          PACKAGE_COUNT="$(find_packages | wc -l | tr -d ' ')"
+
+          if [[ "$PACKAGE_COUNT" -ne "$EXPECTED_PACKAGES" ]]; then
+            echo "Expected $EXPECTED_PACKAGES packages, found $PACKAGE_COUNT" >&2
+            find dist -type f -print
+            exit 1
+          fi
+
+          find_packages | while IFS= read -r file; do
+            case "$file" in
+              *.AppImage) extension="AppImage" ;;
+              *.deb)      extension="deb" ;;
+              *.dmg)      extension="dmg" ;;
+              *.exe)      extension="exe" ;;
+              *.msi)      extension="msi" ;;
+              *)           continue ;;
+            esac
+            mv "$file" "dist/zenterm-${VERSION}-${PLATFORM}-${ARCH}.${extension}"
+          done
+
+          find dist -maxdepth 1 -type f -print
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: [resolve, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum release-assets/* > release-assets/SHA256SUMS
+          cat release-assets/SHA256SUMS
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber \
+              release-assets/*
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Zenterm v${VERSION}" \
+              --generate-notes \
+              release-assets/*
+          fi

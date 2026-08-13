@@ -1,4 +1,5 @@
 /target
+/dist
 .venv/
 debug.log
 .DS_Store
