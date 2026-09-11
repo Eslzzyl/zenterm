@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release, without the v prefix"
+        description: "Version to build artifacts for, without the v prefix"
         required: true
         type: string
 
@@ -30,7 +30,7 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       ref: ${{ steps.resolve.outputs.ref }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -72,9 +72,37 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
 
+  check:
+    name: Lint & Test
+    needs: resolve
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: [clippy, rustfmt]
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-x86_64-unknown-linux-gnu
+
+      - uses: ./.github/actions/install-linux-deps
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --package zenterm --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --package zenterm
+
   build:
     name: Build ${{ matrix.platform }} ${{ matrix.arch }}
-    needs: resolve
+    needs: [resolve, check]
     strategy:
       fail-fast: false
       matrix:
@@ -111,7 +139,7 @@ jobs:
             expected_packages: 2
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.ref }}
 
@@ -123,29 +151,8 @@ jobs:
         with:
           shared-key: release-${{ matrix.target }}
 
-      - name: Install Linux dependencies
+      - uses: ./.github/actions/install-linux-deps
         if: matrix.platform == 'linux'
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev \
-            libdbus-1-dev \
-            libfontconfig1-dev \
-            libfreetype6-dev \
-            libgtk-3-dev \
-            libudev-dev \
-            libwayland-dev \
-            libx11-dev \
-            libx11-xcb-dev \
-            libxcb1-dev \
-            libxcb-render-util0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            pkg-config \
-            patchelf
 
       - name: Install cargo-packager
         shell: bash
@@ -216,11 +223,12 @@ jobs:
           name: packages-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/*
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
 
   release:
     name: Publish GitHub Release
     needs: [resolve, build]
+    if: github.event_name == 'push'
     runs-on: ubuntu-22.04
     permissions:
       contents: write
