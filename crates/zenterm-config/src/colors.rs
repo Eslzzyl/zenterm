@@ -167,7 +167,8 @@ impl ColorsConfig {
         if let Some(c) = parse_hex_opt(&self.selection.foreground) {
             theme.selection_fg = c;
         }
-        let custom_selection_background = if let Some(c) = parse_hex_opt(&self.selection.background) {
+        let custom_selection_background = if let Some(c) = parse_hex_opt(&self.selection.background)
+        {
             theme.selection_bg = c;
             true
         } else {

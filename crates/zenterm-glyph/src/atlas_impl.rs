@@ -462,7 +462,7 @@ impl GlyphAtlas {
         match img.content {
             SwashContent::SubpixelMask => {
                 // Subpixel data is 4 bytes/pixel: R,G,B = coverage, A=0.
-                for (i, chunk) in img.data.chunks_exact(4).enumerate() {
+                for (i, chunk) in img.data.as_chunks::<4>().0.iter().enumerate() {
                     let px = (rectangle.min.x as usize) + (i % width as usize);
                     let py = (rectangle.min.y as usize) + (i / width as usize);
                     let idx = (py * atlas_w + px) * 4;
@@ -494,7 +494,7 @@ impl GlyphAtlas {
             }
             SwashContent::Color => {
                 // Color glyphs (emojis): premultiplied RGBA, 4 bytes/pixel.
-                for (i, chunk) in img.data.chunks_exact(4).enumerate() {
+                for (i, chunk) in img.data.as_chunks::<4>().0.iter().enumerate() {
                     let px = (rectangle.min.x as usize) + (i % width as usize);
                     let py = (rectangle.min.y as usize) + (i / width as usize);
                     let idx = (py * atlas_w + px) * 4;
@@ -661,7 +661,7 @@ impl GlyphAtlas {
             SwashContent::SubpixelMask => {
                 // Subpixel data is 4 bytes/pixel: R,G,B = coverage, A=0.
                 // We store RGB coverage directly and set A = max(R,G,B).
-                for (i, chunk) in img.data.chunks_exact(4).enumerate() {
+                for (i, chunk) in img.data.as_chunks::<4>().0.iter().enumerate() {
                     let px = (rectangle.min.x as usize) + (i % width as usize);
                     let py = (rectangle.min.y as usize) + (i / width as usize);
                     let idx = (py * atlas_w + px) * 4;
@@ -696,7 +696,7 @@ impl GlyphAtlas {
             }
             SwashContent::Color => {
                 // Color glyphs (emojis): premultiplied RGBA data, 4 bytes/pixel.
-                for (i, chunk) in img.data.chunks_exact(4).enumerate() {
+                for (i, chunk) in img.data.as_chunks::<4>().0.iter().enumerate() {
                     let px = (rectangle.min.x as usize) + (i % width as usize);
                     let py = (rectangle.min.y as usize) + (i / width as usize);
                     let idx = (py * atlas_w + px) * 4;

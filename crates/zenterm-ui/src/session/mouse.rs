@@ -687,11 +687,8 @@ impl TerminalSession {
         let active = self.scrollbar_dragging || ui.rect_contains_pointer(track);
 
         // Track background.
-        ui.painter().rect_filled(
-            track,
-            0.0,
-            ui.visuals().faint_bg_color,
-        );
+        ui.painter()
+            .rect_filled(track, 0.0, ui.visuals().faint_bg_color);
 
         // Thumb – only draw when there is actually something to scroll.
         if screen < total {

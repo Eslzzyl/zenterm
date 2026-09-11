@@ -32,6 +32,7 @@ use zenterm_render::callback::{CallbackHandle, SharedRenderState, TerminalWgpuCa
 use zenterm_render::glyph_type;
 use zenterm_term::ColorScheme;
 
+use self::theme::{configure_egui_style, system_theme_is_dark};
 use crate::glyph_cache::SharedGlyphAtlas;
 use crate::gpu::SharedGpuContext;
 use crate::layout_io::LayoutIo;
@@ -39,7 +40,6 @@ use crate::legacy::render_legacy_single;
 use crate::session::{SessionId, TerminalSession};
 use crate::settings::SettingsState;
 use crate::workspace::WorkspaceManager;
-use self::theme::{configure_egui_style, system_theme_is_dark};
 
 // ── App-level state ────────────────────────────────────────────────────
 

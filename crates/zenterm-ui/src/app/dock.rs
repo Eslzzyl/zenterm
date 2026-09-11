@@ -156,11 +156,11 @@ impl ZentermApp {
                         self.active_session_id = Some(id);
                         self.mark_layout_dirty();
                     }
-                    if let Some(ws_id) = queued_switch_ws {
-                        if self.workspaces.switch_to(ws_id) {
-                            self.focus_first_tab_in_active_workspace();
-                            self.mark_layout_dirty();
-                        }
+                    if let Some(ws_id) = queued_switch_ws
+                        && self.workspaces.switch_to(ws_id)
+                    {
+                        self.focus_first_tab_in_active_workspace();
+                        self.mark_layout_dirty();
                     }
                     if queued_new_tab {
                         self.spawn_session();

@@ -43,7 +43,9 @@ fn detect_shell_name() -> String {
 
 impl TerminalSession {
     /// Map the config cursor shape to the terminal's shape type.
-    pub(crate) fn map_cursor_shape(shape: CursorShape) -> alacritty_terminal::vte::ansi::CursorShape {
+    pub(crate) fn map_cursor_shape(
+        shape: CursorShape,
+    ) -> alacritty_terminal::vte::ansi::CursorShape {
         match shape {
             CursorShape::Block => alacritty_terminal::vte::ansi::CursorShape::Block,
             CursorShape::Beam => alacritty_terminal::vte::ansi::CursorShape::Beam,

@@ -39,7 +39,7 @@ fn apply_gamma_correction(img: &mut swash::scale::image::Image) {
         return;
     }
     let inv_gamma = 1.0 / SUBPIXEL_GAMMA;
-    for chunk in img.data.chunks_exact_mut(4) {
+    for chunk in img.data.as_chunks_mut::<4>().0 {
         let r = (chunk[0] as f32 / 255.0).powf(inv_gamma);
         let g = (chunk[1] as f32 / 255.0).powf(inv_gamma);
         let b = (chunk[2] as f32 / 255.0).powf(inv_gamma);

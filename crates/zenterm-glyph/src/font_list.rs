@@ -97,7 +97,7 @@ fn check_panose_monospaced(path: &std::path::Path) -> bool {
     }
 
     // Walk the directory looking for "OS/2".
-    for entry in table_dir.chunks_exact(16) {
+    for entry in table_dir.as_chunks::<16>().0 {
         let tag = &entry[0..4];
         if tag != b"OS/2" {
             continue;
