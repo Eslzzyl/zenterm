@@ -5,11 +5,6 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to build artifacts for, without the v prefix"
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -38,24 +33,19 @@ jobs:
         id: resolve
         env:
           EVENT_NAME: ${{ github.event_name }}
-          INPUT_VERSION: ${{ inputs.version }}
         shell: bash
         run: |
           set -euo pipefail
 
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
-              echo "Invalid version: $INPUT_VERSION" >&2
-              exit 1
-            fi
-            REF="v${INPUT_VERSION}"
-            git fetch --force origin "refs/tags/${REF}:refs/tags/${REF}"
+            REF="$GITHUB_SHA"
+            TAG=""
           else
             REF="$GITHUB_REF_NAME"
+            TAG="$REF"
           fi
 
           git checkout --detach "$REF"
-          VERSION="${REF#v}"
           CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c '
           import json
           import sys
@@ -63,12 +53,17 @@ jobs:
           print(next(p["version"] for p in data["packages"] if p["name"] == "zenterm"))
           ')"
 
-          if [[ "$VERSION" != "$CARGO_VERSION" ]]; then
-            echo "Tag version ($VERSION) does not match Cargo version ($CARGO_VERSION)" >&2
-            exit 1
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            VERSION="$CARGO_VERSION"
+          else
+            VERSION="${TAG#v}"
+            if [[ "$VERSION" != "$CARGO_VERSION" ]]; then
+              echo "Tag version ($VERSION) does not match Cargo version ($CARGO_VERSION)" >&2
+              exit 1
+            fi
           fi
 
-          echo "tag=$REF" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
 
