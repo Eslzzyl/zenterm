@@ -83,7 +83,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: [clippy, rustfmt]
+          components: "clippy, rustfmt"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -133,7 +133,7 @@ jobs:
             expected_packages: 2
           - platform: windows
             arch: aarch64
-            runner: windows-11-vs2026-arm
+            runner: windows-11-arm
             target: aarch64-pc-windows-msvc
             formats: nsis,wix
             expected_packages: 2
