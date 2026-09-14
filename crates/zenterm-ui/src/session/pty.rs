@@ -239,37 +239,49 @@ impl TerminalSession {
                             {
                                 if let Ok(mut handle) = n.show() {
                                     use notify_rust::NotificationResponse;
-                                    handle.wait_for_response(|response| match response {
-                                        NotificationResponse::Closed(_reason) => {
-                                            if close_report {
-                                                let id = notif_id.as_deref().unwrap_or("0");
-                                                let resp =
-                                                    format!("\x1b]99;i={}:p=close;\x1b\\\\", id);
-                                                let _ = resp_tx.send(resp);
-                                            }
-                                        }
-                                        NotificationResponse::Action(act) => {
-                                            if report_click {
-                                                let id = notif_id.as_deref().unwrap_or("0");
-                                                if let Some(num) = act.strip_prefix("btn") {
-                                                    let resp =
-                                                        format!("\x1b]99;i={};{}\x1b\\\\", id, num);
-                                                    let _ = resp_tx.send(resp);
-                                                } else {
-                                                    let resp = format!("\x1b]99;i={};\x1b\\\\", id);
-                                                    let _ = resp_tx.send(resp);
+                                    handle.wait_for_response(
+                                        |response: &notify_rust::NotificationResponse| {
+                                            match response {
+                                                NotificationResponse::Closed(_reason) => {
+                                                    if close_report {
+                                                        let id = notif_id.as_deref().unwrap_or("0");
+                                                        let resp = format!(
+                                                            "\x1b]99;i={}:p=close;\x1b\\\\",
+                                                            id
+                                                        );
+                                                        let _ = resp_tx.send(resp);
+                                                    }
                                                 }
+                                                NotificationResponse::Action(act) => {
+                                                    if report_click {
+                                                        let id = notif_id.as_deref().unwrap_or("0");
+                                                        if let Some(num) = act.strip_prefix("btn") {
+                                                            let resp = format!(
+                                                                "\x1b]99;i={};{}\x1b\\\\",
+                                                                id, num
+                                                            );
+                                                            let _ = resp_tx.send(resp);
+                                                        } else {
+                                                            let resp = format!(
+                                                                "\x1b]99;i={};\x1b\\\\",
+                                                                id
+                                                            );
+                                                            let _ = resp_tx.send(resp);
+                                                        }
+                                                    }
+                                                }
+                                                NotificationResponse::Default => {
+                                                    if report_click {
+                                                        let id = notif_id.as_deref().unwrap_or("0");
+                                                        let resp =
+                                                            format!("\x1b]99;i={};\x1b\\\\", id);
+                                                        let _ = resp_tx.send(resp);
+                                                    }
+                                                }
+                                                NotificationResponse::Reply(_) => {}
                                             }
-                                        }
-                                        NotificationResponse::Default => {
-                                            if report_click {
-                                                let id = notif_id.as_deref().unwrap_or("0");
-                                                let resp = format!("\x1b]99;i={};\x1b\\\\", id);
-                                                let _ = resp_tx.send(resp);
-                                            }
-                                        }
-                                        NotificationResponse::Reply(_) => {}
-                                    });
+                                        },
+                                    );
                                 }
                             }
                             #[cfg(not(all(unix, not(target_os = "macos"))))]
