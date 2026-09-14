@@ -106,7 +106,13 @@ jobs:
             arch: x86_64
             runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            formats: deb,appimage
+            formats: deb,rpm
+            expected_packages: 2
+          - platform: linux
+            arch: aarch64
+            runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            formats: deb,rpm
             expected_packages: 2
           - platform: macos
             arch: x86_64
@@ -184,11 +190,11 @@ jobs:
 
           find_packages() {
             find dist -type f \( \
-              -name '*.AppImage' -o \
               -name '*.deb' -o \
               -name '*.dmg' -o \
               -name '*.exe' -o \
-              -name '*.msi' \)
+              -name '*.msi' -o \
+              -name '*.rpm' \)
           }
 
           PACKAGE_COUNT="$(find_packages | wc -l | tr -d ' ')"
@@ -201,11 +207,11 @@ jobs:
 
           find_packages | while IFS= read -r file; do
             case "$file" in
-              *.AppImage) extension="AppImage" ;;
               *.deb)      extension="deb" ;;
               *.dmg)      extension="dmg" ;;
               *.exe)      extension="exe" ;;
               *.msi)      extension="msi" ;;
+              *.rpm)      extension="rpm" ;;
               *)           continue ;;
             esac
             mv "$file" "dist/zenterm-${VERSION}-${PLATFORM}-${ARCH}.${extension}"

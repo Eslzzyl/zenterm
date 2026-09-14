@@ -26,4 +26,5 @@ runs:
           libxkbcommon-dev \
           libxkbcommon-x11-dev \
           pkg-config \
-          patchelf
+          patchelf \
+          rpm
