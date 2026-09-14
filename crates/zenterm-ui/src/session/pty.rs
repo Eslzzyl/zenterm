@@ -237,9 +237,9 @@ impl TerminalSession {
                         if report_click || close_report {
                             #[cfg(all(unix, not(target_os = "macos")))]
                             {
-                                if let Ok(mut handle) = n.show() {
+                                if let Ok(handle) = n.show() {
                                     use notify_rust::NotificationResponse;
-                                    handle.wait_for_response(
+                                    if let Err(e) = handle.wait_for_response(
                                         |response: &notify_rust::NotificationResponse| {
                                             match response {
                                                 NotificationResponse::Closed(_reason) => {
@@ -281,7 +281,9 @@ impl TerminalSession {
                                                 NotificationResponse::Reply(_) => {}
                                             }
                                         },
-                                    );
+                                    ) {
+                                        log::warn!("failed to wait for notification response: {e}");
+                                    }
                                 }
                             }
                             #[cfg(not(all(unix, not(target_os = "macos"))))]
