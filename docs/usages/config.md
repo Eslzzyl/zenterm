@@ -105,9 +105,15 @@ render_mode = "Subpixel"
 
 Controls all colours used by the terminal.
 
+The Settings → Colors page includes live terminal/UI previews and four
+one-click theme families: Default, Nord, Forest, and Sepia. Each family has
+light and dark variants. Individual colour fields below remain available for
+custom overrides.
+
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `theme` | `string` | `"System"` | Built-in theme preference. One of: `"Dark"`, `"Light"`, `"System"`. `"System"` follows the OS dark/light mode setting. |
+| `appearance` | `string` | `"System"` | Appearance mode. One of: `"Dark"`, `"Light"`, `"System"`. `"System"` follows the OS dark/light mode setting. |
+| `palette` | `string` | `"Default"` | Colour theme family. One of: `"Default"`, `"Nord"`, `"Forest"`, `"Sepia"`. The selected appearance mode chooses its light or dark variant. |
 | `primary` | `{ ... }` | — | Core foreground and background colours (see below). |
 | `cursor` | `{ ... }` | — | Cursor colours. |
 | `selection` | `{ ... }` | — | Selection highlight colours. |
@@ -122,24 +128,24 @@ uses the cell's own background/foreground colour (inverse video).
 
 | Key | Default (Dark) | Default (Light) | Description |
 |-----|---------------|-----------------|-------------|
-| `foreground` | `"#dcdcdc"` | `"#1e1e1e"` | Default text colour. |
-| `background` | `"#000000"` | `"#ffffff"` | Default background colour. |
-| `dim_foreground` | `"#8c8c8c"` | `"#8c8c8c"` | Text colour for the "dim" (half-intensity) SGR attribute. |
-| `bright_foreground` | `"#ffffff"` | `"#000000"` | Text colour used when bold text is displayed. |
+| `foreground` | `"#d8dee9"` | `"#27313b"` | Default text colour. |
+| `background` | `"#111318"` | `"#fbfaf7"` | Default background colour. |
+| `dim_foreground` | `"#8e97a6"` | `"#6f7882"` | Text colour for the "dim" (half-intensity) SGR attribute. |
+| `bright_foreground` | `"#ffffff"` | `"#192028"` | Text colour used when bold text is displayed. |
 
 ### `[colors.cursor]`
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `text` | `"CellBackground"` | Colour of the text under the cursor. |
-| `cursor` | `"CellForeground"` | Colour of the cursor cell itself. |
+| Key | Default (Dark) | Default (Light) | Description |
+|-----|----------------|-----------------|-------------|
+| `text` | `"#111318"` | `"#fbfaf7"` | Colour of the text under the cursor. |
+| `cursor` | `"#a78bfa"` | `"#6657b3"` | Colour of the cursor cell itself. |
 
 ### `[colors.selection]`
 
 | Key | Default (Dark) | Default (Light) | Description |
 |-----|---------------|-----------------|-------------|
-| `foreground` | `"#dcdcdc"` | `"#1e1e1e"` | Foreground colour of selected text. |
-| `background` | `"#516ca5"` | `"#82aafa"` | Background colour of selected text. |
+| `foreground` | `"#f5f3ff"` | `"#27313b"` | Foreground colour of selected text. |
+| `background` | `"#393052"` | `"#ddd8f3"` | Background colour of selected text. |
 
 ### `[colors.normal]` / `[colors.bright]`
 
@@ -149,33 +155,34 @@ Both sections accept the same 8 colour keys. Below are the built-in defaults.
 
 | Key | Normal | Bright |
 |-----|--------|--------|
-| `black` | `"#000000"` | `"#555555"` |
-| `red` | `"#aa0000"` | `"#ff5555"` |
-| `green` | `"#00aa00"` | `"#55ff55"` |
-| `yellow` | `"#aa5500"` | `"#ffff55"` |
-| `blue` | `"#0000aa"` | `"#5555ff"` |
-| `magenta` | `"#aa00aa"` | `"#ff55ff"` |
-| `cyan` | `"#00aaaa"` | `"#55ffff"` |
-| `white` | `"#c8c8c8"` | `"#ffffff"` |
+| `black` | `"#1b1f27"` | `"#5c6370"` |
+| `red` | `"#e06c75"` | `"#ff7b86"` |
+| `green` | `"#98c379"` | `"#b5e890"` |
+| `yellow` | `"#e5c07b"` | `"#ffd58a"` |
+| `blue` | `"#61afef"` | `"#7cc7ff"` |
+| `magenta` | `"#c678dd"` | `"#e29aff"` |
+| `cyan` | `"#56b6c2"` | `"#73e0e8"` |
+| `white` | `"#abb2bf"` | `"#ffffff"` |
 
 **Light theme:**
 
 | Key | Normal | Bright |
 |-----|--------|--------|
-| `black` | `"#0c0c0c"` | `"#767676"` |
-| `red` | `"#c50f1f"` | `"#e74856"` |
-| `green` | `"#13a10e"` | `"#16c60c"` |
-| `yellow` | `"#c19c00"` | `"#c8af00"` |
-| `blue` | `"#0037da"` | `"#3b78ff"` |
-| `magenta` | `"#881798"` | `"#b4009e"` |
-| `cyan` | `"#3a96dd"` | `"#61d6d6"` |
-| `white` | `"#cccccc"` | `"#f2f2f2"` |
+| `black` | `"#2e343d"` | `"#69707b"` |
+| `red` | `"#b44347"` | `"#d1575b"` |
+| `green` | `"#3f7e46"` | `"#539b5b"` |
+| `yellow` | `"#91691b"` | `"#ab8028"` |
+| `blue` | `"#355c9a"` | `"#4874b9"` |
+| `magenta` | `"#7f488b"` | `"#9758a6"` |
+| `cyan` | `"#267780"` | `"#30919b"` |
+| `white` | `"#717982"` | `"#27313b"` |
 
 ### Complete colour example
 
 ```toml
 [colors]
-theme = "Dark"
+appearance = "Dark"
+palette = "Nord"
 
 [colors.primary]
 foreground = "#d8d8d8"
@@ -345,7 +352,8 @@ size = 14.0
 normal = { family = "JetBrains Mono" }
 
 [colors]
-theme = "Dark"
+appearance = "Dark"
+palette = "Default"
 
 [colors.primary]
 foreground = "#d8d8d8"

@@ -13,13 +13,15 @@ use std::collections::HashSet;
 use zenterm_config::Config;
 use zenterm_config::background::{BackgroundConfig, ImageFitMode};
 use zenterm_config::colors::{
-    AnsiColors, ColorsConfig, CursorColors, PrimaryColors, SelectionColors, ThemePreference,
+    AnsiColors, ColorTheme, ColorsConfig, CursorColors, PrimaryColors, SelectionColors,
+    ThemePreference,
 };
 use zenterm_config::cursor::{Blinking, CursorConfig, CursorShape};
 use zenterm_config::font::{FontConfig, FontDescription};
 use zenterm_config::selection::SelectionConfig;
 use zenterm_config::ui::{SidebarPosition, UiConfig};
 use zenterm_config::window::WindowConfig;
+use zenterm_core::color::Rgba;
 use zenterm_core::{HintingMode, RenderMode};
 
 use crate::settings_widgets;
@@ -359,18 +361,30 @@ fn render_font_description(
 // ── Colors section ───────────────────────────────────────────────────────
 
 fn render_colors_section(ui: &mut egui::Ui, c: &mut ColorsConfig) {
-    settings_widgets::section_header(ui, "Theme", "Built-in colour scheme.");
+    settings_widgets::section_header(
+        ui,
+        "Appearance",
+        "Choose how light and dark variants are selected.",
+    );
     settings_widgets::combo_setting(
         ui,
-        "Theme Preference",
-        &mut c.theme,
+        "Appearance Mode",
+        &mut c.appearance,
         &[
             (ThemePreference::System, "System"),
             (ThemePreference::Dark, "Dark"),
             (ThemePreference::Light, "Light"),
         ],
-        "Automatically follow system preference, or force Dark/Light",
+        "Follow the system preference, or force Light/Dark",
     );
+
+    ui.add_space(8.0);
+    settings_widgets::section_header(
+        ui,
+        "Colour Theme",
+        "Each theme provides a light and dark variant.",
+    );
+    render_palette_gallery(ui, c);
 
     ui.add_space(8.0);
     settings_widgets::section_header(ui, "Primary", "Default text and background.");
@@ -391,6 +405,322 @@ fn render_colors_section(ui: &mut egui::Ui, c: &mut ColorsConfig) {
     ui.add_space(8.0);
     settings_widgets::section_header(ui, "Bright ANSI", "The 8 bright ANSI colours.");
     render_ansi_colors(ui, &mut c.bright);
+}
+
+// ── Theme preview and presets ────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+struct PalettePreset {
+    palette: ColorTheme,
+    name: &'static str,
+    description: &'static str,
+}
+
+const PALETTE_PRESETS: [PalettePreset; 4] = [
+    PalettePreset {
+        palette: ColorTheme::Default,
+        name: "Default",
+        description: "Zenterm balanced default",
+    },
+    PalettePreset {
+        palette: ColorTheme::Nord,
+        name: "Nord",
+        description: "Calm blue-grey",
+    },
+    PalettePreset {
+        palette: ColorTheme::Forest,
+        name: "Forest",
+        description: "Soft green contrast",
+    },
+    PalettePreset {
+        palette: ColorTheme::Sepia,
+        name: "Sepia",
+        description: "Warm paper tones",
+    },
+];
+
+fn render_palette_gallery(ui: &mut egui::Ui, c: &mut ColorsConfig) {
+    ui.label(
+        egui::RichText::new("Choose a theme family or edit individual colours below.")
+            .color(
+                ui.visuals()
+                    .weak_text_color
+                    .unwrap_or(ui.visuals().text_color()),
+            )
+            .size(12.0),
+    );
+    ui.add_space(6.0);
+
+    ui.horizontal_wrapped(|ui| {
+        for preset in PALETTE_PRESETS.iter().copied() {
+            let desired = egui::vec2(154.0, 72.0);
+            let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
+            let dark_config = ColorsConfig {
+                appearance: ThemePreference::Dark,
+                palette: preset.palette,
+                ..ColorsConfig::default()
+            };
+            let light_config = ColorsConfig {
+                appearance: ThemePreference::Light,
+                palette: preset.palette,
+                ..ColorsConfig::default()
+            };
+            let current_theme = if ui.visuals().dark_mode {
+                dark_config.to_theme(true)
+            } else {
+                light_config.to_theme(false)
+            };
+            let dark_theme = dark_config.to_theme(true);
+            let light_theme = light_config.to_theme(false);
+            let background = rgba_to_color32(&current_theme.background);
+            let foreground = rgba_to_color32(&current_theme.foreground);
+            let accent = rgba_to_color32(&current_theme.ui_accent);
+            let selected = c.palette == preset.palette;
+
+            ui.painter()
+                .rect_filled(rect, egui::CornerRadius::same(8), background);
+            ui.painter().rect_stroke(
+                rect,
+                egui::CornerRadius::same(8),
+                egui::Stroke::new(
+                    if selected { 2.0_f32 } else { 1.0_f32 },
+                    if selected {
+                        accent
+                    } else {
+                        foreground.gamma_multiply(0.28)
+                    },
+                ),
+                egui::StrokeKind::Inside,
+            );
+            ui.painter().text(
+                rect.left_top() + egui::vec2(12.0, 10.0),
+                egui::Align2::LEFT_TOP,
+                preset.name,
+                egui::FontId::proportional(14.0),
+                foreground,
+            );
+            ui.painter().text(
+                rect.left_top() + egui::vec2(12.0, 31.0),
+                egui::Align2::LEFT_TOP,
+                preset.description,
+                egui::FontId::proportional(11.0),
+                foreground.gamma_multiply(0.68),
+            );
+            for (index, color) in current_theme.ansi_normal.iter().skip(1).take(4).enumerate() {
+                let swatch = egui::Rect::from_min_size(
+                    rect.left_bottom() + egui::vec2(12.0 + index as f32 * 23.0, -18.0),
+                    egui::vec2(16.0, 8.0),
+                );
+                ui.painter().rect_filled(
+                    swatch,
+                    egui::CornerRadius::same(3),
+                    rgba_to_color32(color),
+                );
+            }
+
+            let mode_swatch = egui::Rect::from_min_size(
+                rect.right_bottom() - egui::vec2(42.0, 18.0),
+                egui::vec2(30.0, 8.0),
+            );
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(mode_swatch.left_top(), egui::vec2(15.0, 8.0)),
+                egui::CornerRadius::same(3),
+                rgba_to_color32(&dark_theme.background),
+            );
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(
+                    mode_swatch.left_top() + egui::vec2(15.0, 0.0),
+                    egui::vec2(15.0, 8.0),
+                ),
+                egui::CornerRadius::same(3),
+                rgba_to_color32(&light_theme.background),
+            );
+
+            let clicked = response.clicked();
+            response.on_hover_text(format!("Apply {} palette", preset.name));
+            if clicked {
+                apply_palette(c, preset);
+            }
+        }
+    });
+
+    if ui
+        .small_button("Use built-in default colours")
+        .on_hover_text("Clear custom colour overrides for the selected theme")
+        .clicked()
+    {
+        let preference = c.appearance;
+        *c = ColorsConfig::default();
+        c.appearance = preference;
+    }
+
+    ui.add_space(8.0);
+    render_theme_preview(ui, c);
+}
+
+fn render_theme_preview(ui: &mut egui::Ui, c: &ColorsConfig) {
+    let theme = c.to_theme(ui.visuals().dark_mode);
+    let bg = rgba_to_color32(&theme.background);
+    let fg = rgba_to_color32(&theme.foreground);
+    let dim = rgba_to_color32(&theme.dim_foreground);
+    let accent = rgba_to_color32(&theme.ui_accent);
+    let selection = rgba_to_color32(&theme.selection_bg);
+    let surface = rgba_to_color32(&theme.ui_surface);
+
+    ui.label(egui::RichText::new("Live preview").strong().size(13.0));
+    ui.add_space(4.0);
+
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 184.0),
+        egui::Sense::hover(),
+    );
+    {
+        let painter = ui.painter();
+        painter.rect_filled(rect, egui::CornerRadius::same(10), bg);
+        painter.rect_stroke(
+            rect,
+            egui::CornerRadius::same(10),
+            egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.35)),
+            egui::StrokeKind::Inside,
+        );
+
+        let origin = rect.left_top() + egui::vec2(16.0, 14.0);
+        let mono = egui::FontId::monospace(13.0);
+        painter.text(
+            origin,
+            egui::Align2::LEFT_TOP,
+            "user@zenterm  ~/project",
+            mono.clone(),
+            dim,
+        );
+
+        let line_y = [38.0, 61.0, 84.0, 107.0];
+        painter.text(
+            origin + egui::vec2(0.0, line_y[0]),
+            egui::Align2::LEFT_TOP,
+            "$ cargo check",
+            mono.clone(),
+            fg,
+        );
+        painter.text(
+            origin + egui::vec2(0.0, line_y[1]),
+            egui::Align2::LEFT_TOP,
+            "✓ finished successfully",
+            mono.clone(),
+            rgba_to_color32(&theme.ansi_normal[2]),
+        );
+        painter.text(
+            origin + egui::vec2(0.0, line_y[2]),
+            egui::Align2::LEFT_TOP,
+            "warning: unused variable",
+            mono.clone(),
+            rgba_to_color32(&theme.ansi_normal[3]),
+        );
+        painter.text(
+            origin + egui::vec2(0.0, line_y[3]),
+            egui::Align2::LEFT_TOP,
+            "error: could not compile",
+            mono.clone(),
+            rgba_to_color32(&theme.ansi_normal[1]),
+        );
+
+        let selected_rect = egui::Rect::from_min_size(
+            origin + egui::vec2(205.0, line_y[0] - 2.0),
+            egui::vec2(91.0, 18.0),
+        );
+        painter.rect_filled(selected_rect, egui::CornerRadius::same(3), selection);
+        painter.text(
+            selected_rect.left_top() + egui::vec2(6.0, 1.0),
+            egui::Align2::LEFT_TOP,
+            "selected",
+            mono.clone(),
+            rgba_to_color32(&theme.selection_fg),
+        );
+        painter.rect_filled(
+            egui::Rect::from_min_size(origin + egui::vec2(310.0, line_y[0]), egui::vec2(2.0, 16.0)),
+            1.0,
+            accent,
+        );
+
+        let swatch_y = rect.bottom() - 30.0;
+        painter.text(
+            egui::pos2(rect.left() + 16.0, swatch_y - 1.0),
+            egui::Align2::LEFT_TOP,
+            "ANSI",
+            egui::FontId::proportional(10.0),
+            dim,
+        );
+        for (index, color) in theme
+            .ansi_normal
+            .iter()
+            .chain(theme.ansi_bright.iter())
+            .enumerate()
+        {
+            let swatch = egui::Rect::from_min_size(
+                egui::pos2(rect.left() + 51.0 + index as f32 * 15.0, swatch_y),
+                egui::vec2(11.0, 11.0),
+            );
+            painter.rect_filled(swatch, egui::CornerRadius::same(3), rgba_to_color32(color));
+        }
+    }
+
+    ui.add_space(6.0);
+    let (surface_rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 46.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(
+        surface_rect,
+        egui::CornerRadius::same(8),
+        rgba_to_color32(&theme.ui_bg),
+    );
+    painter.rect_filled(
+        egui::Rect::from_min_size(
+            surface_rect.left_top() + egui::vec2(10.0, 9.0),
+            egui::vec2(82.0, 28.0),
+        ),
+        egui::CornerRadius::same(5),
+        surface,
+    );
+    painter.text(
+        surface_rect.left_top() + egui::vec2(23.0, 15.0),
+        egui::Align2::LEFT_TOP,
+        "workspace",
+        egui::FontId::proportional(12.0),
+        fg,
+    );
+    painter.rect_filled(
+        egui::Rect::from_min_size(
+            surface_rect.left_top() + egui::vec2(105.0, 9.0),
+            egui::vec2(78.0, 28.0),
+        ),
+        egui::CornerRadius::same(5),
+        accent,
+    );
+    painter.text(
+        surface_rect.left_top() + egui::vec2(121.0, 15.0),
+        egui::Align2::LEFT_TOP,
+        "active tab",
+        egui::FontId::proportional(12.0),
+        bg,
+    );
+}
+
+fn apply_palette(c: &mut ColorsConfig, preset: PalettePreset) {
+    c.palette = preset.palette;
+    c.primary = PrimaryColors::default();
+    c.cursor = CursorColors::default();
+    c.selection = SelectionColors::default();
+    c.normal = AnsiColors::default();
+    c.bright = AnsiColors::default();
+}
+
+fn rgba_to_color32(c: &Rgba) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(
+        (c.r() * 255.0).round().clamp(0.0, 255.0) as u8,
+        (c.g() * 255.0).round().clamp(0.0, 255.0) as u8,
+        (c.b() * 255.0).round().clamp(0.0, 255.0) as u8,
+        (c.a() * 255.0).round().clamp(0.0, 255.0) as u8,
+    )
 }
 
 fn render_primary_colors(ui: &mut egui::Ui, p: &mut PrimaryColors) {

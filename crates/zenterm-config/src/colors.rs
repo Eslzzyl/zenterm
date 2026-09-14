@@ -6,7 +6,7 @@
 //! update [`docs/usages/config.md`] to match.
 //!
 //! Each section mirrors the `[colors]` table in `zenterm.toml`.
-//! All fields are optional — `None` means "use the built-in theme default".
+//! Colour overrides are optional — `None` means "use the selected palette".
 
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -19,12 +19,15 @@ use zenterm_core::theme::Theme;
 /// The `[colors]` section of the config file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ColorsConfig {
-    /// Built-in theme preference: `"Dark"`, `"Light"`, or `"System"`.
-    /// Falls back to `System` when absent.
-    #[serde(default)]
-    pub theme: ThemePreference,
+    /// Appearance mode: `"Dark"`, `"Light"`, or `"System"`.
+    pub appearance: ThemePreference,
+
+    /// Colour theme family. Each family provides light and dark variants.
+    pub palette: ColorTheme,
 
     /// Core foreground / background colours.
+    ///
+    /// These are optional overrides on top of the selected palette.
     #[serde(default)]
     pub primary: PrimaryColors,
 
@@ -49,12 +52,40 @@ pub struct ColorsConfig {
 impl Default for ColorsConfig {
     fn default() -> Self {
         Self {
-            theme: ThemePreference::System,
+            appearance: ThemePreference::System,
+            palette: ColorTheme::Default,
             primary: PrimaryColors::default(),
             cursor: CursorColors::default(),
             selection: SelectionColors::default(),
             normal: AnsiColors::default(),
             bright: AnsiColors::default(),
+        }
+    }
+}
+
+/// A colour theme family with both light and dark variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ColorTheme {
+    #[default]
+    #[serde(rename = "Default")]
+    Default,
+    #[serde(rename = "Nord")]
+    Nord,
+    #[serde(rename = "Forest")]
+    Forest,
+    #[serde(rename = "Sepia")]
+    Sepia,
+}
+
+impl ColorTheme {
+    pub const ALL: [Self; 4] = [Self::Default, Self::Nord, Self::Forest, Self::Sepia];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Default => "Default",
+            Self::Nord => "Nord",
+            Self::Forest => "Forest",
+            Self::Sepia => "Sepia",
         }
     }
 }
@@ -133,13 +164,17 @@ impl ColorsConfig {
     /// Build a [`Theme`] from this config section, using the built-in
     /// theme as a base and overlaying any custom colours that were set.
     pub fn to_theme(&self, system_dark: bool) -> Theme {
-        let pref = match self.theme {
+        let pref = match self.appearance {
             ThemePreference::Dark => zenterm_core::theme::ThemePreference::Dark,
             ThemePreference::Light => zenterm_core::theme::ThemePreference::Light,
             ThemePreference::System => zenterm_core::theme::ThemePreference::System,
         };
         let mut theme = Theme::resolve(pref, system_dark);
-        theme.name = Cow::Owned(self.theme_name());
+        apply_palette(
+            &mut theme,
+            self.palette,
+            self.appearance_is_dark(system_dark),
+        );
 
         // Apply primary overrides.
         if let Some(c) = parse_hex_opt(&self.primary.foreground) {
@@ -199,15 +234,167 @@ impl ColorsConfig {
             theme.ui_accent = theme.selection_bg;
         }
 
+        theme.name = Cow::Owned(self.theme_name());
         theme
     }
 
     fn theme_name(&self) -> String {
-        match self.theme {
-            ThemePreference::Dark => "Dark (customised)".into(),
-            ThemePreference::Light => "Light (customised)".into(),
-            ThemePreference::System => "System (customised)".into(),
+        if self.has_custom_colors() {
+            format!("{} (customised)", self.palette.label())
+        } else {
+            self.palette.label().into()
         }
+    }
+
+    fn appearance_is_dark(&self, system_dark: bool) -> bool {
+        match self.appearance {
+            ThemePreference::Dark => true,
+            ThemePreference::Light => false,
+            ThemePreference::System => system_dark,
+        }
+    }
+
+    /// Whether any individual colour override is active.
+    pub fn has_custom_colors(&self) -> bool {
+        self.primary != PrimaryColors::default()
+            || self.cursor != CursorColors::default()
+            || self.selection != SelectionColors::default()
+            || self.normal != AnsiColors::default()
+            || self.bright != AnsiColors::default()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PaletteColors {
+    foreground: &'static str,
+    background: &'static str,
+    cursor: &'static str,
+    selection: &'static str,
+    selection_fg: &'static str,
+    normal: [&'static str; 8],
+    bright: [&'static str; 8],
+}
+
+fn apply_palette(theme: &mut Theme, palette: ColorTheme, dark: bool) {
+    let Some(colors) = palette_colors(palette, dark) else {
+        theme.name = Cow::Owned(palette.label().into());
+        return;
+    };
+
+    theme.foreground = parse_builtin(colors.foreground);
+    theme.background = parse_builtin(colors.background);
+    theme.cursor_bg = parse_builtin(colors.cursor);
+    theme.cursor_fg = parse_builtin(colors.background);
+    theme.selection_bg = parse_builtin(colors.selection);
+    theme.selection_fg = parse_builtin(colors.selection_fg);
+    theme.ansi_normal = colors.normal.map(parse_builtin);
+    theme.ansi_bright = colors.bright.map(parse_builtin);
+    theme.dim_foreground = blend_rgba(theme.foreground, theme.background, 0.55);
+    theme.bright_foreground = if dark {
+        Rgba::from_u8(255, 255, 255, 255)
+    } else {
+        Rgba::from_u8(25, 32, 40, 255)
+    };
+    theme.name = Cow::Owned(palette.label().into());
+}
+
+fn parse_builtin(hex: &str) -> Rgba {
+    parse_hex(hex).expect("built-in palette contains a valid colour")
+}
+
+fn palette_colors(palette: ColorTheme, dark: bool) -> Option<PaletteColors> {
+    match (palette, dark) {
+        (ColorTheme::Default, _) => None,
+        (ColorTheme::Nord, true) => Some(PaletteColors {
+            foreground: "#d8dee9",
+            background: "#2e3440",
+            cursor: "#88c0d0",
+            selection: "#434c5e",
+            selection_fg: "#eceff4",
+            normal: [
+                "#3b4252", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#88c0d0",
+                "#e5e9f0",
+            ],
+            bright: [
+                "#4c566a", "#d08770", "#b1d196", "#f0d399", "#8fbcdb", "#c39aba", "#8fcedd",
+                "#eceff4",
+            ],
+        }),
+        (ColorTheme::Nord, false) => Some(PaletteColors {
+            foreground: "#263445",
+            background: "#f4f7fb",
+            cursor: "#3478b9",
+            selection: "#d8e8f7",
+            selection_fg: "#263445",
+            normal: [
+                "#354052", "#c04f5e", "#3d7a57", "#9a7316", "#2f68a2", "#8c5a9e", "#267f86",
+                "#607080",
+            ],
+            bright: [
+                "#718096", "#d96573", "#5d9f72", "#b58b2a", "#4b8cc7", "#a776b5", "#3b9da4",
+                "#263445",
+            ],
+        }),
+        (ColorTheme::Forest, true) => Some(PaletteColors {
+            foreground: "#d8e8dc",
+            background: "#101914",
+            cursor: "#7dc9a2",
+            selection: "#284437",
+            selection_fg: "#d8e8dc",
+            normal: [
+                "#1f2a23", "#e27d8c", "#98c379", "#d8b46c", "#78a9c8", "#c39ac9", "#70c5b3",
+                "#d8e8dc",
+            ],
+            bright: [
+                "#526258", "#f29aa7", "#b5e890", "#efd08c", "#9bc9e6", "#dfb3e4", "#94e3cf",
+                "#f0faf2",
+            ],
+        }),
+        (ColorTheme::Forest, false) => Some(PaletteColors {
+            foreground: "#244037",
+            background: "#f3faf7",
+            cursor: "#2f8f6b",
+            selection: "#d4ede2",
+            selection_fg: "#244037",
+            normal: [
+                "#30483e", "#b64e5a", "#397a58", "#997326", "#3c6fa3", "#865a98", "#2f8176",
+                "#668077",
+            ],
+            bright: [
+                "#81988d", "#d76570", "#55a276", "#b28d3e", "#5a91c2", "#a374b2", "#4ca99d",
+                "#244037",
+            ],
+        }),
+        (ColorTheme::Sepia, true) => Some(PaletteColors {
+            foreground: "#ead8bf",
+            background: "#201b16",
+            cursor: "#d5a36a",
+            selection: "#4b3828",
+            selection_fg: "#ead8bf",
+            normal: [
+                "#3b3027", "#c46f63", "#93a36a", "#d2a95c", "#7fa3a8", "#b18ca9", "#7db1a8",
+                "#ead8bf",
+            ],
+            bright: [
+                "#746253", "#e18a7b", "#b3c485", "#edc879", "#9bc5c9", "#cba8c4", "#98d0c4",
+                "#fff4df",
+            ],
+        }),
+        (ColorTheme::Sepia, false) => Some(PaletteColors {
+            foreground: "#4b3828",
+            background: "#fbf5ea",
+            cursor: "#b06f3c",
+            selection: "#ead7c0",
+            selection_fg: "#4b3828",
+            normal: [
+                "#5c4a3a", "#a64b3c", "#5e7a49", "#9b6a1f", "#4d6f8f", "#80618a", "#4f817c",
+                "#85705d",
+            ],
+            bright: [
+                "#9b856f", "#c96554", "#78995b", "#bd8932", "#6b91b2", "#a27caf", "#6aa49d",
+                "#4b3828",
+            ],
+        }),
     }
 }
 

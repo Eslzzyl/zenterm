@@ -116,46 +116,46 @@ pub static THEME_DARK: Theme = Theme {
     name: Cow::Borrowed("Dark"),
 
     // Terminal basics.
-    foreground: srgb(220, 220, 220),
-    background: srgb(0, 0, 0),
-    cursor_bg: srgb(220, 220, 220),
-    cursor_fg: Rgba::TRANSPARENT,
-    selection_bg: srgb(80, 80, 100),
-    selection_fg: srgb(220, 220, 220),
+    foreground: srgb(216, 222, 233),
+    background: srgb(17, 19, 24),
+    cursor_bg: srgb(167, 139, 250),
+    cursor_fg: srgb(17, 19, 24),
+    selection_bg: srgb(57, 48, 82),
+    selection_fg: srgb(245, 243, 255),
 
     // ANSI normal.
     ansi_normal: [
-        srgb(0, 0, 0),       // Black
-        srgb(200, 50, 50),   // Red
-        srgb(80, 180, 80),   // Green
-        srgb(200, 180, 50),  // Yellow
-        srgb(50, 100, 200),  // Blue
-        srgb(180, 60, 180),  // Magenta
-        srgb(50, 170, 180),  // Cyan
-        srgb(190, 190, 190), // White
+        srgb(27, 31, 39),    // Black
+        srgb(224, 108, 117), // Red
+        srgb(152, 195, 121), // Green
+        srgb(229, 192, 123), // Yellow
+        srgb(97, 175, 239),  // Blue
+        srgb(198, 120, 221), // Magenta
+        srgb(86, 182, 194),  // Cyan
+        srgb(171, 178, 191), // White
     ],
 
     // ANSI bright.
     ansi_bright: [
-        srgb(100, 100, 100), // BrightBlack
-        srgb(255, 80, 80),   // BrightRed
-        srgb(100, 255, 100), // BrightGreen
-        srgb(255, 255, 80),  // BrightYellow
-        srgb(80, 130, 255),  // BrightBlue
-        srgb(255, 80, 255),  // BrightMagenta
-        srgb(80, 255, 255),  // BrightCyan
+        srgb(92, 99, 112),   // BrightBlack
+        srgb(255, 123, 134), // BrightRed
+        srgb(181, 224, 144), // BrightGreen
+        srgb(255, 213, 138), // BrightYellow
+        srgb(124, 199, 255), // BrightBlue
+        srgb(226, 154, 255), // BrightMagenta
+        srgb(115, 224, 232), // BrightCyan
         srgb(255, 255, 255), // BrightWhite
     ],
 
     // Extended.
-    dim_foreground: srgb(140, 140, 140),
+    dim_foreground: srgb(142, 151, 166),
     bright_foreground: srgb(255, 255, 255),
 
     // UI chrome.
-    ui_bg: srgb(30, 30, 30),
-    ui_text: srgb(200, 200, 200),
-    ui_accent: srgb(60, 120, 220),
-    ui_surface: srgb(45, 45, 45),
+    ui_bg: srgb(23, 26, 33),
+    ui_text: srgb(216, 222, 233),
+    ui_accent: srgb(167, 139, 250),
+    ui_surface: srgb(32, 37, 48),
 };
 
 /// Built-in light theme (sRGB approximate colour palette).
@@ -163,46 +163,46 @@ pub static THEME_LIGHT: Theme = Theme {
     name: Cow::Borrowed("Light"),
 
     // Terminal basics.
-    foreground: srgb(30, 30, 30),
-    background: srgb(255, 255, 255),
-    cursor_bg: srgb(30, 30, 30),
-    cursor_fg: Rgba::TRANSPARENT,
-    selection_bg: srgb(180, 180, 220),
-    selection_fg: srgb(30, 30, 30),
+    foreground: srgb(39, 49, 59),
+    background: srgb(251, 250, 247),
+    cursor_bg: srgb(102, 87, 179),
+    cursor_fg: srgb(251, 250, 247),
+    selection_bg: srgb(221, 216, 243),
+    selection_fg: srgb(39, 49, 59),
 
     // ANSI normal.
     ansi_normal: [
-        srgb(0, 0, 0),       // Black
-        srgb(200, 50, 50),   // Red
-        srgb(80, 180, 80),   // Green
-        srgb(180, 160, 40),  // Yellow
-        srgb(50, 80, 180),   // Blue
-        srgb(160, 50, 160),  // Magenta
-        srgb(40, 150, 160),  // Cyan
-        srgb(180, 180, 180), // White
+        srgb(46, 52, 61),    // Black
+        srgb(180, 67, 71),   // Red
+        srgb(63, 126, 70),   // Green
+        srgb(145, 105, 27),  // Yellow
+        srgb(53, 92, 154),   // Blue
+        srgb(127, 72, 139),  // Magenta
+        srgb(38, 119, 128),  // Cyan
+        srgb(113, 121, 130), // White
     ],
 
     // ANSI bright.
     ansi_bright: [
-        srgb(100, 100, 100), // BrightBlack
-        srgb(255, 60, 60),   // BrightRed
-        srgb(60, 220, 60),   // BrightGreen
-        srgb(220, 220, 60),  // BrightYellow
-        srgb(60, 100, 220),  // BrightBlue
-        srgb(220, 60, 220),  // BrightMagenta
-        srgb(60, 220, 220),  // BrightCyan
-        srgb(255, 255, 255), // BrightWhite
+        srgb(105, 112, 123), // BrightBlack
+        srgb(209, 87, 91),   // BrightRed
+        srgb(83, 155, 91),   // BrightGreen
+        srgb(171, 128, 40),  // BrightYellow
+        srgb(72, 116, 185),  // BrightBlue
+        srgb(151, 88, 166),  // BrightMagenta
+        srgb(48, 145, 155),  // BrightCyan
+        srgb(39, 49, 59),    // BrightWhite
     ],
 
     // Extended.
-    dim_foreground: srgb(120, 120, 120),
-    bright_foreground: srgb(0, 0, 0),
+    dim_foreground: srgb(111, 120, 130),
+    bright_foreground: srgb(25, 32, 40),
 
     // UI chrome.
-    ui_bg: srgb(235, 235, 235),
-    ui_text: srgb(30, 30, 30),
-    ui_accent: srgb(60, 100, 200),
-    ui_surface: srgb(220, 220, 220),
+    ui_bg: srgb(243, 241, 237),
+    ui_text: srgb(39, 49, 59),
+    ui_accent: srgb(102, 87, 179),
+    ui_surface: srgb(235, 232, 226),
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -212,14 +212,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dark_theme_has_black_background() {
-        assert_eq!(THEME_DARK.background, Rgba::BLACK);
+    fn dark_theme_has_deep_background() {
+        assert_eq!(THEME_DARK.background, Rgba::from_u8(17, 19, 24, 255));
         assert_eq!(THEME_DARK.name.as_ref(), "Dark");
     }
 
     #[test]
-    fn light_theme_has_white_background() {
-        assert_eq!(THEME_LIGHT.background, Rgba::WHITE);
+    fn light_theme_has_soft_background() {
+        assert_eq!(THEME_LIGHT.background, Rgba::from_u8(251, 250, 247, 255));
         assert_eq!(THEME_LIGHT.name.as_ref(), "Light");
     }
 
