@@ -106,14 +106,14 @@ jobs:
             arch: x86_64
             runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            formats: deb,rpm
-            expected_packages: 2
+            formats: deb
+            expected_packages: 1
           - platform: linux
             arch: aarch64
             runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-            formats: deb,rpm
-            expected_packages: 2
+            formats: deb
+            expected_packages: 1
           - platform: macos
             arch: x86_64
             runner: macos-15-intel
@@ -136,8 +136,10 @@ jobs:
             arch: aarch64
             runner: windows-11-arm
             target: aarch64-pc-windows-msvc
-            formats: nsis,wix
-            expected_packages: 2
+            # cargo-packager 0.11.8 bundles WiX 3.11.2, whose candle.exe
+            # does not accept -arch arm64. NSIS is the supported ARM64 installer.
+            formats: nsis
+            expected_packages: 1
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
@@ -164,19 +166,45 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           FORMATS: ${{ matrix.formats }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           rm -rf dist
           mkdir -p dist
 
           cargo build --package zenterm --release --locked --target "$TARGET"
-          cargo packager \
-            --packages zenterm \
-            --release \
-            --target "$TARGET" \
-            --formats "$FORMATS" \
-            --out-dir dist \
+          packager_args=(
+            --packages zenterm
+            --release
+            --target "$TARGET"
+            --formats "$FORMATS"
+            --out-dir dist
             --binaries-dir "target/$TARGET/release"
+          )
+
+          if [[ "$PLATFORM" == "macos" && "$ARCH" == "aarch64" ]]; then
+            packager_log="$(mktemp)"
+            trap 'rm -f "$packager_log"' EXIT
+            for attempt in 1 2 3; do
+              : > "$packager_log"
+              if cargo packager "${packager_args[@]}" 2>&1 | tee "$packager_log"; then
+                break
+              fi
+              if ! grep -Fq 'hdiutil: create failed - Resource busy' "$packager_log"; then
+                echo "cargo packager failed with a non-retryable error" >&2
+                exit 1
+              fi
+              if [[ "$attempt" -eq 3 ]]; then
+                exit 1
+              fi
+              echo "hdiutil reported Resource busy; retrying cargo packager (attempt $((attempt + 1))/3)"
+              rm -f dist/*.dmg
+              sleep $((attempt * 5))
+            done
+          else
+            cargo packager "${packager_args[@]}"
+          fi
 
       - name: Normalize and validate package names
         shell: bash
@@ -193,8 +221,7 @@ jobs:
               -name '*.deb' -o \
               -name '*.dmg' -o \
               -name '*.exe' -o \
-              -name '*.msi' -o \
-              -name '*.rpm' \)
+              -name '*.msi' \)
           }
 
           PACKAGE_COUNT="$(find_packages | wc -l | tr -d ' ')"
@@ -211,7 +238,6 @@ jobs:
               *.dmg)      extension="dmg" ;;
               *.exe)      extension="exe" ;;
               *.msi)      extension="msi" ;;
-              *.rpm)      extension="rpm" ;;
               *)           continue ;;
             esac
             mv "$file" "dist/zenterm-${VERSION}-${PLATFORM}-${ARCH}.${extension}"
