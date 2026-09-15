@@ -104,36 +104,42 @@ jobs:
         include:
           - platform: linux
             arch: x86_64
+            artifact_arch: x64
             runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             formats: deb
             expected_packages: 1
           - platform: linux
             arch: aarch64
+            artifact_arch: arm64
             runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             formats: deb
             expected_packages: 1
           - platform: macos
             arch: x86_64
+            artifact_arch: x64
             runner: macos-15-intel
             target: x86_64-apple-darwin
             formats: dmg
             expected_packages: 1
           - platform: macos
             arch: aarch64
+            artifact_arch: arm64
             runner: macos-15
             target: aarch64-apple-darwin
             formats: dmg
             expected_packages: 1
           - platform: windows
             arch: x86_64
+            artifact_arch: x64
             runner: windows-2025
             target: x86_64-pc-windows-msvc
             formats: nsis,wix
             expected_packages: 2
           - platform: windows
             arch: aarch64
+            artifact_arch: arm64
             runner: windows-11-arm
             target: aarch64-pc-windows-msvc
             # cargo-packager 0.11.8 bundles WiX 3.11.2, whose candle.exe
@@ -211,7 +217,7 @@ jobs:
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
           PLATFORM: ${{ matrix.platform }}
-          ARCH: ${{ matrix.arch }}
+          ARCH: ${{ matrix.artifact_arch }}
           EXPECTED_PACKAGES: ${{ matrix.expected_packages }}
         run: |
           set -euo pipefail
@@ -234,23 +240,52 @@ jobs:
 
           find_packages | while IFS= read -r file; do
             case "$file" in
-              *.deb)      extension="deb" ;;
-              *.dmg)      extension="dmg" ;;
-              *.exe)      extension="exe" ;;
-              *.msi)      extension="msi" ;;
+              *.deb)      package_name="zenterm-v${VERSION}-${PLATFORM}-${ARCH}.deb" ;;
+              *.dmg)      package_name="zenterm-v${VERSION}-${PLATFORM}-${ARCH}.dmg" ;;
+              *.exe)      package_name="zenterm-v${VERSION}-${PLATFORM}-${ARCH}-setup.exe" ;;
+              *.msi)      package_name="zenterm-v${VERSION}-${PLATFORM}-${ARCH}.msi" ;;
               *)           continue ;;
             esac
-            mv "$file" "dist/zenterm-${VERSION}-${PLATFORM}-${ARCH}.${extension}"
+            mv "$file" "dist/$package_name"
           done
 
           find dist -maxdepth 1 -type f -print
 
-      - uses: actions/upload-artifact@v7
+      - name: Upload Linux package
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v7
         with:
-          name: packages-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dist/*
+          path: dist/zenterm-v${{ needs.resolve.outputs.version }}-${{ matrix.platform }}-${{ matrix.artifact_arch }}.deb
           if-no-files-found: error
           retention-days: 30
+          archive: false
+
+      - name: Upload macOS package
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/zenterm-v${{ needs.resolve.outputs.version }}-${{ matrix.platform }}-${{ matrix.artifact_arch }}.dmg
+          if-no-files-found: error
+          retention-days: 30
+          archive: false
+
+      - name: Upload Windows setup package
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/zenterm-v${{ needs.resolve.outputs.version }}-${{ matrix.platform }}-${{ matrix.artifact_arch }}-setup.exe
+          if-no-files-found: error
+          retention-days: 30
+          archive: false
+
+      - name: Upload Windows MSI package
+        if: matrix.platform == 'windows' && matrix.arch == 'x86_64'
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/zenterm-v${{ needs.resolve.outputs.version }}-${{ matrix.platform }}-${{ matrix.artifact_arch }}.msi
+          if-no-files-found: error
+          retention-days: 30
+          archive: false
 
   release:
     name: Publish GitHub Release
@@ -262,7 +297,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: packages-*
+          pattern: zenterm-v${{ needs.resolve.outputs.version }}-*
           path: release-assets
           merge-multiple: true
 
