@@ -34,6 +34,7 @@ runs:
         apt_archives="$apt_root/archives"
         sudo install -d -m 0755 "$apt_root" "$apt_lists" "$apt_archives"
         sudo install -d -o _apt -g root -m 0755 "$apt_lists/partial" "$apt_archives/partial"
+        sudo chown -R _apt:root "$apt_root"
         sudo apt-get \
           -o "Dir::State::lists=$apt_lists/" \
           -o "Dir::Cache::archives=$apt_archives/" \
@@ -49,6 +50,7 @@ runs:
         apt_archives="$apt_root/archives"
         sudo install -d -m 0755 "$apt_root" "$apt_lists" "$apt_archives"
         sudo install -d -o _apt -g root -m 0755 "$apt_lists/partial" "$apt_archives/partial"
+        sudo chown -R _apt:root "$apt_root"
         apt_options=(
           -o "Dir::State::lists=$apt_lists/"
           -o "Dir::Cache::archives=$apt_archives/"
