@@ -5,26 +5,76 @@ description: Install the native Linux libraries required to compile zenterm (GTK
 runs:
   using: 'composite'
   steps:
+    - name: Determine APT cache date
+      id: apt-cache-date
+      shell: bash
+      run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache APT packages and indexes
+      id: apt-cache
+      uses: actions/cache@v4
+      with:
+        # The date limits the lifetime of package indexes while allowing the
+        # check job and the x86_64 Linux build to share the same daily cache.
+        path: |
+          ${{ runner.temp }}/zenterm-apt/archives
+          ${{ runner.temp }}/zenterm-apt/lists
+        key: zenterm-apt-ubuntu-22.04-${{ runner.arch }}-${{ steps.apt-cache-date.outputs.date }}-${{ hashFiles('.github/actions/install-linux-deps/action.yml') }}
+        restore-keys: |
+          zenterm-apt-ubuntu-22.04-${{ runner.arch }}-
+
+    - name: Update APT package indexes
+      if: steps.apt-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        apt_root="$RUNNER_TEMP/zenterm-apt"
+        apt_lists="$apt_root/lists"
+        apt_archives="$apt_root/archives"
+        sudo install -d -m 0755 "$apt_lists/partial" "$apt_archives/partial"
+        sudo apt-get \
+          -o "Dir::State::lists=$apt_lists/" \
+          -o "Dir::Cache::archives=$apt_archives/" \
+          update
+
     - name: Install Linux dependencies
       shell: bash
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          libasound2-dev \
-          libdbus-1-dev \
-          libfontconfig1-dev \
-          libfreetype6-dev \
-          libgtk-3-dev \
-          libudev-dev \
-          libwayland-dev \
-          libx11-dev \
-          libx11-xcb-dev \
-          libxcb1-dev \
-          libxcb-render-util0-dev \
-          libxcb-shape0-dev \
-          libxcb-xfixes0-dev \
-          libxkbcommon-dev \
-          libxkbcommon-x11-dev \
-          pkg-config \
-          patchelf \
+        set -euo pipefail
+
+        apt_root="$RUNNER_TEMP/zenterm-apt"
+        apt_lists="$apt_root/lists"
+        apt_archives="$apt_root/archives"
+        sudo install -d -m 0755 "$apt_lists/partial" "$apt_archives/partial"
+        apt_options=(
+          -o "Dir::State::lists=$apt_lists/"
+          -o "Dir::Cache::archives=$apt_archives/"
+        )
+        apt_packages=(
+          libasound2-dev
+          libdbus-1-dev
+          libfontconfig1-dev
+          libfreetype6-dev
+          libgtk-3-dev
+          libudev-dev
+          libwayland-dev
+          libx11-dev
+          libx11-xcb-dev
+          libxcb1-dev
+          libxcb-render-util0-dev
+          libxcb-shape0-dev
+          libxcb-xfixes0-dev
+          libxkbcommon-dev
+          libxkbcommon-x11-dev
+          pkg-config
+          patchelf
           rpm
+        )
+
+        # A cached index can become stale during the cache window. Retry once
+        # with a fresh index before reporting the installation failure.
+        if ! sudo apt-get "${apt_options[@]}" install -y "${apt_packages[@]}"; then
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install -y "${apt_packages[@]}"
+        fi

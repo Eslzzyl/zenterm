@@ -82,7 +82,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: release-x86_64-unknown-linux-gnu
+          # Quality checks use the dev profile; keep their target cache out of
+          # the release build cache so cargo-packager and release artifacts can
+          # be saved by the build job.
+          shared-key: release-check-x86_64-unknown-linux-gnu
+          cache-bin: true
+          cache-workspace-crates: true
 
       - uses: ./.github/actions/install-linux-deps
 
@@ -107,6 +112,8 @@ jobs:
             artifact_arch: x64
             runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            # This must differ from the check cache key above.
+            cache_key: release-build-x86_64-unknown-linux-gnu
             formats: deb
             expected_packages: 1
           - platform: linux
@@ -114,6 +121,7 @@ jobs:
             artifact_arch: arm64
             runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
+            cache_key: release-aarch64-unknown-linux-gnu
             formats: deb
             expected_packages: 1
           - platform: macos
@@ -121,6 +129,7 @@ jobs:
             artifact_arch: x64
             runner: macos-15-intel
             target: x86_64-apple-darwin
+            cache_key: release-x86_64-apple-darwin
             formats: dmg
             expected_packages: 1
           - platform: macos
@@ -128,6 +137,7 @@ jobs:
             artifact_arch: arm64
             runner: macos-15
             target: aarch64-apple-darwin
+            cache_key: release-aarch64-apple-darwin
             formats: dmg
             expected_packages: 1
           - platform: windows
@@ -135,6 +145,7 @@ jobs:
             artifact_arch: x64
             runner: windows-2025
             target: x86_64-pc-windows-msvc
+            cache_key: release-x86_64-pc-windows-msvc
             formats: nsis,wix
             expected_packages: 2
           - platform: windows
@@ -142,6 +153,7 @@ jobs:
             artifact_arch: arm64
             runner: windows-11-arm
             target: aarch64-pc-windows-msvc
+            cache_key: release-aarch64-pc-windows-msvc
             # cargo-packager 0.11.8 bundles WiX 3.11.2, whose candle.exe
             # does not accept -arch arm64. NSIS is the supported ARM64 installer.
             formats: nsis
@@ -158,7 +170,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: release-${{ matrix.target }}
+          shared-key: ${{ matrix.cache_key }}
+          cache-bin: true
+          cache-workspace-crates: true
 
       - uses: ./.github/actions/install-linux-deps
         if: matrix.platform == 'linux'
