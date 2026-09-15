@@ -18,7 +18,7 @@ resources = [
 [package.metadata.packager.nsis]
 template = "../../packaging/windows/installer.nsi"
 installer-icon = "../../assets/windows/zenterm.ico"
-install-mode = "both"
+installMode = "both"
 
 [package.metadata.packager.wix]
 template = "../../packaging/windows/main.wxs"

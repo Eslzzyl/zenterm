@@ -12,7 +12,7 @@ runs:
 
     - name: Cache APT packages and indexes
       id: apt-cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6.1.0
       with:
         # The date limits the lifetime of package indexes while allowing the
         # check job and the x86_64 Linux build to share the same daily cache.
@@ -32,7 +32,8 @@ runs:
         apt_root="$RUNNER_TEMP/zenterm-apt"
         apt_lists="$apt_root/lists"
         apt_archives="$apt_root/archives"
-        sudo install -d -m 0755 "$apt_lists/partial" "$apt_archives/partial"
+        sudo install -d -m 0755 "$apt_root" "$apt_lists" "$apt_archives"
+        sudo install -d -o _apt -g root -m 0755 "$apt_lists/partial" "$apt_archives/partial"
         sudo apt-get \
           -o "Dir::State::lists=$apt_lists/" \
           -o "Dir::Cache::archives=$apt_archives/" \
@@ -46,7 +47,8 @@ runs:
         apt_root="$RUNNER_TEMP/zenterm-apt"
         apt_lists="$apt_root/lists"
         apt_archives="$apt_root/archives"
-        sudo install -d -m 0755 "$apt_lists/partial" "$apt_archives/partial"
+        sudo install -d -m 0755 "$apt_root" "$apt_lists" "$apt_archives"
+        sudo install -d -o _apt -g root -m 0755 "$apt_lists/partial" "$apt_archives/partial"
         apt_options=(
           -o "Dir::State::lists=$apt_lists/"
           -o "Dir::Cache::archives=$apt_archives/"
@@ -77,4 +79,15 @@ runs:
         if ! sudo apt-get "${apt_options[@]}" install -y "${apt_packages[@]}"; then
           sudo apt-get "${apt_options[@]}" update
           sudo apt-get "${apt_options[@]}" install -y "${apt_packages[@]}"
+        fi
+
+    - name: Normalize APT cache ownership
+      if: always()
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        apt_root="$RUNNER_TEMP/zenterm-apt"
+        if [ -d "$apt_root" ]; then
+          sudo chown -R "$(id -u):$(id -g)" "$apt_root"
         fi
