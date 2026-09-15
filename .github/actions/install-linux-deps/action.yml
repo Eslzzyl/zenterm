@@ -17,8 +17,8 @@ runs:
         # The date limits the lifetime of package indexes while allowing the
         # check job and the x86_64 Linux build to share the same daily cache.
         path: |
-          ${{ runner.temp }}/zenterm-apt/archives
-          ${{ runner.temp }}/zenterm-apt/lists
+          /tmp/zenterm-apt/archives
+          /tmp/zenterm-apt/lists
         key: zenterm-apt-ubuntu-22.04-${{ runner.arch }}-${{ steps.apt-cache-date.outputs.date }}-${{ hashFiles('.github/actions/install-linux-deps/action.yml') }}
         restore-keys: |
           zenterm-apt-ubuntu-22.04-${{ runner.arch }}-
@@ -29,7 +29,7 @@ runs:
       run: |
         set -euo pipefail
 
-        apt_root="$RUNNER_TEMP/zenterm-apt"
+        apt_root="/tmp/zenterm-apt"
         apt_lists="$apt_root/lists"
         apt_archives="$apt_root/archives"
         sudo install -d -m 0755 "$apt_root" "$apt_lists" "$apt_archives"
@@ -45,7 +45,7 @@ runs:
       run: |
         set -euo pipefail
 
-        apt_root="$RUNNER_TEMP/zenterm-apt"
+        apt_root="/tmp/zenterm-apt"
         apt_lists="$apt_root/lists"
         apt_archives="$apt_root/archives"
         sudo install -d -m 0755 "$apt_root" "$apt_lists" "$apt_archives"
@@ -89,7 +89,7 @@ runs:
       run: |
         set -euo pipefail
 
-        apt_root="$RUNNER_TEMP/zenterm-apt"
+        apt_root="/tmp/zenterm-apt"
         if [ -d "$apt_root" ]; then
           sudo chown -R "$(id -u):$(id -g)" "$apt_root"
         fi
