@@ -13,12 +13,30 @@ swash 光栅化 glyph 时，位图的包围盒（`placement.top` + `placement.he
    个别字符的轮廓可以超出排版度量
 
 这导致 GLYPH quad 的 `clip_cell_size` 超出 cell，shader 在字形外填充的
-`bg_color` 会溢出到相邻 cell 区域，产生可见的视觉伪影。
+`bg_color` 会溢出到相邻 cell 区域，产生可见的视觉伪影；如果直接把 quad
+裁剪到 cell 边界，超出顶部的字形笔画也会被截断。
+
+## 行高与 fallback
+
+终端网格采用配置主字体的固定 cell 尺寸。`GlyphAtlas::measure_baseline` 只用
+主字体的 `Mg` 测量 ascent/descent；CJK、日文、韩文等 fallback 字体不会把自己
+的度量传播到所有行，否则某个脚本就会把整个终端的行高撑大。
+
+`cosmic-text::LayoutGlyph.font_id` 会保留每个 glyph 实际选中的字体。swash 光栅化
+后，如果该 fallback glyph 的 bitmap 包围盒超出主字体 cell，就先按安全比例降低
+font size 并重新光栅化，以 baseline 为中心保持 bearing 关系；重新光栅化后的取整或
+hinting 残差才交给渲染时的 scale 处理。缩放只作为异常 fallback 的安全适配，主字体
+glyph 保持原始尺寸。fallback glyph
+从光栅化阶段就使用灰度 mask，避免不同字体的物理子像素与采样位置错位；若后续
+对异常字形执行几何缩放，也不会重新引入 LCD coverage。这样可以保留固定行高，
+同时避免常见 fallback 字体的中文顶部被裁掉；渲染层的 cell 裁剪继续作为未预探测
+异常字形的最后安全边界。
 
 ## 解决方案
 
 在 CPU 端构建 instance 数据时，将 GLYPH quad 裁剪到 cell 边界内，
-同时同步调整 UV 坐标以避免纹理拉伸。
+同时同步调整 UV 坐标以避免纹理拉伸。fallback glyph 会在进入渲染层前按固定 cell
+约束，因此正常情况下不会触发顶部裁剪；该裁剪只处理未被适配的异常字形。
 
 代码位于 `crates/zenterm-ui/src/session/render/mod.rs`，非连字 glyph 渲染路径中：
 

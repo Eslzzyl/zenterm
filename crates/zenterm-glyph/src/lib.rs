@@ -51,7 +51,8 @@ pub mod rasterize;
 pub enum GlyphContentType {
     /// LCD subpixel coverage (per-channel R/G/B values).  Most text.
     Subpixel,
-    /// Grayscale alpha / intensity mask.  Built-in block glyphs.
+    /// Grayscale alpha / intensity mask. Built-in block glyphs and fallback
+    /// faces use this path.
     Mask,
     /// Full RGBA color.  Emoji / color glyphs.
     Color,
@@ -76,15 +77,14 @@ pub struct GlyphEntry {
     pub content_type: GlyphContentType,
     /// Per-glyph scale factor applied at render time.
     ///
-    /// `1.0` means "use the rasterizer's natural size".  Values > 1 enlarge a
-    /// glyph (e.g. ASCII when `line_height` has been tightened to 1.0 so the
-    /// glyph does not naturally fill the cell); values < 1 shrink a glyph
-    /// (e.g. CJK whose `placement.top` exceeds the cell ascent, which would
-    /// otherwise be clipped at the cell top).
+    /// `1.0` means "use the rasterizer's natural size". Values below `1.0`
+    /// are used only as a safety adaptation for an oversized fallback glyph
+    /// whose bitmap would otherwise exceed the fixed primary-font cell.
     ///
     /// The renderer multiplies both the rendered quad's size and the bearing
-    /// offsets by this value, and shrinks the sampled UV window so that the
-    /// texture is sampled at its native resolution under `Nearest` filtering.
+    /// offsets by this value. Oversized fallbacks are first re-rasterized at a
+    /// smaller font size; this value covers any residual rounding or hinting
+    /// difference from that pass.
     pub scale: f32,
 }
 
@@ -180,6 +180,10 @@ pub struct GlyphAtlas {
     font_size: f32,
     /// Font family name used for shaping (e.g. "Consolas", "Menlo").
     font_family: Cow<'static, str>,
+    /// The face selected for the primary-font metrics probe. A glyph whose
+    /// resolved face differs from this one is a fallback glyph and may need
+    /// fallback-specific cell adaptation.
+    primary_font_id: Option<cosmic_text::fontdb::ID>,
     /// Display scale factor (physical pixels per logical point).
     pixels_per_point: f32,
     /// LCD subpixel order (RGB or BGR), auto-detected from the OS.

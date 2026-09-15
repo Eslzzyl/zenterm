@@ -31,7 +31,7 @@ impl GlyphAtlas {
     /// coloured cells.
     ///
     /// Side-effect: this also measures the cell's baseline offset by shaping
-    /// a full-height reference character ('M') and reading `max_ascent` from
+    /// the primary-font reference string `Mg` and reading `max_ascent` from
     /// the cosmic-text layout.  Callers must use this value to position
     /// glyphs, *not* the raw `line_height`.
     ///
@@ -45,11 +45,10 @@ impl GlyphAtlas {
         // Measure baseline FIRST so `cell_ascent` and `cell_descent` are
         // valid by the time we rasterise 'W' below.
         self.measure_baseline()?;
-        // Update line_height to the font's actual ascent + descent.
-        // The initial Metrics used font_size * 1.0 which was too tight —
-        // the font's real body height (e.g. 41px for Menlo at 36px) exceeds
-        // font_size, causing glyphs to overflow the cell.  We now use the
-        // measured values so the cell is tall enough to contain all glyphs.
+        // Update line_height to the primary font's typographic ascent +
+        // descent.  Fallback faces are adapted per glyph below; including
+        // every fallback face here would make the whole terminal grid as
+        // tall as the largest unrelated script.
         self.metrics.line_height = self.cell_ascent + self.cell_descent;
         // Cap height is measured from a separate 'M' rasterisation, but it
         // doesn't depend on cell_ascent / cell_descent so it could in
@@ -87,13 +86,14 @@ impl GlyphAtlas {
     /// Measure the cell's baseline offset (ascent) and descent via
     /// `cosmic-text`'s own layout pass.
     ///
-    /// We use the string `"Mg"` (M for the full font ascent, g for the full
-    /// font descent) so that `max_ascent` and `max_descent` both reflect the
-    /// font's design metrics.  Using a single character like `'M'` would
-    /// yield `max_descent = 0` (M has no descender).
+    /// The probe is `"Mg"` (M for ascent, g for descent) in the configured
+    /// primary font.  Non-Latin fallback faces are deliberately not included
+    /// in this global measurement: terminal rows have a fixed grid, so an
+    /// oversized fallback glyph is adapted at its own render site.
     ///
-    /// alacritty and wezterm take the same dual-character approach (or
-    /// pull the metrics directly from the font's OS/2 table).
+    /// This follows the fixed-cell approach used by Alacritty, WezTerm,
+    /// Ghostty, and Windows Terminal: fallback selection is per glyph, while
+    /// the grid remains based on the configured primary face.
     fn measure_baseline(&mut self) -> Result<()> {
         // Use a temporary buffer.  `line_height` here only affects inter-line
         // spacing inside cosmic-text; per-glyph metrics like `max_ascent` are
@@ -104,29 +104,103 @@ impl GlyphAtlas {
             Metrics::new(self.font_size, self.font_size * 2.0),
         );
         let attrs = Attrs::new().family(Family::Name(&self.font_family));
-        // "Mg" — M contributes the full font ascent, g contributes the full
-        // font descent (e.g. a typical 14/4 em-square).  cosmic-text's
-        // layout pass exposes the *line-wide* max, so a single buffer line
-        // of "Mg" gives us both numbers.
+        // Keep this probe in the configured primary face.  Fallback glyphs
+        // are measured and constrained individually when they are rasterized.
         buf.set_text("Mg", &attrs, Shaping::Basic, None);
         buf.shape_until_scroll(&mut self.font_system, true);
 
-        let line = buf.lines[0]
-            .layout_opt()
-            .and_then(|l| l.first())
-            .ok_or_else(|| Error::Glyph("measure_baseline: empty layout".into()))?;
+        let (max_ascent, max_descent, font_id) = {
+            let line = buf
+                .lines
+                .first()
+                .and_then(|line| line.layout_opt())
+                .and_then(|l| l.first())
+                .ok_or_else(|| Error::Glyph("measure_baseline: empty layout".into()))?;
 
-        let max_ascent = line.max_ascent;
-        let max_descent = line.max_descent;
+            (
+                line.max_ascent,
+                line.max_descent,
+                line.glyphs.first().map(|glyph| glyph.font_id),
+            )
+        };
+
+        drop(buf);
+
         if max_ascent <= 0.0 {
             return Err(Error::Glyph(format!(
                 "measure_baseline: got non-positive max_ascent (font_size={}, family={:?})",
                 self.font_size, self.font_family,
             )));
         }
+
         self.cell_ascent = max_ascent;
         self.cell_descent = max_descent;
+        self.primary_font_id = font_id;
+
+        if let Some(font_id) = font_id {
+            self.log_font_face("primary metrics", font_id);
+        }
+
         Ok(())
+    }
+
+    /// Return a scale that keeps one fallback glyph inside the fixed cell.
+    ///
+    /// `placement.top` is the distance from the baseline to the bitmap's top
+    /// edge, and `height - top` is the distance from the baseline to its
+    /// bottom edge.  Scaling about the baseline preserves the glyph's normal
+    /// baseline relationship while containing an unusually large fallback
+    /// face. The primary cell metrics stay unchanged. Primary-face glyphs are
+    /// left at their native size; an oversized primary glyph indicates a
+    /// metrics/rasterizer mismatch that should remain visible to diagnostics.
+    pub(crate) fn glyph_scale_to_cell(
+        &self,
+        font_id: cosmic_text::fontdb::ID,
+        placement_top: i32,
+        placement_height: u32,
+    ) -> f32 {
+        if self.primary_font_id == Some(font_id) || placement_height == 0 || self.cell_ascent <= 0.0
+        {
+            return 1.0;
+        }
+
+        let top = placement_top as f32;
+        let bottom = placement_height as f32 - top;
+        let cell_height = if self.cell_height > 0.0 {
+            self.cell_height
+        } else {
+            self.metrics.line_height
+        };
+        let available_descent = (cell_height - self.cell_ascent).max(0.0);
+
+        let top_scale = if top > self.cell_ascent {
+            self.cell_ascent / top
+        } else {
+            1.0
+        };
+        let bottom_scale = if bottom > available_descent && bottom > 0.0 {
+            available_descent / bottom
+        } else {
+            1.0
+        };
+
+        top_scale.min(bottom_scale).clamp(0.0, 1.0)
+    }
+
+    /// Log the face selected by cosmic-text for diagnostics of fallback
+    /// resolution.  The font id is the same id passed to swash for rasterizing
+    /// the glyph, so this records the actual face used on screen.
+    pub(crate) fn log_font_face(&self, purpose: &str, font_id: cosmic_text::fontdb::ID) {
+        let face_name = self
+            .font_system
+            .db()
+            .face(font_id)
+            .and_then(|face| face.families.first().map(|(name, _)| name.as_str()))
+            .unwrap_or("<unknown>");
+        log::debug!(
+            "font selection: purpose={purpose:?} family={:?} font_id={font_id:?} face={face_name:?}",
+            self.font_family,
+        );
     }
 
     /// Measure the typographic cap height by rasterising a single capital

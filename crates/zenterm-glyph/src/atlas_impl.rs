@@ -21,6 +21,22 @@ use zenterm_core::{Error, HintingMode, RenderMode, Result, SubpixelLayout};
 use crate::builtin;
 use crate::{AtlasSlot, GlyphAtlas, GlyphContentType, GlyphEntry, RunCacheKey, ShapedGlyph};
 
+/// Convert an LCD coverage image to a grayscale mask before any geometric
+/// scaling. RGB coverage is tied to physical display subpixels and becomes
+/// invalid when the bitmap is sampled at a different size or position.
+fn desubpixelize(img: &mut swash::scale::image::Image) {
+    if img.content != SwashContent::SubpixelMask {
+        return;
+    }
+
+    let mut mask = Vec::with_capacity(img.data.len() / 4);
+    for chunk in img.data.as_chunks::<4>().0 {
+        mask.push(chunk[0].max(chunk[1]).max(chunk[2]));
+    }
+    img.data = mask;
+    img.content = SwashContent::Mask;
+}
+
 impl GlyphAtlas {
     /// Create a new glyph atlas with the given font size (in pixels),
     /// font family, and LCD subpixel layout.
@@ -65,6 +81,7 @@ impl GlyphAtlas {
             slots: vec![first_slot],
             font_size,
             font_family,
+            primary_font_id: None,
             pixels_per_point,
             subpixel_layout,
             metrics,
@@ -383,6 +400,43 @@ impl GlyphAtlas {
         Ok((shaped, true, had_effect))
     }
 
+    /// Rasterize a glyph at a cell-safe size when the first pass shows that a
+    /// fallback face would overflow the primary-font cell. Re-rasterizing is
+    /// preferable to shrinking a large bitmap with the GPU's nearest sampler;
+    /// the residual `GlyphEntry::scale` remains as a safety net for hinting
+    /// and integer-rounding differences at the adjusted size.
+    fn rasterize_cell_glyph(
+        &mut self,
+        cache_key: &cosmic_text::CacheKey,
+    ) -> Option<swash::scale::image::Image> {
+        let img = self.rasterize_swash(cache_key)?;
+        let scale =
+            self.glyph_scale_to_cell(cache_key.font_id, img.placement.top, img.placement.height);
+        if scale >= 1.0 {
+            return Some(img);
+        }
+
+        let source_size = f32::from_bits(cache_key.font_size_bits);
+        let adjusted_size = source_size * scale;
+        if adjusted_size <= 0.0 || adjusted_size >= source_size {
+            return Some(img);
+        }
+
+        let mut adjusted_key = *cache_key;
+        adjusted_key.font_size_bits = adjusted_size.to_bits();
+        match self.rasterize_swash(&adjusted_key) {
+            Some(adjusted_img) => {
+                log::debug!(
+                    "fallback glyph rerasterized for cell: glyph_id={} size={source_size:.2} \
+                     adjusted_size={adjusted_size:.2} initial_scale={scale:.3}",
+                    cache_key.glyph_id,
+                );
+                Some(adjusted_img)
+            }
+            None => Some(img),
+        }
+    }
+
     /// Rasterize a physical glyph (identified by [`cosmic_text::CacheKey`])
     /// into the atlas and return a [`GlyphEntry`] describing its position
     /// and metrics.
@@ -397,7 +451,7 @@ impl GlyphAtlas {
         cache_key: &cosmic_text::CacheKey,
         advance: f32,
     ) -> Result<GlyphEntry> {
-        let img = match self.rasterize_swash(cache_key) {
+        let mut img = match self.rasterize_cell_glyph(cache_key) {
             Some(img) => img,
             None => {
                 log::debug!(
@@ -455,6 +509,16 @@ impl GlyphAtlas {
         let (allocation, slot_idx) = allocation;
         let rectangle = self.slots[slot_idx].allocator.get(allocation.id);
 
+        let scale =
+            self.glyph_scale_to_cell(cache_key.font_id, img.placement.top, img.placement.height);
+        if scale < 1.0 && img.content == SwashContent::SubpixelMask {
+            desubpixelize(&mut img);
+            log::debug!(
+                "fallback glyph switched to grayscale: glyph_id={} scale={scale:.3}",
+                cache_key.glyph_id,
+            );
+        }
+
         // Copy pixels into the slot's RGBA texture data.
         let atlas_w = self.slots[slot_idx].size as usize;
         let texture_data = &mut self.slots[slot_idx].texture_data;
@@ -511,6 +575,15 @@ impl GlyphAtlas {
             SwashContent::Color => GlyphContentType::Color,
         };
 
+        if scale < 1.0 {
+            log::debug!(
+                "fallback glyph constrained: glyph_id={} top={} height={} scale={scale:.3}",
+                cache_key.glyph_id,
+                img.placement.top,
+                img.placement.height,
+            );
+        }
+
         Ok(GlyphEntry {
             atlas_index: slot_idx as u32,
             atlas_rect: rectangle,
@@ -518,12 +591,14 @@ impl GlyphAtlas {
             bearing_y: img.placement.top as f32,
             advance,
             content_type,
-            scale: 1.0,
+            scale,
         })
     }
 
-    /// Rasterize a single character using swash with `Format::Subpixel`,
-    /// pack it into the atlas, and cache it.
+    /// Rasterize a single character using swash, pack it into the atlas, and
+    /// cache it. The raster format is selected from the resolved face: the
+    /// primary face may use LCD subpixel coverage, while fallback faces use a
+    /// grayscale mask.
     ///
     /// Unicode block/shade characters (U+2500–U+259F) are intercepted and
     /// rendered via the built-in software rasterizer ([`builtin`] module)
@@ -590,10 +665,10 @@ impl GlyphAtlas {
                 .insert(CacheKeyFlags::DISABLE_HINTING);
         }
 
-        // ── 3. Rasterize via swash with Format::Subpixel ─────────────
-        let img = self.rasterize_swash(&physical_glyph.cache_key);
+        // ── 3. Rasterize via swash with the face-appropriate format ────
+        let img = self.rasterize_cell_glyph(&physical_glyph.cache_key);
 
-        let img = match img {
+        let mut img = match img {
             Some(img) => img,
             None => {
                 self.glyph_cache.insert(
@@ -652,6 +727,16 @@ impl GlyphAtlas {
         };
         let (allocation, slot_idx) = allocation;
         let rectangle = self.slots[slot_idx].allocator.get(allocation.id);
+
+        let scale = self.glyph_scale_to_cell(
+            physical_glyph.cache_key.font_id,
+            img.placement.top,
+            img.placement.height,
+        );
+        if scale < 1.0 && img.content == SwashContent::SubpixelMask {
+            desubpixelize(&mut img);
+            log::debug!("fallback glyph switched to grayscale: char={c:?} scale={scale:.3}",);
+        }
 
         // ── 5. Copy pixels into the slot's RGBA texture data ───────────
         let atlas_w = self.slots[slot_idx].size as usize;
@@ -714,6 +799,15 @@ impl GlyphAtlas {
             SwashContent::Color => GlyphContentType::Color,
         };
 
+        if scale < 1.0 {
+            log::debug!(
+                "fallback glyph constrained: char={c:?} glyph_id={} top={} height={} scale={scale:.3}",
+                physical_glyph.cache_key.glyph_id,
+                img.placement.top,
+                img.placement.height,
+            );
+        }
+
         self.glyph_cache.insert(
             key,
             GlyphEntry {
@@ -723,7 +817,7 @@ impl GlyphAtlas {
                 bearing_y: img.placement.top as f32,
                 advance,
                 content_type,
-                scale: 1.0,
+                scale,
             },
         );
 

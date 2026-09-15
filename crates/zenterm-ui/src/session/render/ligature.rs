@@ -236,9 +236,10 @@ pub(crate) fn process_ligature_run(
 
                     let mut v_min = (a_top + 0.5) / slot_size;
                     let mut v_max = (a_bot - 0.5) / slot_size;
-                    let glyph_h = a_bot - a_top;
-                    let sbx = sg.entry.bearing_x;
-                    let sby = sg.entry.bearing_y;
+                    let glyph_scale = sg.entry.scale;
+                    let glyph_h = (a_bot - a_top) * glyph_scale;
+                    let sbx = sg.entry.bearing_x * glyph_scale;
+                    let sby = sg.entry.bearing_y * glyph_scale;
 
                     // glyph_offset: the bearing is always relative to this
                     // cell's origin.  The UV coordinates above select the
@@ -249,7 +250,7 @@ pub(crate) fn process_ligature_run(
                     let mut glyph_x_px = x_off + (cell_col as f32 * cw + gox).round();
                     let mut glyph_y_px = y_off + (row as f32 * ch + goy).round();
 
-                    let mut scaled_w = strip_w;
+                    let mut scaled_w = strip_w * glyph_scale;
                     let mut scaled_h = glyph_h;
 
                     // ── Vertical clip (GLYPH_CLIP.md) ──

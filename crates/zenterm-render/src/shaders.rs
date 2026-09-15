@@ -181,17 +181,21 @@ fn fs_main(in: Varying) -> @location(0) vec4<f32> {
     }
 
     // SUBPIXEL (default, flags == 0).
-    // Per-channel subpixel blending in linear space.
+    // Per-channel subpixel blending in linear space. Since the pipeline uses
+    // ordinary non-premultiplied alpha blending, compensate for the common
+    // alpha (max coverage) before returning the colour. This makes the GPU
+    // blend produce the intended per-channel result instead of multiplying
+    // the already-composited colour by max coverage a second time.
     // The atlas stores R=red coverage, G=green coverage, B=blue coverage.
     let coverage = texel.rgb;
-    let max_c = max(max(coverage.r, coverage.g), coverage.b);
-    let r = linear_to_srgb(mix(bg_r, fg_r, coverage.r));
-    let g = linear_to_srgb(mix(bg_g, fg_g, coverage.g));
-    let b = linear_to_srgb(mix(bg_b, fg_b, coverage.b));
-    // Use max coverage as alpha so glyph edges are semi-transparent,
-    // letting the background image show through instead of the theme
-    // background colour at sub-pixel boundaries.
-    let a = in.fg_color.a * max_c;
-    return vec4<f32>(r, g, b, a);
+    let max_c = max(max(coverage.r, coverage.g), coverage.b) * in.fg_color.a;
+    if (max_c <= 0.0) {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+    let normalized = coverage * in.fg_color.a / max_c;
+    let r = linear_to_srgb(mix(bg_r, fg_r, normalized.r));
+    let g = linear_to_srgb(mix(bg_g, fg_g, normalized.g));
+    let b = linear_to_srgb(mix(bg_b, fg_b, normalized.b));
+    return vec4<f32>(r, g, b, max_c);
 }
 ";

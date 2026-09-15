@@ -50,8 +50,9 @@ fn apply_gamma_correction(img: &mut swash::scale::image::Image) {
 }
 
 impl GlyphAtlas {
-    /// Rasterize a glyph via swash with `Format::Subpixel` and
-    /// gamma-corrected coverage values.
+    /// Rasterize a glyph via swash with the configured primary-face format
+    /// and gamma-corrected coverage values. Resolved fallback faces always
+    /// use `Format::Alpha` to avoid display-subpixel fringing.
     pub(crate) fn rasterize_swash(
         &mut self,
         cache_key: &cosmic_text::CacheKey,
@@ -59,6 +60,10 @@ impl GlyphAtlas {
         let font = self
             .font_system
             .get_font(cache_key.font_id, cache_key.font_weight)?;
+        // `font_id` is the face selected by cosmic-text's fallback resolver.
+        // Keep the resolved family in debug logs so fallback behavior can be
+        // diagnosed from the same key that is passed to swash.
+        self.log_font_face("glyph rasterization", cache_key.font_id);
 
         let hint = match self.hinting_mode {
             HintingMode::None => false,
@@ -84,18 +89,30 @@ impl GlyphAtlas {
             None
         };
 
-        let format = match self.render_mode {
-            RenderMode::Subpixel => match self.subpixel_layout {
-                SubpixelLayout::Rgb => Format::Subpixel,
-                SubpixelLayout::Bgr => Format::subpixel_bgra(),
-            },
-            RenderMode::Grayscale => Format::Alpha,
+        // LCD coverage is only safe when the glyph remains tied to the
+        // primary face's physical metrics and positioning. Fallback faces
+        // can have different metrics and are commonly the source of visible
+        // RGB fringing, so rasterize them as ordinary alpha masks.
+        let is_fallback = self
+            .primary_font_id
+            .is_some_and(|primary| primary != cache_key.font_id);
+        let format = if is_fallback {
+            Format::Alpha
+        } else {
+            match self.render_mode {
+                RenderMode::Subpixel => match self.subpixel_layout {
+                    SubpixelLayout::Rgb => Format::Subpixel,
+                    SubpixelLayout::Bgr => Format::subpixel_bgra(),
+                },
+                RenderMode::Grayscale => Format::Alpha,
+            }
         };
 
         log::debug!(
-            "rasterize_swash: glyph_id={} format={:?} offset=({:.3},{:.3})",
+            "rasterize_swash: glyph_id={} format={:?} fallback={} offset=({:.3},{:.3})",
             cache_key.glyph_id,
             format,
+            is_fallback,
             offset.x,
             offset.y,
         );
