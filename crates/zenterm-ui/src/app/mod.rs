@@ -10,6 +10,7 @@
 //!
 //! Workspaces are managed by [`crate::workspace::WorkspaceManager`].
 
+pub(crate) mod command_palette;
 pub mod config;
 pub mod dock;
 pub mod keyboard;
@@ -69,6 +70,9 @@ pub struct ZentermApp {
     pub default_bg: egui::Color32,
     pub pixels_per_point: f32,
     pub error_toast: Option<String>,
+
+    /// State for the VS Code-style command palette in the main viewport.
+    command_palette: command_palette::CommandPaletteState,
 
     /// Whether a background image is loaded and should be rendered.
     background_image_loaded: bool,
@@ -297,6 +301,7 @@ impl ZentermApp {
             default_bg,
             pixels_per_point,
             error_toast: None,
+            command_palette: command_palette::CommandPaletteState::default(),
             background_image_loaded: false,
             loaded_bg_image_size: None,
             pending_close: Vec::new(),
@@ -358,8 +363,8 @@ impl eframe::App for ZentermApp {
         // 2. Keyboard shortcuts (copy/paste/reload/settings).
         if self.handle_shortcuts(ctx) {
             // skip forwarding (the shortcut consumed the event)
-        } else if !self.settings_state.open {
-            // Don't forward keyboard when the settings panel is open.
+        } else if !self.settings_state.open && !self.command_palette.open {
+            // Don't forward keyboard when an app-level overlay is open.
             self.feed_keyboard_to_active(ctx);
         }
 
@@ -407,6 +412,7 @@ impl eframe::App for ZentermApp {
         //      viewport origin.
         if ctx.memory(|m| m.focused().is_none())
             && !self.settings_state.open
+            && !self.command_palette.open
             && let Some(id) = self.active_session_id
             && let Some(session) = self.sessions.get(&id)
         {
@@ -526,6 +532,10 @@ impl eframe::App for ZentermApp {
                     render_legacy_single(ui, &mut self.sessions, self.background_image_loaded);
                 });
         }
+
+        // Render app-level overlays after terminal content so they stay above
+        // the GPU callback and receive input before the terminal does.
+        self.render_command_palette(ui.ctx());
 
         // Push the concatenated instance buffer to the GPU side.
         self.gpu.bump_instance_gen();

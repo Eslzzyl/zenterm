@@ -102,84 +102,109 @@ impl ZentermApp {
     /// Returns `true` if a shortcut was consumed (skip forwarding to
     /// the active session).
     pub(crate) fn handle_shortcuts(&mut self, ctx: &Context) -> bool {
+        // Once the command palette owns the interaction, keep all other
+        // application shortcuts and PTY input out of the search field.
+        if self.command_palette.open {
+            return true;
+        }
+
         log::warn!("[clipboard] handle_shortcuts entered — checking for copy/paste events");
-        let (copy, paste, reload, settings, ws_switch, ws_cycle) = ctx.input(|input| {
-            let mut c = false;
-            let mut p = false;
-            let mut r = false;
-            let mut s = false;
-            let mut ws_switch: Option<usize> = None;
-            let mut ws_cycle: Option<isize> = None;
-            for event in &input.events {
-                // Catch Event::Copy from egui-winit (Windows/Linux: Ctrl+C/Ctrl+Shift+C,
-                // macOS: Cmd+C).  When there's a selection, copy it; without selection,
-                // fall through to InputMapper which sends SIGINT on non-macOS.
-                if matches!(event, egui::Event::Copy) {
-                    c = true;
-                }
-                if let egui::Event::Key {
-                    key,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } = event
-                {
-                    // Ctrl+Shift+C / V / R
-                    let shift_ctrl = modifiers.ctrl && modifiers.shift && !modifiers.alt;
-                    if shift_ctrl {
-                        match key {
-                            egui::Key::C => {
-                                log::info!("[clipboard] Ctrl+Shift+C detected, setting copy=true");
-                                c = true;
-                            }
-                            egui::Key::V => p = true,
-                            egui::Key::R => r = true,
-                            _ => {}
-                        }
+        let (copy, paste, reload, settings, command_palette, ws_switch, ws_cycle) =
+            ctx.input(|input| {
+                let mut c = false;
+                let mut p = false;
+                let mut r = false;
+                let mut s = false;
+                let mut palette = false;
+                let mut ws_switch: Option<usize> = None;
+                let mut ws_cycle: Option<isize> = None;
+                for event in &input.events {
+                    // Catch Event::Copy from egui-winit (Windows/Linux: Ctrl+C/Ctrl+Shift+C,
+                    // macOS: Cmd+C).  When there's a selection, copy it; without selection,
+                    // fall through to InputMapper which sends SIGINT on non-macOS.
+                    if matches!(event, egui::Event::Copy) {
+                        c = true;
                     }
-                    // Cmd/Ctrl+, → toggle settings panel
-                    if (modifiers.ctrl || modifiers.mac_cmd)
-                        && !modifiers.shift
-                        && !modifiers.alt
-                        && *key == egui::Key::Comma
+                    if let egui::Event::Key {
+                        key,
+                        pressed: true,
+                        repeat,
+                        modifiers,
+                        ..
+                    } = event
                     {
-                        s = true;
-                    }
-                    // Ctrl+1..9 → switch to workspace by index
-                    if modifiers.ctrl && !modifiers.shift && !modifiers.alt {
-                        match key {
-                            egui::Key::Num1 => ws_switch = Some(0),
-                            egui::Key::Num2 => ws_switch = Some(1),
-                            egui::Key::Num3 => ws_switch = Some(2),
-                            egui::Key::Num4 => ws_switch = Some(3),
-                            egui::Key::Num5 => ws_switch = Some(4),
-                            egui::Key::Num6 => ws_switch = Some(5),
-                            egui::Key::Num7 => ws_switch = Some(6),
-                            egui::Key::Num8 => ws_switch = Some(7),
-                            egui::Key::Num9 => ws_switch = Some(8),
-                            _ => {}
+                        // Ctrl+Shift+C / V / R
+                        let shift_ctrl = modifiers.ctrl && modifiers.shift && !modifiers.alt;
+                        if shift_ctrl {
+                            match key {
+                                egui::Key::C => {
+                                    log::info!(
+                                        "[clipboard] Ctrl+Shift+C detected, setting copy=true"
+                                    );
+                                    c = true;
+                                }
+                                egui::Key::V => p = true,
+                                egui::Key::R => r = true,
+                                _ => {}
+                            }
                         }
-                    }
-                    // Ctrl+Tab → next workspace, Ctrl+Shift+Tab → prev
-                    if modifiers.ctrl && !modifiers.alt {
-                        match key {
-                            egui::Key::Tab if !modifiers.shift => ws_cycle = Some(1),
-                            egui::Key::Tab if modifiers.shift => ws_cycle = Some(-1),
-                            _ => {}
+                        // Ctrl+Shift+P (Cmd+Shift+P on macOS) → command palette.
+                        // Ignore repeats so holding the key cannot reset the query.
+                        if !*repeat
+                            && (modifiers.ctrl || modifiers.mac_cmd)
+                            && modifiers.shift
+                            && !modifiers.alt
+                            && *key == egui::Key::P
+                        {
+                            palette = true;
                         }
-                    }
-                    // Ctrl+Insert → copy, Shift+Insert → paste
-                    if *key == egui::Key::Insert {
+                        // Cmd/Ctrl+, → toggle settings panel
+                        if (modifiers.ctrl || modifiers.mac_cmd)
+                            && !modifiers.shift
+                            && !modifiers.alt
+                            && *key == egui::Key::Comma
+                        {
+                            s = true;
+                        }
+                        // Ctrl+1..9 → switch to workspace by index
                         if modifiers.ctrl && !modifiers.shift && !modifiers.alt {
-                            c = true;
-                        } else if modifiers.shift && !modifiers.ctrl && !modifiers.alt {
-                            p = true;
+                            match key {
+                                egui::Key::Num1 => ws_switch = Some(0),
+                                egui::Key::Num2 => ws_switch = Some(1),
+                                egui::Key::Num3 => ws_switch = Some(2),
+                                egui::Key::Num4 => ws_switch = Some(3),
+                                egui::Key::Num5 => ws_switch = Some(4),
+                                egui::Key::Num6 => ws_switch = Some(5),
+                                egui::Key::Num7 => ws_switch = Some(6),
+                                egui::Key::Num8 => ws_switch = Some(7),
+                                egui::Key::Num9 => ws_switch = Some(8),
+                                _ => {}
+                            }
+                        }
+                        // Ctrl+Tab → next workspace, Ctrl+Shift+Tab → prev
+                        if modifiers.ctrl && !modifiers.alt {
+                            match key {
+                                egui::Key::Tab if !modifiers.shift => ws_cycle = Some(1),
+                                egui::Key::Tab if modifiers.shift => ws_cycle = Some(-1),
+                                _ => {}
+                            }
+                        }
+                        // Ctrl+Insert → copy, Shift+Insert → paste
+                        if *key == egui::Key::Insert {
+                            if modifiers.ctrl && !modifiers.shift && !modifiers.alt {
+                                c = true;
+                            } else if modifiers.shift && !modifiers.ctrl && !modifiers.alt {
+                                p = true;
+                            }
                         }
                     }
                 }
-            }
-            (c, p, r, s, ws_switch, ws_cycle)
-        });
+                (c, p, r, s, palette, ws_switch, ws_cycle)
+            });
+        if command_palette {
+            self.open_command_palette();
+            return true;
+        }
         if reload {
             self.reload_config(ctx);
             return true;

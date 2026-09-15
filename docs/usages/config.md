@@ -334,6 +334,7 @@ These shortcuts are currently hardcoded and not yet overridable via config:
 |----------|--------|
 | `Ctrl+Shift+C` | Copy selected text to clipboard |
 | `Ctrl+Shift+V` | Paste from clipboard |
+| `Ctrl+Shift+P` (`Cmd+Shift+P` on macOS) | Open the command palette |
 | `Ctrl+Shift+R` | **Hot-reload** config file from disk |
 
 ---
@@ -403,6 +404,7 @@ Built-in shortcuts that work when `tabs_enabled = true`:
 |----------|--------|
 | `Ctrl+Shift+C` | Copy selection to clipboard |
 | `Ctrl+Shift+V` | Paste from clipboard |
+| `Ctrl+Shift+P` (`Cmd+Shift+P` on macOS) | Open the command palette |
 | `Ctrl+Shift+R` | Reload config file |
 | `Ctrl+1` .. `Ctrl+9` | Switch to workspace by index |
 | `Ctrl+Tab` | Cycle to next workspace |
