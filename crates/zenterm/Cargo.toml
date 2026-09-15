@@ -11,6 +11,17 @@ icons = [
     "../../assets/windows/zenterm.ico",
     "../../assets/runtime/zenterm.png",
 ]
+resources = [
+    { src = "../../assets/windows/zenterm.ico", target = "zenterm.ico" },
+]
+
+[package.metadata.packager.nsis]
+template = "../../packaging/windows/installer.nsi"
+installer-icon = "../../assets/windows/zenterm.ico"
+install-mode = "both"
+
+[package.metadata.packager.wix]
+template = "../../packaging/windows/main.wxs"
 
 [dependencies]
 zenterm-config = { path = "../zenterm-config" }
