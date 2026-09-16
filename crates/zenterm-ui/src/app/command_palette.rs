@@ -358,12 +358,21 @@ impl ZentermApp {
                 if let Err(e) = self.config.save() {
                     log::warn!("Failed to save config after toggling sidebar: {e}");
                 }
+                // The command palette is rendered after the dock/legacy
+                // content.  The toggle therefore cannot affect this frame;
+                // explicitly schedule the next frame so the layout updates
+                // immediately when the event-driven loop would otherwise go
+                // idle after the palette closes.
+                ctx.request_repaint();
             }
             CommandAction::ToggleTabs => {
                 self.config.ui.tabs_enabled = !self.config.ui.tabs_enabled;
                 if let Err(e) = self.config.save() {
                     log::warn!("Failed to save config after toggling tabs: {e}");
                 }
+                // See the sidebar toggle above: this action also changes
+                // which main-content rendering path is selected.
+                ctx.request_repaint();
             }
         }
     }
