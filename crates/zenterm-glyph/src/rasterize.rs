@@ -1,14 +1,15 @@
 //! Low-level swash rasterization — the final step that invokes swash's
 //! [`Render`] pipeline to produce a bitmap from a shaped glyph.
 //!
-//! ## Gamma correction
+//! ## Coverage correction
 //!
-//! Swash outputs linear coverage values, but human vision is non-linear.
-//! FreeType's LCD renderer applies gamma correction internally; we replicate
-//! that here so CJK strokes appear with the correct visual weight.
+//! Swash outputs coverage values directly from its analytical rasterizer.
+//! The display path then composites those values on a non-sRGB framebuffer.
+//! A small curve on grayscale coverage restores a little of the edge weight
+//! that is otherwise lost at small sizes, especially in CJK fallback faces.
 //!
-//! A gamma value of ≈1.3 is a mild correction that slightly thickens
-//! mid-tone coverage values for better perceived stroke weight.
+//! The Subpixel curve remains neutral so the composited GPU surface does not
+//! receive an extra brightness boost along LCD edges.
 
 use cosmic_text::CacheKeyFlags;
 use swash::scale::{Render, Source, StrikeWith};
@@ -18,34 +19,46 @@ use zenterm_core::{HintingMode, RenderMode, SubpixelLayout};
 
 use crate::GlyphAtlas;
 
-/// Gamma value for subpixel coverage correction.
+/// Gamma value for grayscale coverage correction.
 ///
-/// 1.3 is a mild correction that slightly thickens mid-tone coverage
-/// values for better perceived stroke weight without significant
-/// softening.  Values between 1.0 (no correction) and 1.5 (strong)
-/// are common.
-const SUBPIXEL_GAMMA: f32 = 1.3;
+/// Keep the swash coverage unchanged. This is the closest baseline to the
+/// controlled WezTerm comparison; any weight adjustment should be validated
+/// separately rather than being implicit in the default rasterizer path.
+const GRAYSCALE_GAMMA: f32 = 1.0;
 
-/// Apply gamma correction to a subpixel-rendered glyph image.
-///
-/// This converts linear coverage values (as produced by swash) into
-/// gamma-corrected values that better match human perception, making
-/// strokes appear with the correct visual thickness.
-///
-/// Only applies to `Content::SubpixelMask` — grayscale masks and color
-/// bitmaps are left unchanged.
-fn apply_gamma_correction(img: &mut swash::scale::image::Image) {
-    if img.content != swash::scale::image::Content::SubpixelMask {
-        return;
+/// Keep the subpixel path neutral. Its per-channel values already participate
+/// in a separate shader equation and should not be thickened here.
+const SUBPIXEL_GAMMA: f32 = 1.0;
+
+fn correct_coverage(coverage: u8, gamma: f32) -> u8 {
+    if gamma == 1.0 {
+        return coverage;
     }
-    let inv_gamma = 1.0 / SUBPIXEL_GAMMA;
-    for chunk in img.data.as_chunks_mut::<4>().0 {
-        let r = (chunk[0] as f32 / 255.0).powf(inv_gamma);
-        let g = (chunk[1] as f32 / 255.0).powf(inv_gamma);
-        let b = (chunk[2] as f32 / 255.0).powf(inv_gamma);
-        chunk[0] = (r * 255.0).round() as u8;
-        chunk[1] = (g * 255.0).round() as u8;
-        chunk[2] = (b * 255.0).round() as u8;
+
+    let corrected = (f32::from(coverage) / 255.0).powf(1.0 / gamma);
+    (corrected * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// Apply the selected coverage curve to a rasterized glyph image.
+///
+/// Grayscale masks get a mild weight correction. Subpixel RGB coverage keeps
+/// its native values, and color bitmaps are left untouched.
+///
+fn apply_gamma_correction(img: &mut swash::scale::image::Image) {
+    match img.content {
+        swash::scale::image::Content::Mask => {
+            for coverage in &mut img.data {
+                *coverage = correct_coverage(*coverage, GRAYSCALE_GAMMA);
+            }
+        }
+        swash::scale::image::Content::SubpixelMask => {
+            for chunk in img.data.as_chunks_mut::<4>().0 {
+                chunk[0] = correct_coverage(chunk[0], SUBPIXEL_GAMMA);
+                chunk[1] = correct_coverage(chunk[1], SUBPIXEL_GAMMA);
+                chunk[2] = correct_coverage(chunk[2], SUBPIXEL_GAMMA);
+            }
+        }
+        swash::scale::image::Content::Color => {}
     }
 }
 
@@ -130,5 +143,25 @@ impl GlyphAtlas {
         apply_gamma_correction(&mut img);
 
         Some(img)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{correct_coverage, GRAYSCALE_GAMMA};
+
+    #[test]
+    fn coverage_curve_preserves_endpoints() {
+        assert_eq!(correct_coverage(0, 1.08), 0);
+        assert_eq!(correct_coverage(255, 1.08), 255);
+    }
+
+    #[test]
+    fn grayscale_coverage_keeps_the_neutral_curve() {
+        assert_eq!(GRAYSCALE_GAMMA, 1.0);
+        let corrected: Vec<_> = (0..=255)
+            .map(|v| correct_coverage(v, GRAYSCALE_GAMMA))
+            .collect();
+        assert_eq!(corrected, (0..=255).collect::<Vec<_>>());
     }
 }

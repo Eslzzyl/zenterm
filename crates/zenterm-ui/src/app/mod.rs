@@ -347,7 +347,7 @@ impl eframe::App for ZentermApp {
         let current_ppp = ctx.pixels_per_point();
         if (current_ppp - self.pixels_per_point).abs() > 0.01 {
             for session in self.sessions.values_mut() {
-                session.reinit_for_dpi(current_ppp, self.config.font.ligatures);
+                session.reinit_for_dpi(current_ppp, &self.config.font);
             }
             self.pixels_per_point = current_ppp;
         }

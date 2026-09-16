@@ -15,7 +15,7 @@ use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::vte::ansi::CursorShape;
 
 use zenterm_core::Rgba;
-use zenterm_glyph::GlyphContentType;
+use zenterm_glyph::{GlyphContentType, GlyphStyle};
 use zenterm_render::glyph_type;
 use zenterm_render::{AtlasRange, CellInstance};
 
@@ -455,6 +455,10 @@ impl TerminalSession {
                         row,
                         run_start,
                         run_end,
+                        GlyphStyle {
+                            bold: cell.bold,
+                            italic: cell.italic,
+                        },
                         cursor_visible,
                         cursor_row,
                         cursor_col,
@@ -581,7 +585,11 @@ impl TerminalSession {
                     // mutable borrow on `atlas` is released before we
                     // access `atlas.slots` below.
                     let (ai, ar, scale, sbx, sby, ct) = {
-                        if let Ok((entry, is_new)) = atlas.ensure_glyph(ch_char) {
+                        let style = GlyphStyle {
+                            bold: cell.bold,
+                            italic: cell.italic,
+                        };
+                        if let Ok((entry, is_new)) = atlas.ensure_glyph_with_style(ch_char, style) {
                             if is_new {
                                 has_new_glyphs = true;
                             }

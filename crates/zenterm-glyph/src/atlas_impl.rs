@@ -19,7 +19,10 @@ use swash::scale::image::Content as SwashContent;
 use zenterm_core::{Error, HintingMode, RenderMode, Result, SubpixelLayout};
 
 use crate::builtin;
-use crate::{AtlasSlot, GlyphAtlas, GlyphContentType, GlyphEntry, RunCacheKey, ShapedGlyph};
+use crate::{
+    AtlasSlot, GlyphAtlas, GlyphCacheKey, GlyphContentType, GlyphEntry, GlyphStyle, RunCacheKey,
+    ShapedGlyph,
+};
 
 /// Convert an LCD coverage image to a grayscale mask before any geometric
 /// scaling. RGB coverage is tied to physical display subpixels and becomes
@@ -122,11 +125,23 @@ impl GlyphAtlas {
     /// Returns `true` if a new glyph was rasterised (caller should mark
     /// the atlas texture as dirty so it gets uploaded to the GPU).
     pub fn ensure_glyph(&mut self, c: char) -> Result<(&GlyphEntry, bool)> {
-        let key = (c, self.font_size.to_bits());
+        self.ensure_glyph_with_style(c, GlyphStyle::default())
+    }
+
+    /// Ensure a character with the requested terminal style is rasterised.
+    ///
+    /// The no-style [`Self::ensure_glyph`] wrapper remains the regular-font
+    /// fast path used by atlas seeding and metric probes.
+    pub fn ensure_glyph_with_style(
+        &mut self,
+        c: char,
+        style: GlyphStyle,
+    ) -> Result<(&GlyphEntry, bool)> {
+        let key = GlyphCacheKey::new(c, self.font_size.to_bits(), style);
         let is_new = !self.glyph_cache.contains_key(&key);
 
         if is_new {
-            self.rasterize_glyph(c)?;
+            self.rasterize_glyph(c, style)?;
         }
 
         Ok((self.glyph_cache.get(&key).unwrap(), is_new))
@@ -137,11 +152,22 @@ impl GlyphAtlas {
     /// This is a lightweight shaping — no layout, no rasterization, no atlas
     /// allocation.  Used as a baseline to detect whether ligature features
     /// actually changed any glyphs.
-    fn baseline_glyph_ids(&mut self, text: &str) -> Vec<u16> {
+    fn baseline_glyph_ids(&mut self, text: &str, style: GlyphStyle) -> Vec<u16> {
         let mut buf = Buffer::new(&mut self.font_system, self.metrics);
         buf.set_size(Some(self.font_size), None);
         buf.set_wrap(Wrap::None);
-        let attrs = Attrs::new().family(Family::Name(&self.font_family));
+        let attrs = Attrs::new()
+            .family(Family::Name(&self.font_family))
+            .weight(if style.bold {
+                cosmic_text::Weight::BOLD
+            } else {
+                cosmic_text::Weight::NORMAL
+            })
+            .style(if style.italic {
+                cosmic_text::Style::Italic
+            } else {
+                cosmic_text::Style::Normal
+            });
         buf.set_text(text, &attrs, Shaping::Basic, None);
         buf.shape_until_scroll(&mut self.font_system, true);
         buf.lines[0]
@@ -204,10 +230,20 @@ impl GlyphAtlas {
         &mut self,
         text: &str,
     ) -> Result<(Vec<ShapedGlyph>, bool, bool)> {
+        self.shape_and_rasterize_run_with_style(text, GlyphStyle::default())
+    }
+
+    /// Shape and rasterise a run using the requested terminal style.
+    pub fn shape_and_rasterize_run_with_style(
+        &mut self,
+        text: &str,
+        style: GlyphStyle,
+    ) -> Result<(Vec<ShapedGlyph>, bool, bool)> {
         // ── Cache lookup ──────────────────────────────────────────────
         let key = RunCacheKey {
             text: text.to_string(),
             font_size_bits: self.font_size.to_bits(),
+            style,
         };
 
         // Check the run cache first.
@@ -241,6 +277,16 @@ impl GlyphAtlas {
         }
         let attrs = Attrs::new()
             .family(Family::Name(&self.font_family))
+            .weight(if style.bold {
+                cosmic_text::Weight::BOLD
+            } else {
+                cosmic_text::Weight::NORMAL
+            })
+            .style(if style.italic {
+                cosmic_text::Style::Italic
+            } else {
+                cosmic_text::Style::Normal
+            })
             .font_features(font_features);
         log::info!(
             "[lig-diag] attrs features={} tags={:?}",
@@ -325,7 +371,7 @@ impl GlyphAtlas {
         let had_effect = if all_single_cell && count_matches && self.ligatures_enabled {
             // Ambiguous: could be contextual alternates or no substitution.
             // Compare glyph IDs against the per-char baseline.
-            let baseline_ids = self.baseline_glyph_ids(text);
+            let baseline_ids = self.baseline_glyph_ids(text, style);
             let shaped_ids: Vec<u16> = all_glyphs.iter().map(|g| g.glyph_id).collect();
             shaped_ids != baseline_ids
         } else {
@@ -373,7 +419,7 @@ impl GlyphAtlas {
             if num_cells == 1 {
                 for ci in g.start..g.end {
                     if let Some(c) = text[ci..].chars().next() {
-                        let char_key = (c, self.font_size.to_bits());
+                        let char_key = GlyphCacheKey::new(c, self.font_size.to_bits(), style);
                         self.glyph_cache.entry(char_key).or_insert(entry.clone());
                     }
                 }
@@ -603,14 +649,14 @@ impl GlyphAtlas {
     /// Unicode block/shade characters (U+2500–U+259F) are intercepted and
     /// rendered via the built-in software rasterizer ([`builtin`] module)
     /// instead of the system font, giving pixel-perfect solid blocks.
-    fn rasterize_glyph(&mut self, c: char) -> Result<()> {
-        let key = (c, self.font_size.to_bits());
+    fn rasterize_glyph(&mut self, c: char, style: GlyphStyle) -> Result<()> {
+        let key = GlyphCacheKey::new(c, self.font_size.to_bits(), style);
 
         // ── 0. Built-in block glyphs ──────────────────────────────
         // Intercept before cosmic-text so we get pixel-perfect solid
         // rectangles instead of font-provided dither patterns.
         if builtin::is_builtin(c) && self.cell_width > 0.0 && self.cell_height > 0.0 {
-            return self.rasterize_builtin(c);
+            return self.rasterize_builtin(c, style);
         }
 
         // ── 1. Shape the character (cosmic-text Buffer) ───────────────
@@ -621,7 +667,18 @@ impl GlyphAtlas {
         } else {
             Shaping::Advanced
         };
-        let attrs = Attrs::new().family(Family::Name(&self.font_family));
+        let attrs = Attrs::new()
+            .family(Family::Name(&self.font_family))
+            .weight(if style.bold {
+                cosmic_text::Weight::BOLD
+            } else {
+                cosmic_text::Weight::NORMAL
+            })
+            .style(if style.italic {
+                cosmic_text::Style::Italic
+            } else {
+                cosmic_text::Style::Normal
+            });
         buffer.set_text(&c.to_string(), &attrs, shaping, None);
         buffer.shape_until_scroll(&mut self.font_system, true);
 
@@ -826,8 +883,8 @@ impl GlyphAtlas {
 
     /// Rasterize a built-in block/shade character directly into the atlas
     /// without going through the system font.
-    fn rasterize_builtin(&mut self, c: char) -> Result<()> {
-        let key = (c, self.font_size.to_bits());
+    fn rasterize_builtin(&mut self, c: char, style: GlyphStyle) -> Result<()> {
+        let key = GlyphCacheKey::new(c, self.font_size.to_bits(), style);
         let cw = self.cell_width.ceil() as u32;
         let ch = self.cell_height.ceil() as u32;
 

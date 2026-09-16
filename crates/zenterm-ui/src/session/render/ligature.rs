@@ -12,7 +12,7 @@ use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::vte::ansi::CursorShape;
 
 use zenterm_core::color::Rgba;
-use zenterm_glyph::GlyphContentType;
+use zenterm_glyph::{GlyphContentType, GlyphStyle};
 use zenterm_render::CellInstance;
 use zenterm_render::glyph_type;
 use zenterm_term::GridView;
@@ -46,6 +46,7 @@ pub(crate) fn process_ligature_run(
     row: usize,
     run_start: usize,
     run_end: usize,
+    style: GlyphStyle,
     cursor_visible: bool,
     cursor_row: usize,
     cursor_col: usize,
@@ -87,7 +88,7 @@ pub(crate) fn process_ligature_run(
          text={run_text:?}",
     );
 
-    match atlas.shape_and_rasterize_run(&run_text) {
+    match atlas.shape_and_rasterize_run_with_style(&run_text, style) {
         Ok((shaped, atlas_modified, had_effect)) => {
             let mut has_new_glyphs = false;
             if atlas_modified {

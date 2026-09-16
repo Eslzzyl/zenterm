@@ -88,6 +88,17 @@ pub struct GlyphEntry {
     pub scale: f32,
 }
 
+/// Visual font attributes that affect shaping and rasterization.
+///
+/// Terminal cells carry these two flags independently. Keeping them in one
+/// small, hashable value lets the atlas keep regular, bold, italic, and
+/// bold-italic glyphs separate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct GlyphStyle {
+    pub bold: bool,
+    pub italic: bool,
+}
+
 /// A single atlas texture slot — a square region of texture with its own
 /// rectangle allocator and pixel data.
 ///
@@ -122,17 +133,31 @@ impl std::fmt::Debug for AtlasSlot {
 ///
 /// * `text` — the raw character sequence (e.g. `"->"`, `"!="`).
 /// * `font_size_bits` — the font size in `f32::to_bits()` form, so that
-///   resizing the font invalidates the cache.
-///
-/// # Future extension
-///
-/// When bold/italic style is plumbed through shaping, this key will be
-/// extended with style flags so that `->` in bold gets a different (or
-/// the same) cache entry.
+///   resizing the font invalidates the cache;
+/// * `style` — the bold/italic attributes used for shaping and rasterization.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct RunCacheKey {
     pub text: String,
     pub font_size_bits: u32,
+    pub style: GlyphStyle,
+}
+
+/// Cache key for a single character glyph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct GlyphCacheKey {
+    pub character: char,
+    pub font_size_bits: u32,
+    pub style: GlyphStyle,
+}
+
+impl GlyphCacheKey {
+    pub const fn new(character: char, font_size_bits: u32, style: GlyphStyle) -> Self {
+        Self {
+            character,
+            font_size_bits,
+            style,
+        }
+    }
 }
 
 /// One shaped glyph output by a multi-character run.
@@ -189,10 +214,10 @@ pub struct GlyphAtlas {
     /// LCD subpixel order (RGB or BGR), auto-detected from the OS.
     subpixel_layout: SubpixelLayout,
     metrics: Metrics,
-    glyph_cache: HashMap<(char, u32), GlyphEntry>,
+    glyph_cache: HashMap<GlyphCacheKey, GlyphEntry>,
     /// Cache for multi-character runs (ligature support).
     ///
-    /// Keyed by `(text, font_size_bits)`.  Each entry holds the rasterised
+    /// Keyed by `(text, font_size_bits, style)`.  Each entry holds the rasterised
     /// glyphs produced by shaping the run as a whole.
     ///
     /// Currently unused — populated only when ligature shaping is enabled.

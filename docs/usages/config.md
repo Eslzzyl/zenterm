@@ -74,7 +74,7 @@ Configure the typeface and rendering.
 | `normal` | `{ family, style? }` | platform-dependent¹ | The regular (normal-weight) font face. |
 | `ligatures` | `bool` | `true` | Enable OpenType ligature features (`liga`, `clig`). |
 | `hinting` | `string` | `"Auto"` | Font hinting mode. One of: `"None"` (smoothest), `"Auto"` (low-DPI only), `"Full"` (sharpest). |
-| `render_mode` | `string` | `"Subpixel"` | Anti-aliasing mode. One of: `"Subpixel"` (LCD RGB subpixel, sharpest on LCD), `"Grayscale"` (better on OLED / high-DPI). |
+| `render_mode` | `string` | `"Grayscale"` | Anti-aliasing mode. One of: `"Grayscale"` (stable in a composited GPU surface), `"Subpixel"` (explicit LCD RGB subpixel mode). |
 
 > ① **Default font family by platform:**
 > - **macOS:** `"Menlo"`

@@ -61,7 +61,7 @@ Each `LayoutGlyph` from cosmic-text is rasterised via **swash** (the same
 `rasterize_swash` function used by the per-char path), so the bitmap quality
 is identical regardless of which path produced the glyph.
 
-Results are cached in `run_cache` (keyed by text + font_size) to avoid
+Results are cached in `run_cache` (keyed by text + font_size + style) to avoid
 re-shaping the same run on every frame.
 
 ---
@@ -151,7 +151,7 @@ The following issues have been addressed:
 | Issue | Cause |
 |-------|-------|
 | **Run detection is ASCII-only** | `might_ligate` only checks ASCII punctuation pairs. Non-ASCII ligature sequences (e.g. Arabic) will fall through to per-char. |
-| **Bold/italic ligatures** | Styling variants are not yet wired through the shaping path. |
+| **Bold/italic ligatures** | Styling variants are passed through shaping and are isolated in the run/glyph cache keys. |
 
 ---
 

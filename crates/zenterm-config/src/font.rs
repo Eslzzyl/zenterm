@@ -63,8 +63,8 @@ pub struct FontConfig {
 
     /// Anti-aliasing render mode.
     ///
-    /// * `"subpixel"` — LCD subpixel RGB/BGR rendering (default, sharpest on LCD)
-    /// * `"grayscale"` — standard grayscale anti-aliasing (better on OLED/high-DPI)
+    /// * `"grayscale"` — standard grayscale anti-aliasing (the default)
+    /// * `"subpixel"` — LCD subpixel RGB/BGR rendering (explicit opt-in)
     #[serde(default)]
     pub render_mode: RenderMode,
 }

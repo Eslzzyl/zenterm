@@ -269,8 +269,8 @@ Block cursor 的 glyph quad 使用 `bg_color = cell.fg`（光标色），
 |--|-----------|---------|
 | 图集格式 | 1024×1024 RGBA，多张 atlas | Power-of-2 RGBA，单张 atlas（自动扩容到 4096） |
 | 上传方式 | `glTexSubImage2D`（增量上传） | `queue.write_texture`（整张上传） |
-| 缓存键 | `(font_key, font_size, char)` | `(char, font_size.to_bits())` |
-| 光栅化 | crossfont（FreeType/CoreText） | swash（Subpixel format） + builtin 软件光栅 |
+| 缓存键 | `(font_key, font_size, char)` | `(char, font_size.to_bits(), style)` |
+| 光栅化 | crossfont（FreeType/CoreText） | swash（Grayscale 默认，Subpixel 可选） + builtin 软件光栅 |
 | 子像素渲染 | LCD subpixel（RGB 三通道独立 coverage） | LCD subpixel（同左） |
 | 纹理过滤 | Linear（文字）/ Nearest（取决于后端） | **Nearest**（全部） |
 

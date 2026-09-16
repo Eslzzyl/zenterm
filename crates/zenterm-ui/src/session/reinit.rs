@@ -1,6 +1,6 @@
 //! Viewport, DPI, resize, and configuration methods for [`TerminalSession`].
 
-use zenterm_config::cursor::CursorConfig;
+use zenterm_config::{cursor::CursorConfig, font::FontConfig};
 use zenterm_core::size::TermSize;
 
 use super::types::TerminalSession;
@@ -38,17 +38,17 @@ impl TerminalSession {
     /// Re-initialise the (shared) glyph atlas and cell metrics for a
     /// new DPI scale factor.  Called when the window moves between
     /// monitors with different DPI settings.
-    pub fn reinit_for_dpi(&mut self, new_ppp: f32, ligatures_enabled: bool) {
-        let new_font_size = self.config_font_size() * new_ppp;
-        let font_family = std::borrow::Cow::Owned(self.config_font_family());
+    pub fn reinit_for_dpi(&mut self, new_ppp: f32, font_config: &FontConfig) {
+        let new_font_size = font_config.size * new_ppp;
+        let font_family = std::borrow::Cow::Owned(font_config.normal.family.clone());
         let (cw, ch) = self.atlas.reinit_for_dpi(
             new_font_size,
             font_family,
             new_ppp,
             zenterm_core::SubpixelLayout::detect(),
-            ligatures_enabled,
-            zenterm_core::HintingMode::Auto,
-            zenterm_core::RenderMode::Subpixel,
+            font_config.ligatures,
+            font_config.hinting,
+            font_config.render_mode,
         );
         self.atlas.seed_ascii();
         // Ensure the seeded atlas reaches the GPU before the next prepare().
@@ -95,20 +95,6 @@ impl TerminalSession {
         // Font size changes that don't cross a DPI threshold are
         // ignored here: `reinit_for_dpi` handles the physical rebuild.
         let _ = font_size;
-    }
-
-    /// Read the configured font size (the session does not own a
-    /// `Config`; the parent `ZentermApp` injects values via the
-    /// `apply_config_change` method).
-    fn config_font_size(&self) -> f32 {
-        // Conservative fallback: a real implementation would
-        // re-thread the Config through to the session.  For now,
-        // the parent calls `reinit_for_dpi` directly when the config
-        // changes; `apply_config_change` is the lightweight path.
-        18.0
-    }
-    fn config_font_family(&self) -> String {
-        "monospace".to_string()
     }
 
     // ── Per-session rendering ────────────────────────────────────────

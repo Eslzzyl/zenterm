@@ -6,21 +6,28 @@
 
 ## 结论摘要
 
-当前最强的实测证据指向默认抗锯齿模式，而非汉字 fallback：
+优化前最强的实测证据指向默认抗锯齿模式，而非汉字 fallback；当前版本已按该结论完成第一轮调整：
 
-1. zenterm 默认使用 RenderMode::Subpixel，WezTerm 当前默认配置走
+1. 优化前 zenterm 默认使用 RenderMode::Subpixel，WezTerm 当前默认配置走
    FreeType FT_RENDER_MODE_NORMAL，也就是灰度光栅化。
 2. 同一字体、字号、DPI、前景色和背景色下，zenterm 切换到 Grayscale 后，
    ASCII 与 CJK 行的截图指标都与 WezTerm 对齐；Subpixel 的 ASCII ink/mass
    约为灰度结果的 1.16/1.17 倍，并产生明显 RGB 彩边。
-3. zenterm 对 Subpixel coverage 额外执行 coverage^(1/1.3)。这会提高所有
-   中间 coverage，必然使细边变亮、变厚；它与默认模式差异叠加。
-4. 因此不需要更换 C 字体库也有明确优化空间。第一优先级是让默认模式与
-   面板/合成环境匹配，第二优先级是重新校准 gamma 与 Subpixel 合成，第三
-   优先级是补齐字体 weight/style 和 cache key。
+3. 优化前 zenterm 对 Subpixel coverage 额外执行 coverage^(1/1.3)。这会提高
+   所有中间 coverage，必然使细边变亮、变厚；它与默认模式差异叠加。
+4. 当前版本已将默认模式设为 Grayscale，并将 Subpixel 的 coverage 修正设为
+   中性值 1.0；显式 Subpixel 仍保留。
+5. 当前版本在灰度 Mask 上保留中性 coverage 曲线
+   `GRAYSCALE_GAMMA = 1.0`，不额外增粗小字号边缘；此前试验的 1.08 在
+   浅色和深色对照中都使覆盖量增加约 1.5%～1.7%，没有显示出足够收益。
+6. 当前版本还已把 bold/italic 传入 shaping/rasterization，并加入 glyph/run
+   cache key，避免不同样式共享错误字形。
 
-这不是“swash 一定比 FreeType 差”的证据。它证明了当前 zenterm 的默认
-参数组合和 GPU 合成结果与当前 WezTerm 的默认组合不同。若目标是逐像素复制
+因此不需要更换 C 字体库也有明确优化空间。首轮改动集中在默认模式、coverage
+和样式缓存，后续才需要继续评估 Subpixel 的专用合成路径。
+
+该结果无法证明 swash 一定比 FreeType 差。它表明当前 zenterm 的默认参数
+组合和 GPU 合成结果与当前 WezTerm 的默认组合不同。若目标是逐像素复制
 DirectWrite/FreeType 的全部细节，纯 Rust 栈无法承诺完全一致；若目标是清晰、
 稳定、无彩边的终端文字，现有 cosmic-text + harfrust + swash + zeno 足以
 继续优化。
@@ -51,8 +58,8 @@ tools/font-render-check/README.md。它做四件事：
 
 窗口捕获默认使用屏幕像素路径：检查器按每次运行的实际窗口矩形恢复目标窗口，
 必要时把完全位于所有显示器之外的 fixture 放到当前虚拟屏幕，短暂置顶后复制
-屏幕像素，再恢复非置顶状态。这个路径能捕获当前 eframe/wgpu 内容；远程桌面
-导致分辨率或 DPI 变化时，矩形和行检测随截图重新计算，不依赖固定坐标。`-CaptureMethod
+屏幕像素，再恢复非置顶状态。这个路径能捕获当前 eframe/wgpu 内容；屏幕或窗口
+尺寸变化时，矩形和行检测随截图重新计算，不依赖固定坐标。`-CaptureMethod
 PrintWindow` 仍可显式使用，但对当前 zenterm 窗口可能返回黑块或背景块，不能
 把这类输出作为渲染质量证据。PNG 读取与像素分析仅用于测试，不改变生产字体链路。
 
@@ -101,8 +108,9 @@ CJK 行的少量 Subpixel fringe 来自行前的 ASCII 标签；实际 fallback 
 
 关键实现证据：
 
-- crates/zenterm-glyph/src/rasterize.rs:21-49：Subpixel coverage 以
-  1/1.3 的幂做校正；
+- crates/zenterm-glyph/src/rasterize.rs：灰度 Mask 使用
+  `GRAYSCALE_GAMMA = 1.0`，Subpixel coverage 保留中性曲线
+  `SUBPIXEL_GAMMA = 1.0`；
 - rasterize.rs:92-108：主字体可以输出 Format::Subpixel，resolved fallback
   强制使用 Format::Alpha；
 - atlas_impl.rs:616-625：通过 cosmic-text 先按字符 shaping；
@@ -125,8 +133,8 @@ Rgba8Unorm/Bgra8Unorm framebuffer，因此 shader 中的手动 sRGB 转换有其
 Nearest 本身不是这轮问题的主因：它避免了把物理 LCD coverage 在 atlas 边界
 再次插值。真正敏感的是 coverage 和合成：
 
-- 1.3 gamma 对 0.5 会得到约 0.587，对 0.25 会得到约 0.344。边缘中间色
-  被抬高，视觉上就是更厚、更亮；
+- 优化前的 1.3 gamma 会把 0.5 提高到约 0.587、把 0.25 提高到约 0.344。
+  边缘中间色被抬高，视觉上就是更厚、更亮；当前默认值 1.0 不再做这层增亮；
 - Subpixel shader 把每通道 coverage 归一到 max_c，再交给普通 alpha blend。
   这个补偿在目标帧缓冲已经是对应 cell 背景时，代数上可以得到每通道
   coverage；但 shader 已先把颜色转回 sRGB，普通 alpha blend 仍作用于 target
@@ -134,6 +142,8 @@ Nearest 本身不是这轮问题的主因：它避免了把物理 LCD coverage �
   真正的逐通道 coverage 合成器；
 - 所有 glyph 类型共享普通 alpha pipeline，Subpixel 不能像 dual-source
   路径那样把 RGB coverage 作为独立 blend weight 交给 GPU。
+- 灰度 Mask 当前保持 swash 的原始覆盖值：端点保持为 0/255，不改变字形轮廓、
+  布局、Color 字形、内置块字符或显式 Subpixel 路径。
 
 ## 与主流终端的实现差异
 
@@ -193,18 +203,19 @@ params 配合的 alpha 修正。纯 Rust 实现可以复刻接口层思路和数
 
 | 优先级 | 假设 | 证据 | 判断 |
 | --- | --- | --- | --- |
-| 1 | 默认 Subpixel 与 WezTerm 灰度路径不同 | Grayscale A/B 的 ASCII/CJK 指标重合；Subpixel ASCII mass 约 1.17 倍、fringe 非零 | 已有强证据 |
-| 2 | SUBPIXEL_GAMMA=1.3 抬高边缘 coverage | 代码中仅 Subpixel 应用幂变换；幂函数对中间值单调增大 | 已确认会增粗，具体最佳值需矩阵实验 |
+| 1 | 优化前默认 Subpixel 与 WezTerm 灰度路径不同 | Grayscale A/B 的 ASCII/CJK 指标重合；Subpixel ASCII mass 约 1.17 倍、fringe 非零 | 已确认；默认已改为 Grayscale |
+| 2 | SUBPIXEL_GAMMA=1.3 抬高边缘 coverage | 代码中仅 Subpixel 应用幂变换；幂函数对中间值单调增大 | 已确认；当前值为 1.0 |
 | 3 | 普通 alpha pipeline 承担逐通道 LCD 合成 | shader 使用 max_c 补偿后仍输出 sRGB 颜色，再走普通 alpha blend | 结构性风险，需 dual-source/离线方程 A/B 定量 |
 | 4 | hinting 策略差异 | 两者在高 DPI 都趋向关闭 hinting，但 target/阈值不同 | 次要，需 None/Auto/Full 实验 |
 | 5 | fallback 汉字光栅化差异 | 日志显示 Microsoft YaHei UI + Format::Alpha；CJK 行与参考近似重合 | 当前样本中不是主因 |
-| 6 | bold/italic 未接入真实字体属性 | shaping.rs:159-161 只用于 run 分界；atlas_impl.rs:616-625 的 Attrs 没有 weight/style，cache key 也只有 char+size | 非当前 regular 样本主因，但属于确定的质量缺口 |
+| 6 | bold/italic 未接入真实字体属性 | 优化前 shaping.rs 只用于 run 分界；atlas_impl.rs 的 Attrs 没有 weight/style，cache key 也只有 char+size | 已修复并纳入回归范围 |
+| 7 | 灰度 Mask 弱边缘偏薄 | 1.08 只带来约 1.5%～1.7% 的覆盖增量；ASCII/CJK 在 1.0 与 1.08 下均无 RGB fringe，放大图未显示确定性收益 | 证据不足，当前采用 1.0 |
 
 ## 不改用 C 库时的优化路线
 
 ### P0：默认行为与环境匹配
 
-建议将 Windows 默认策略调整为灰度，或提供明确的显示器安全默认值：
+当前版本已将默认策略调整为灰度：
 
 - RenderMode::Grayscale 作为默认，Subpixel 作为显式可选项；
 - 如果保留自动模式，至少同时检查字体平滑是否启用、ClearType level、窗口
@@ -215,10 +226,12 @@ params 配合的 alpha 修正。纯 Rust 实现可以复刻接口层思路和数
 
 ### P1：校准 coverage 与 Subpixel 合成
 
-把 SUBPIXEL_GAMMA 从硬编码改成可实验参数，至少跑：
+当前版本将灰度 `GRAYSCALE_GAMMA` 设为 1.0，并将
+`SUBPIXEL_GAMMA` 保持为 1.0。后续如需显示器专用调校，再以截图矩阵评估：
 
     render = grayscale / subpixel
-    gamma  = 1.0 / 1.1 / 1.2 / 1.3
+    gamma  = grayscale 1.0 / 1.04 / 1.08 / 1.12
+             subpixel 1.0
     hint   = none / auto / full
     font   = regular / bold / italic / bold-italic
     script = ASCII / CJK fallback / emoji / mixed
@@ -239,33 +252,32 @@ params 配合的 alpha 修正。纯 Rust 实现可以复刻接口层思路和数
 能力、不同 glyph 类型和透明背景。它适合作为后续实验，不应在没有截图 A/B
 前直接替换默认路径。
 
-### P2：补齐字体属性与缓存维度
+### P2：补齐字体属性与缓存维度（已完成）
 
-bold/italic 应传给 cosmic-text Attrs::weight() / Attrs::style()，并至少扩展
-glyph cache key 为：
+bold/italic 现在已传给 cosmic-text Attrs::weight() / Attrs::style()，glyph
+cache key 为：
 
-    (char, font_size, resolved_face, weight, style, render_mode, hinting, subpixel_layout)
+    (char, font_size, style)
 
-run cache 也要包含 style/weight。Alacritty 的四套 FontKey 是可核对的参考。
+run cache 也包含 style。渲染模式、hinting 和字体族属于 atlas 实例配置，配置
+变化时 atlas 会整体重建并清空缓存。Alacritty 的四套 FontKey 是可核对的参考。
 这会改善粗体/斜体的字重和斜率一致性，也避免字符与样式字符错误共享同一
 atlas entry。
 
-### P2：统一 DPI 重建参数
+### P2：统一 DPI 重建参数（已完成）
 
-crates/zenterm-ui/src/session/reinit.rs:41-52 仍把字号/字体、hinting、render
-mode 通过保守 fallback/硬编码重建。配置热更新路径使用正确配置，而 DPI 事件
-路径可能回到 18.0、monospace、Auto、Subpixel。这不会解释当前固定截图，但
-会造成跨显示器移动后字体突然变化，应该将实际 FontConfig 贯穿到 DPI reinit。
+`reinit_for_dpi` 现在直接接收当前 FontConfig，字号、字体族、hinting、render
+mode 和 ligature 设置保持一致。
 
 ## 最终判断
 
 在不改用 FreeType、DirectWrite 等 C/系统字体库的前提下，项目有实质的优化
 空间，且第一步不需要重写字体引擎：
 
-- 先把默认模式从无条件 Subpixel 调整为灰度/环境感知；
-- 将 1.3 gamma 改成可验证、可配置的策略并用截图矩阵选值；
+- 默认模式调整为灰度，显式 Subpixel 继续保留；
+- 将灰度 coverage 保持为 1.0，Subpixel gamma 保持中性值 1.0；
 - 再评估 dual-source 或多 pass 的 wgpu 文字 pipeline；
-- 最后修复 weight/style/cache/DPI 维度。
+- 修复 weight/style/cache/DPI 维度。
 
 这些改变可以直接改善当前观察到的边缘厚、彩边、锐度不稳定。剩余差异主要
 来自不同光栅器的 hinting、字形轮廓和字体 fallback 选择；纯 Rust 路径可以达到

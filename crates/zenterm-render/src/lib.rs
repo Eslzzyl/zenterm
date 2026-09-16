@@ -26,7 +26,7 @@ use crate::shaders::{TERMINAL_FS, TERMINAL_VS};
 /// [`CellInstance::flags`]; the upper bits are reserved for
 /// [`AtlasRange::atlas_index`] in the CPU grouping layer.
 pub mod glyph_type {
-    /// Default: LCD subpixel coverage (R=red, G=green, B=blue).
+    /// LCD subpixel coverage (R=red, G=green, B=blue).
     /// The shader does per-channel `mix(bg, fg, coverage)`.
     pub const SUBPIXEL: u32 = 0;
     /// Grayscale alpha mask: R=G=B=A, use `max(r,g,b)` as alpha.

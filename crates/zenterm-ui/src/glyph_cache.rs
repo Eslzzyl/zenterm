@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use std::sync::atomic::Ordering;
 use zenterm_core::{HintingMode, RenderMode, Result, SubpixelLayout};
-use zenterm_glyph::{GlyphAtlas, ShapedGlyph};
+use zenterm_glyph::{GlyphAtlas, GlyphStyle, ShapedGlyph};
 use zenterm_render::callback::{AtlasSlotData, AtlasUpdate, SharedRenderState};
 
 /// Guard returned by [`SharedGlyphAtlas::lock`].  Provides mutable
@@ -234,8 +234,17 @@ impl SharedGlyphAtlas {
     /// When ligature shaping is implemented, this method will
     /// shape the entire `text` string as a single unit.
     pub fn shape_and_rasterize_run(&self, text: &str) -> Result<(Vec<ShapedGlyph>, bool, bool)> {
+        self.shape_and_rasterize_run_with_style(text, GlyphStyle::default())
+    }
+
+    /// Shape and rasterise a run using the requested terminal style.
+    pub fn shape_and_rasterize_run_with_style(
+        &self,
+        text: &str,
+        style: GlyphStyle,
+    ) -> Result<(Vec<ShapedGlyph>, bool, bool)> {
         let mut atlas = self.inner.lock().unwrap();
-        let result = atlas.shape_and_rasterize_run(text)?;
+        let result = atlas.shape_and_rasterize_run_with_style(text, style)?;
         Ok(result)
     }
 }

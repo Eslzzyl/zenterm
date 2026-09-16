@@ -347,17 +347,18 @@ pub enum HintingMode {
 
 /// LCD subpixel or grayscale anti-aliasing mode.
 ///
-/// Subpixel rendering gives sharper text on LCD displays but can produce
-/// colour fringing on OLED or high-DPI screens.  Grayscale mode is safer
-/// for non-LCD panels.
+/// Grayscale rendering is the default because the terminal is drawn into a
+/// composited GPU surface, where LCD subpixel coverage can become visible as
+/// coloured fringes.  Subpixel rendering remains available as an explicit
+/// option for users with a compatible LCD setup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RenderMode {
-    /// LCD subpixel anti-aliasing (R/G/B per-channel coverage).
-    #[default]
-    Subpixel,
     /// Standard grayscale anti-aliasing (single alpha channel).
+    #[default]
     Grayscale,
+    /// LCD subpixel anti-aliasing (R/G/B per-channel coverage).
+    Subpixel,
 }
 
 impl SubpixelLayout {
@@ -408,5 +409,15 @@ impl SubpixelLayout {
             // has no subpixel structure (e.g. OLED).
             Self::Rgb
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RenderMode;
+
+    #[test]
+    fn render_mode_defaults_to_grayscale() {
+        assert_eq!(RenderMode::default(), RenderMode::Grayscale);
     }
 }
