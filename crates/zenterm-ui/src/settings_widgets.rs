@@ -19,16 +19,13 @@ use std::ops::RangeInclusive;
 
 /// Draw a section title with an optional subtitle below it.
 pub fn section_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
-    ui.add_space(16.0);
-    ui.horizontal(|ui| {
-        ui.add_space(2.0);
-        ui.heading(title);
-    });
+    ui.add_space(12.0);
+    ui.label(egui::RichText::new(title).size(16.0).strong());
     if !subtitle.is_empty() {
         ui.add_space(2.0);
         ui.label(
             egui::RichText::new(subtitle)
-                .size(ui.text_style_height(&egui::TextStyle::Body) * 0.85)
+                .size(12.0)
                 .color(
                     ui.visuals()
                         .weak_text_color
@@ -36,30 +33,30 @@ pub fn section_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
                 ),
         );
     }
-    ui.add_space(4.0);
-    ui.separator();
     ui.add_space(6.0);
+    ui.separator();
+    ui.add_space(8.0);
 }
 
 // ─── Label + control row helper ────────────────────────────────────────
 
-/// Draw a label and description in the left column, then the control
-/// in the right column, with consistent vertical spacing.
+/// Draw a label and description in the left column (left-aligned),
+/// and the control in the right column (strictly right-aligned).
 pub(crate) fn row<F>(ui: &mut egui::Ui, label: &str, description: &str, add_control: F)
 where
     F: FnOnce(&mut egui::Ui),
 {
-    // Add a small gap between rows for visual breathing room.
-    ui.add_space(2.0);
+    ui.add_space(4.0);
+
     ui.horizontal(|ui| {
-        // Label + description column (grow to fill space, pushing control right).
+        // Left: Label + description
         ui.vertical(|ui| {
-            ui.set_min_height(28.0);
-            ui.label(egui::RichText::new(label).size(14.0));
+            ui.label(egui::RichText::new(label).size(13.5).strong());
             if !description.is_empty() {
+                ui.add_space(1.0);
                 ui.label(
                     egui::RichText::new(description)
-                        .size(ui.text_style_height(&egui::TextStyle::Body) * 0.82)
+                        .size(11.5)
                         .color(
                             ui.visuals()
                                 .weak_text_color
@@ -68,10 +65,15 @@ where
                 );
             }
         });
+
+        // Right: Control strictly right-aligned to the right margin
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(16.0);
             add_control(ui);
         });
     });
+
+    ui.add_space(4.0);
 }
 
 // ── Boolean ─────────────────────────────────────────────────��──────────

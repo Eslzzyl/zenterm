@@ -29,7 +29,11 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
 
     // Keep UI chrome derived from resolved theme tokens instead of a
     // separate hard-coded light/dark palette.
-    let border = blend_colors(ui_bg, ui_text, if dark_mode { 0.28 } else { 0.18 });
+    let border = if dark_mode {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 28)
+    } else {
+        Color32::from_rgba_unmultiplied(0, 0, 0, 24)
+    };
 
     // ── Text colours ────────────────────────────────────────────────
     let text_color = ui_text;
@@ -41,17 +45,21 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
     );
 
     // ── Widget state colours ────────────────────────────────────────
-    // Menu items and dock tabs need a clear hover affordance.  A blend of
-    // the two light surfaces is nearly indistinguishable in the light theme,
-    // so tint the state toward the configured accent instead.
-    let hover_bg = blend_colors(ui_bg, accent, if dark_mode { 0.22 } else { 0.12 });
+    let hover_bg = if dark_mode {
+        with_alpha(accent, 35)
+    } else {
+        with_alpha(accent, 22)
+    };
     let active_bg = accent.linear_multiply(0.8);
-    let open_bg = accent.linear_multiply(0.15);
+    let open_bg = with_alpha(accent, if dark_mode { 45 } else { 30 });
     let rounding = CornerRadius::same(6);
-    let small_rounding = CornerRadius::same(4);
+    let small_rounding = CornerRadius::same(5);
 
-    let ext_bg = blend_colors(ui_bg, surface, if dark_mode { 0.20 } else { 0.35 });
-    let faint_bg = blend_colors(ui_bg, surface, if dark_mode { 0.45 } else { 0.65 });
+    let faint_bg = if dark_mode {
+        blend_colors(ui_bg, surface, 0.35)
+    } else {
+        blend_colors(ui_bg, surface, 0.50)
+    };
 
     let base = if dark_mode {
         Visuals::dark()
@@ -61,8 +69,9 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
 
     let visuals = Visuals {
         dark_mode,
-        panel_fill: ext_bg,       // matches tab-bar background
-        extreme_bg_color: ext_bg, // used by the tab bar
+        override_text_color: Some(text_color),
+        panel_fill: ui_bg,
+        extreme_bg_color: ui_bg,
         window_fill: surface,
         faint_bg_color: faint_bg,
         window_corner_radius: CornerRadius::same(8),
@@ -73,11 +82,11 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
             offset: [0, 8],
             blur: 24,
             spread: 0,
-            color: Color32::BLACK.linear_multiply(0.3),
+            color: Color32::BLACK.linear_multiply(if dark_mode { 0.4 } else { 0.12 }),
         },
         selection: egui::style::Selection {
             bg_fill: with_alpha(accent, if dark_mode { 55 } else { 40 }),
-            stroke: Stroke::new(1.0_f32, text_color),
+            stroke: Stroke::new(1.0_f32, accent),
         },
         weak_text_alpha: 0.65,
         weak_text_color: Some(weak_text),
@@ -88,7 +97,7 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
         widgets: egui::style::Widgets {
             noninteractive: egui::style::WidgetVisuals {
                 weak_bg_fill: Color32::TRANSPARENT,
-                bg_fill: ui_bg,
+                bg_fill: surface,
                 bg_stroke: Stroke::new(1.0_f32, border),
                 fg_stroke: Stroke::new(1.0_f32, text_color),
                 corner_radius: rounding,
@@ -96,27 +105,25 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
             },
             inactive: egui::style::WidgetVisuals {
                 weak_bg_fill: Color32::TRANSPARENT,
-                bg_fill: ui_bg,
+                bg_fill: surface,
                 bg_stroke: Stroke::new(1.0_f32, border),
                 fg_stroke: Stroke::new(1.0_f32, text_color),
                 corner_radius: rounding,
                 expansion: 0.0,
             },
             hovered: egui::style::WidgetVisuals {
-                // egui buttons use weak_bg_fill for their frame fill.  Keep
-                // this populated or menu items will never show hover state.
                 weak_bg_fill: hover_bg,
                 bg_fill: hover_bg,
                 bg_stroke: Stroke::new(1.0_f32, accent),
                 fg_stroke: Stroke::new(1.5_f32, text_color),
                 corner_radius: small_rounding,
-                expansion: 1.0,
+                expansion: 0.0,
             },
             active: egui::style::WidgetVisuals {
                 weak_bg_fill: active_bg,
                 bg_fill: active_bg,
                 bg_stroke: Stroke::new(1.0_f32, accent),
-                fg_stroke: Stroke::new(2.0_f32, text_color),
+                fg_stroke: Stroke::new(1.5_f32, if dark_mode { Color32::WHITE } else { text_color }),
                 corner_radius: small_rounding,
                 expansion: 0.0,
             },

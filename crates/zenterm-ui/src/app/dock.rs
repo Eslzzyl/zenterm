@@ -233,14 +233,14 @@ impl ZentermApp {
 
                 // Tab bar — compact, with a clear active surface.
                 style.tab_bar.bg_fill = egui_visuals.extreme_bg_color;
-                style.tab_bar.height = 32.0;
-                style.tab_bar.inner_margin = Margin::symmetric(4, 0);
+                style.tab_bar.height = 34.0;
+                style.tab_bar.inner_margin = Margin::symmetric(6, 0);
                 style.tab_bar.corner_radius = CornerRadius::ZERO;
                 style.tab_bar.hline_color = egui_visuals.window_stroke.color;
 
                 // Tab spacing — small gap between tabs, minimum width.
-                style.tab.spacing = 2.0;
-                style.tab.minimum_width = Some(80.0);
+                style.tab.spacing = 3.0;
+                style.tab.minimum_width = Some(88.0);
 
                 // Tab body: no margin, no stroke, no corners so the
                 // terminal content goes edge-to-edge.
@@ -257,26 +257,35 @@ impl ZentermApp {
                 };
                 style.tab.active.corner_radius = top_round;
                 style.tab.active_with_kb_focus.corner_radius = top_round;
-                // Ensure all other states share the same top-right rounding
-                // so the close-button hover highlight doesn't become a
-                // square that overflows the tab corner.
                 style.tab.inactive.corner_radius = top_round;
                 style.tab.inactive_with_kb_focus.corner_radius = top_round;
                 style.tab.hovered.corner_radius = top_round;
                 style.tab.focused.corner_radius = top_round;
                 style.tab.focused_with_kb_focus.corner_radius = top_round;
 
-                let active_tab_bg = Color32::from_rgba_unmultiplied(
-                    egui_visuals.hyperlink_color.r(),
-                    egui_visuals.hyperlink_color.g(),
-                    egui_visuals.hyperlink_color.b(),
-                    if egui_visuals.dark_mode { 52 } else { 32 },
-                );
+                // Active tab seamlessly matches the terminal background canvas
+                let active_tab_bg = self.default_bg;
                 style.tab.active.bg_fill = active_tab_bg;
                 style.tab.active_with_kb_focus.bg_fill = active_tab_bg;
                 style.tab.active.outline_color = egui_visuals.hyperlink_color;
                 style.tab.active_with_kb_focus.outline_color = egui_visuals.hyperlink_color;
+                style.tab.inactive.bg_fill = Color32::TRANSPARENT;
+                style.tab.inactive_with_kb_focus.bg_fill = Color32::TRANSPARENT;
                 style.tab.hovered.bg_fill = egui_visuals.widgets.hovered.bg_fill;
+
+                let weak_text = egui_visuals
+                    .weak_text_color
+                    .unwrap_or(egui_visuals.text_color().linear_multiply(0.55));
+                let text_bright = egui_visuals.strong_text_color();
+                let text_main = egui_visuals.text_color();
+
+                style.tab.active.text_color = text_main;
+                style.tab.active_with_kb_focus.text_color = text_main;
+                style.tab.inactive.text_color = weak_text;
+                style.tab.inactive_with_kb_focus.text_color = weak_text;
+                style.tab.hovered.text_color = text_bright;
+                style.tab.focused.text_color = text_main;
+                style.tab.focused_with_kb_focus.text_color = text_main;
 
                 // Place the "+" add-tab button right after the last tab.
                 style.buttons.add_tab_align = TabAddAlign::Left;
@@ -284,10 +293,6 @@ impl ZentermApp {
                 // Tab close button — × colour changes on hover but no
                 // background highlight (avoids shape mismatch with the
                 // tab's top-right corner rounding).
-                let weak_text = egui_visuals
-                    .weak_text_color
-                    .unwrap_or(egui_visuals.text_color().linear_multiply(0.55));
-                let text_bright = egui_visuals.strong_text_color();
                 style.buttons.close_tab_color = weak_text;
                 style.buttons.close_tab_active_color = text_bright;
                 style.buttons.close_tab_bg_fill = Color32::TRANSPARENT;

@@ -133,6 +133,12 @@ impl ZentermApp {
         let theme = config.colors.to_theme(system_dark);
         configure_egui_style(&egui_ctx, &theme);
 
+        // Install Phosphor icon font definitions so all UI chrome
+        // has access to crisp, resolution-independent vector icons.
+        let mut fonts = egui::FontDefinitions::default();
+        crate::icons::init_fonts(&mut fonts);
+        egui_ctx.set_fonts(fonts);
+
         let shared = std::sync::Arc::new(SharedRenderState::new(80 * 24));
         let gpu = SharedGpuContext::new(device, queue, target_format, shared.clone());
 

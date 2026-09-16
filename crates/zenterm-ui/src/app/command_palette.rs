@@ -29,6 +29,8 @@ enum CommandAction {
     CloseActiveWorkspace,
     SwitchWorkspace(WorkspaceId),
     CycleWorkspace(isize),
+    ToggleSidebar,
+    ToggleTabs,
 }
 
 struct CommandItem {
@@ -129,7 +131,33 @@ impl ZentermApp {
                     action: CommandAction::SwitchWorkspace(workspace.id),
                 });
             }
+
         }
+
+        // View toggles for sidebar and tab bar (always accessible)
+        let sidebar_title = if self.config.ui.sidebar_enabled {
+            "Hide Sidebar"
+        } else {
+            "Show Sidebar"
+        };
+        items.push(CommandItem {
+            title: sidebar_title.into(),
+            category: "View",
+            shortcut: None,
+            action: CommandAction::ToggleSidebar,
+        });
+
+        let tabs_title = if self.config.ui.tabs_enabled {
+            "Hide Tab Bar"
+        } else {
+            "Show Tab Bar"
+        };
+        items.push(CommandItem {
+            title: tabs_title.into(),
+            category: "View",
+            shortcut: None,
+            action: CommandAction::ToggleTabs,
+        });
 
         items.push(CommandItem {
             title: "Open Settings".into(),
@@ -324,6 +352,18 @@ impl ZentermApp {
                     self.workspaces.switch_to(id);
                     self.focus_first_tab_in_active_workspace();
                     self.mark_layout_dirty();
+                }
+            }
+            CommandAction::ToggleSidebar => {
+                self.config.ui.sidebar_enabled = !self.config.ui.sidebar_enabled;
+                if let Err(e) = self.config.save() {
+                    log::warn!("Failed to save config after toggling sidebar: {e}");
+                }
+            }
+            CommandAction::ToggleTabs => {
+                self.config.ui.tabs_enabled = !self.config.ui.tabs_enabled;
+                if let Err(e) = self.config.save() {
+                    log::warn!("Failed to save config after toggling tabs: {e}");
                 }
             }
         }

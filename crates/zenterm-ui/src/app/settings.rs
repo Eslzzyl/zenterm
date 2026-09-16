@@ -23,12 +23,19 @@ impl ZentermApp {
         }
 
         let viewport_id = ViewportId::from_hash_of("zenterm_settings_viewport");
-        let builder = ViewportBuilder::default()
+        let mut builder = ViewportBuilder::default()
             .with_title("Settings")
             .with_inner_size(egui::vec2(720.0, 520.0))
             .with_resizable(true)
             .with_minimize_button(false)
             .with_maximize_button(false);
+
+        if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/runtime/zenterm.png"
+        ))) {
+            builder = builder.with_icon(icon);
+        }
 
         // Extract borrows *before* the closure to satisfy the borrow
         // checker — show_viewport_immediate borrows the context, and

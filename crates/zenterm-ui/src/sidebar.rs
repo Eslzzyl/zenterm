@@ -83,30 +83,115 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
         ui.add_space(10.0);
 
         // ── "New workspace" / settings buttons ───────────────────
-        let compact_toolbar = ui.available_width() < 200.0;
-        let new_workspace_fill = ui.visuals().selection.bg_fill;
+        let avail_w = ui.available_width();
+        let accent = ui.visuals().hyperlink_color;
+        let border_color = ui.visuals().window_stroke.color;
+        let dark_mode = ui.visuals().dark_mode;
+        let text_color = ui.visuals().text_color();
+        let weak_text = ui
+            .visuals()
+            .weak_text_color
+            .unwrap_or_else(|| text_color.linear_multiply(0.6));
+
         ui.horizontal(|ui| {
-            let new_workspace = if compact_toolbar {
-                ui.add(egui::Button::new("+").fill(new_workspace_fill))
-                    .on_hover_text("New workspace")
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+
+            // "New Workspace" button
+            let settings_btn_w = 28.0;
+            let spacing = 6.0;
+            let new_ws_w = (avail_w - settings_btn_w - spacing).max(28.0);
+            let show_label = new_ws_w >= 100.0;
+
+            let (btn_rect, btn_resp) =
+                ui.allocate_exact_size(egui::vec2(new_ws_w, 28.0), egui::Sense::click());
+
+            let btn_hovered = btn_resp.hovered();
+            let btn_active = btn_resp.is_pointer_button_down_on();
+
+            let btn_bg = if btn_active {
+                accent
+            } else if btn_hovered {
+                if dark_mode {
+                    Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 45)
+                } else {
+                    Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 25)
+                }
             } else {
-                ui.add(egui::Button::new("+  New workspace").fill(new_workspace_fill))
+                ui.visuals().window_fill
             };
-            if new_workspace.clicked() {
+
+            let btn_stroke_color = if btn_active || btn_hovered {
+                accent
+            } else {
+                border_color
+            };
+
+            ui.painter().rect(
+                btn_rect,
+                6.0,
+                btn_bg,
+                egui::Stroke::new(1.0_f32, btn_stroke_color),
+                egui::StrokeKind::Inside,
+            );
+
+            let btn_text_color = if btn_active {
+                Color32::WHITE
+            } else if btn_hovered {
+                if dark_mode {
+                    Color32::WHITE
+                } else {
+                    accent
+                }
+            } else {
+                ui.visuals().strong_text_color()
+            };
+
+            let btn_label = if show_label {
+                format!("{}  New Workspace", crate::icons::PLUS)
+            } else {
+                crate::icons::PLUS.to_string()
+            };
+            let label_shape = ui.painter().layout_no_wrap(
+                btn_label,
+                egui::FontId::proportional(12.5),
+                btn_text_color,
+            );
+            let label_pos = if show_label {
+                egui::pos2(
+                    btn_rect.left() + 12.0,
+                    btn_rect.center().y - label_shape.size().y * 0.5,
+                )
+            } else {
+                btn_rect.center() - label_shape.size() * 0.5
+            };
+            ui.painter().galley(label_pos, label_shape, Color32::WHITE);
+
+            if btn_resp.clicked() {
                 events.push(SidebarEvent::NewWorkspace);
             }
-            // Push settings gear to the right.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let response = ui.button("⚙");
-                if response.clicked() {
-                    events.push(SidebarEvent::OpenSettings);
-                }
-                response.on_hover_text("Settings");
-            });
+            btn_resp.on_hover_text("Create new workspace");
+
+            // Settings gear button on the right
+            let settings_resp = crate::icons::icon_button(
+                ui,
+                crate::icons::GEAR,
+                16.0,
+                egui::vec2(settings_btn_w, 28.0),
+                "Settings",
+            );
+            if settings_resp.clicked() {
+                events.push(SidebarEvent::OpenSettings);
+            }
         });
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(4.0);
+
+        ui.add_space(8.0);
+        // Subtle divider hairline
+        let sep_rect = egui::Rect::from_min_size(
+            egui::pos2(ui.min_rect().left(), ui.cursor().top()),
+            egui::vec2(ui.available_width(), 1.0),
+        );
+        ui.painter().rect_filled(sep_rect, 0.0, border_color);
+        ui.add_space(8.0);
 
         // ── Scrollable workspace list ───────────────────────────
         egui::ScrollArea::vertical()
@@ -115,94 +200,204 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
                 for ws_entry in &data.workspaces {
                     let ws_id = ws_entry.id;
 
-                    // ── Allocate full-width clickable card ──────
-                    let desired = egui::vec2(ui.available_width(), 52.0);
+                    let has_subtitle = ws_entry
+                        .tab_title
+                        .as_ref()
+                        .map(|t| !t.is_empty() && t != &ws_entry.name)
+                        .unwrap_or(false);
+
+                    let card_h = if has_subtitle { 52.0 } else { 42.0 };
+                    let desired = egui::vec2(ui.available_width(), card_h);
                     let (card_rect, card_resp) =
                         ui.allocate_exact_size(desired, egui::Sense::click());
 
-                    // Paint background for the entire card.
                     let is_hovered = card_resp.hovered();
-                    let corner_radius = 8.0;
-                    let accent = ui.visuals().hyperlink_color;
-                    let bg = if ws_entry.is_active {
-                        Color32::from_rgba_unmultiplied(
-                            accent.r(),
-                            accent.g(),
-                            accent.b(),
-                            if ui.visuals().dark_mode { 48 } else { 30 },
-                        )
-                    } else if is_hovered {
-                        // A surface-to-background blend is too subtle in the
-                        // light theme, where both colours are close together.
-                        // Reuse the theme accent used for selection instead.
-                        ui.visuals().selection.bg_fill
-                    } else {
-                        Color32::TRANSPARENT
-                    };
-                    ui.painter().rect_filled(card_rect, corner_radius, bg);
+                    let is_active = ws_entry.is_active;
+                    let corner_radius = 7.0;
 
-                    // Use a compact active rail instead of outlining every
-                    // workspace as a separate card.
-                    if ws_entry.is_active {
-                        let rail_rect = egui::Rect::from_min_size(
-                            card_rect.min,
-                            egui::vec2(3.0, card_rect.height()),
+                    // Modern card background:
+                    // Active card has high contrast surface and border
+                    let (bg_color, stroke_color) = if is_active {
+                        if dark_mode {
+                            (
+                                Color32::from_rgb(32, 37, 50),
+                                egui::Stroke::new(1.0_f32, Color32::from_rgb(67, 76, 102)),
+                            )
+                        } else {
+                            (
+                                Color32::from_rgb(238, 242, 255),
+                                egui::Stroke::new(1.0_f32, Color32::from_rgb(199, 210, 254)),
+                            )
+                        }
+                    } else if is_hovered {
+                        (
+                            if dark_mode {
+                                Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+                            } else {
+                                Color32::from_rgba_unmultiplied(0, 0, 0, 10)
+                            },
+                            egui::Stroke::new(1.0_f32, border_color),
+                        )
+                    } else {
+                        (Color32::TRANSPARENT, egui::Stroke::NONE)
+                    };
+
+                    ui.painter().rect(
+                        card_rect,
+                        corner_radius,
+                        bg_color,
+                        stroke_color,
+                        egui::StrokeKind::Inside,
+                    );
+
+                    // Floating rounded pill indicator on active card
+                    if is_active {
+                        let pill_rect = egui::Rect::from_center_size(
+                            egui::pos2(card_rect.left() + 4.0, card_rect.center().y),
+                            egui::vec2(3.5, if has_subtitle { 24.0 } else { 20.0 }),
                         );
-                        ui.painter().rect_filled(rail_rect, 2.0, accent);
+                        ui.painter().rect_filled(pill_rect, 1.75, accent);
                     }
 
-                    // ── Card content ─────────────────────────────
-                    let content_rect = card_rect.shrink2(egui::vec2(14.0, 7.0));
-                    let mut content_ui = ui.new_child(
-                        egui::UiBuilder::default()
-                            .max_rect(content_rect)
-                            .layout(*ui.layout()),
-                    );
-                    content_ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            let label_color = if ws_entry.is_active || is_hovered {
-                                ui.visuals().strong_text_color()
+                    // ── Card content ──
+                    let title_y = if has_subtitle {
+                        card_rect.top() + 15.0
+                    } else {
+                        card_rect.center().y
+                    };
+                    let left_x = card_rect.left() + 14.0;
+                    let mut right_x = card_rect.right() - 10.0;
+
+                    // 1. Attention icon
+                    if ws_entry.has_attention {
+                        let warn_shape = ui.painter().layout_no_wrap(
+                            crate::icons::WARNING_CIRCLE.to_string(),
+                            egui::FontId::proportional(12.5),
+                            ui.visuals().warn_fg_color,
+                        );
+                        let warn_w = warn_shape.size().x;
+                        let warn_pos = egui::pos2(
+                            right_x - warn_w,
+                            title_y - warn_shape.size().y * 0.5,
+                        );
+                        ui.painter().galley(warn_pos, warn_shape, Color32::WHITE);
+                        right_x -= warn_w + 6.0;
+                    }
+
+                    // 2. Tab count badge
+                    if ws_entry.tab_count > 0 {
+                        let tab_label = if ws_entry.tab_count == 1 {
+                            "1 tab"
+                        } else {
+                            &format!("{} tabs", ws_entry.tab_count)
+                        };
+                        let badge_font = egui::FontId::proportional(11.0);
+                        let badge_text_shape = ui.painter().layout_no_wrap(
+                            tab_label.to_string(),
+                            badge_font.clone(),
+                            if is_active {
+                                if dark_mode {
+                                    Color32::from_rgb(199, 210, 254)
+                                } else {
+                                    Color32::from_rgb(67, 56, 202)
+                                }
                             } else {
-                                ui.visuals().text_color()
-                            };
-                            let mut label = egui::RichText::new(&ws_entry.name)
-                                .size(14.0)
-                                .color(label_color);
-                            if ws_entry.is_active {
-                                label = label.strong();
+                                weak_text
+                            },
+                        );
+                        let badge_w = badge_text_shape.size().x + 8.0;
+                        let badge_h = 17.0;
+                        let badge_rect = egui::Rect::from_center_size(
+                            egui::pos2(right_x - badge_w * 0.5, title_y),
+                            egui::vec2(badge_w, badge_h),
+                        );
+                        let badge_bg = if is_active {
+                            if dark_mode {
+                                Color32::from_rgba_unmultiplied(129, 140, 248, 40)
+                            } else {
+                                Color32::from_rgb(224, 231, 255)
                             }
-                            ui.label(label);
+                        } else if dark_mode {
+                            Color32::from_rgba_unmultiplied(255, 255, 255, 18)
+                        } else {
+                            Color32::from_rgba_unmultiplied(0, 0, 0, 14)
+                        };
+                        ui.painter().rect_filled(badge_rect, 4.0, badge_bg);
+                        let badge_top = badge_rect.top() + (badge_h - badge_text_shape.size().y) * 0.5;
+                        ui.painter().galley(
+                            egui::pos2(badge_rect.left() + 4.0, badge_top),
+                            badge_text_shape,
+                            Color32::WHITE,
+                        );
+                        right_x = badge_rect.left() - 6.0;
+                    }
 
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ws_entry.has_attention {
-                                        ui.colored_label(
-                                            ui.visuals().warn_fg_color,
-                                            egui::RichText::new("!").strong(),
-                                        )
-                                        .on_hover_text("Session needs attention");
-                                    }
-                                    if ws_entry.tab_count > 0 {
-                                        let tab_label = if ws_entry.tab_count == 1 {
-                                            "1 tab".to_string()
-                                        } else {
-                                            format!("{} tabs", ws_entry.tab_count)
-                                        };
-                                        ui.weak(tab_label);
-                                    }
-                                },
-                            );
-                        });
+                    // 3. Terminal prompt icon `>_`
+                    let icon_color = if is_active {
+                        accent
+                    } else if is_hovered {
+                        ui.visuals().strong_text_color()
+                    } else {
+                        weak_text
+                    };
+                    let icon_shape = ui.painter().layout_no_wrap(
+                        crate::icons::TERMINAL.to_string(),
+                        egui::FontId::proportional(14.0),
+                        icon_color,
+                    );
+                    let icon_w = icon_shape.size().x;
+                    let icon_pos = egui::pos2(
+                        left_x,
+                        title_y - icon_shape.size().y * 0.5,
+                    );
+                    ui.painter().galley(icon_pos, icon_shape, Color32::WHITE);
 
-                        if let Some(title) = &ws_entry.tab_title
-                            && !title.is_empty()
-                            && title != &ws_entry.name
-                        {
-                            ui.add_space(1.0);
-                            ui.weak(title);
+                    // 4. Title label
+                    let title_start_x = left_x + icon_w + 7.0;
+                    let title_color = if is_active {
+                        if dark_mode {
+                            Color32::WHITE
+                        } else {
+                            Color32::from_rgb(30, 27, 75)
                         }
-                    });
+                    } else if is_hovered {
+                        ui.visuals().strong_text_color()
+                    } else {
+                        text_color
+                    };
+
+                    let title_font = egui::FontId::proportional(13.0);
+                    let title_galley = ui.painter().layout(
+                        ws_entry.name.clone(),
+                        title_font,
+                        title_color,
+                        (right_x - title_start_x).max(10.0),
+                    );
+                    let title_top = title_y - title_galley.size().y * 0.5;
+                    ui.painter().galley(
+                        egui::pos2(title_start_x, title_top),
+                        title_galley,
+                        Color32::WHITE,
+                    );
+
+                    // 5. Subtitle (if present)
+                    if has_subtitle {
+                        if let Some(sub) = &ws_entry.tab_title {
+                            let sub_y = card_rect.bottom() - 14.0;
+                            let sub_galley = ui.painter().layout(
+                                sub.clone(),
+                                egui::FontId::proportional(11.0),
+                                weak_text,
+                                (card_rect.right() - 10.0 - title_start_x).max(10.0),
+                            );
+                            let sub_top = sub_y - sub_galley.size().y * 0.5;
+                            ui.painter().galley(
+                                egui::pos2(title_start_x, sub_top),
+                                sub_galley,
+                                Color32::WHITE,
+                            );
+                        }
+                    }
 
                     // ── Handle card interaction ─────────────────
                     if card_resp.clicked() {
@@ -212,18 +407,18 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
                         open_dialog(ui, ws_id);
                     }
                     card_resp.context_menu(|ui| {
-                        if ui.button("New Tab").clicked() {
+                        if ui.button(format!("{}  New Tab", crate::icons::PLUS)).clicked() {
                             events.push(SidebarEvent::NewShell);
                             events.push(SidebarEvent::SwitchWorkspace(ws_id));
                             ui.close();
                         }
                         ui.separator();
-                        if ui.button("Rename...").clicked() {
+                        if ui.button(format!("{}  Rename...", crate::icons::PENCIL_SIMPLE)).clicked() {
                             open_dialog(ui, ws_id);
                             ui.close();
                         }
                         ui.separator();
-                        if ui.button("Close workspace").clicked() {
+                        if ui.button(format!("{}  Close workspace", crate::icons::TRASH)).clicked() {
                             events.push(SidebarEvent::CloseWorkspace(ws_id));
                             ui.close();
                         }
@@ -231,6 +426,18 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
 
                     // Gap between cards.
                     ui.add_space(6.0);
+                }
+
+                // Helpful empty-state keyboard hint when workspace list is minimal
+                if data.workspaces.len() <= 1 {
+                    ui.add_space(20.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            egui::RichText::new("Ctrl+Shift+T  New Tab\nCtrl+Shift+P  Commands")
+                                .size(11.0)
+                                .weak(),
+                        );
+                    });
                 }
             });
     });

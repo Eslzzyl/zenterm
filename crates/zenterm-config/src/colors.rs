@@ -216,22 +216,24 @@ impl ColorsConfig {
         // ANSI bright.
         apply_ansi(&mut theme.ansi_bright, &self.bright);
 
-        // Derive UI chrome from the resolved terminal theme so custom
-        // foreground/background colours do not leave the panels behind.
-        let dark_mode = theme.background.r() < 0.5;
-        theme.ui_text = theme.foreground;
-        theme.ui_bg = blend_rgba(
-            theme.background,
-            theme.foreground,
-            if dark_mode { 0.08 } else { 0.04 },
-        );
-        theme.ui_surface = blend_rgba(
-            theme.background,
-            theme.foreground,
-            if dark_mode { 0.16 } else { 0.10 },
-        );
-        if custom_selection_background {
-            theme.ui_accent = theme.selection_bg;
+        // Derive UI chrome from the resolved terminal theme when custom
+        // foreground/background colours or non-default palettes are used.
+        if self.palette != ColorTheme::Default || self.has_custom_colors() {
+            let dark_mode = theme.background.r() < 0.5;
+            theme.ui_text = theme.foreground;
+            theme.ui_bg = blend_rgba(
+                theme.background,
+                theme.foreground,
+                if dark_mode { 0.08 } else { 0.04 },
+            );
+            theme.ui_surface = blend_rgba(
+                theme.background,
+                theme.foreground,
+                if dark_mode { 0.16 } else { 0.10 },
+            );
+            if custom_selection_background {
+                theme.ui_accent = theme.selection_bg;
+            }
         }
 
         theme.name = Cow::Owned(self.theme_name());

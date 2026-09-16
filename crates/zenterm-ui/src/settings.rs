@@ -63,6 +63,18 @@ impl SettingsSection {
             Self::Background => "Background",
         }
     }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Window => crate::icons::APP_WINDOW,
+            Self::Font => crate::icons::TEXT_T,
+            Self::Colors => crate::icons::PALETTE,
+            Self::Cursor => crate::icons::CURSOR,
+            Self::Selection => crate::icons::SELECTION,
+            Self::Ui => crate::icons::SLIDERS_HORIZONTAL,
+            Self::Background => crate::icons::IMAGE,
+        }
+    }
 }
 
 // ── Render result ───────────────────────────────────────────────────────
@@ -158,32 +170,121 @@ fn render_settings_content(
         // ── Left: navigation sidebar ───────────────────────────
         egui::Panel::left("settings_nav")
             .resizable(false)
-            .default_size(180.0)
+            .default_size(170.0)
             .min_size(140.0)
             .show_inside(ui, |ui| {
                 ui.vertical(|ui| {
-                    ui.add_space(12.0);
+                    ui.add_space(10.0);
 
                     for sec in SettingsSection::ALL {
-                        let selected = *sec == state.selected_section;
+                        let is_selected = *sec == state.selected_section;
                         let label = sec.label();
-                        if ui.selectable_label(selected, label).clicked() {
+                        let icon = sec.icon();
+
+                        let item_size = egui::vec2(ui.available_width(), 34.0);
+                        let (rect, resp) = ui.allocate_exact_size(item_size, egui::Sense::click());
+                        if resp.clicked() {
                             state.selected_section = *sec;
                         }
+
+                        let is_hovered = resp.hovered();
+
+                        // VS Code-style flat navigation:
+                        // Clear high-contrast background and left accent bar for active item
+                        if is_selected {
+                            let fill = if ui.visuals().dark_mode {
+                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 14)
+                            };
+                            ui.painter().rect_filled(rect, 5.0, fill);
+
+                            // Left accent indicator bar
+                            let indicator_rect = egui::Rect::from_min_size(
+                                rect.left_top(),
+                                egui::vec2(3.5, rect.height()),
+                            );
+                            let accent_color = ui.visuals().hyperlink_color;
+                            ui.painter().rect_filled(indicator_rect, 1.75, accent_color);
+                        } else if is_hovered {
+                            let fill = if ui.visuals().dark_mode {
+                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 10)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 8)
+                            };
+                            ui.painter().rect_filled(rect, 5.0, fill);
+                        }
+
+                        // Text & icon colors — ensure high contrast readability
+                        let (text_color, icon_color) = if is_selected {
+                            (ui.visuals().strong_text_color(), ui.visuals().hyperlink_color)
+                        } else if is_hovered {
+                            (ui.visuals().strong_text_color(), ui.visuals().strong_text_color())
+                        } else {
+                            (ui.visuals().text_color(), ui.visuals().text_color())
+                        };
+
+                        // Icon
+                        let icon_font = egui::FontId::proportional(15.0);
+                        let icon_pos = egui::pos2(rect.left() + 12.0, rect.center().y);
+                        ui.painter().text(
+                            icon_pos,
+                            egui::Align2::LEFT_CENTER,
+                            icon,
+                            icon_font,
+                            icon_color,
+                        );
+
+                        // Text label
+                        let label_font = egui::FontId::proportional(13.5);
+                        let label_pos = egui::pos2(rect.left() + 35.0, rect.center().y);
+                        ui.painter().text(
+                            label_pos,
+                            egui::Align2::LEFT_CENTER,
+                            label,
+                            label_font,
+                            text_color,
+                        );
+
+                        ui.add_space(2.0);
                     }
 
                     // ── Push "Reset All" to the bottom ────────
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                        ui.add_space(12.0);
-                        if ui
-                            .button(
-                                egui::RichText::new("↺ Reset All")
-                                    .color(ui.visuals().error_fg_color),
-                            )
-                            .clicked()
-                        {
+                        ui.add_space(10.0);
+                        let btn_size = egui::vec2(ui.available_width() - 8.0, 30.0);
+                        let (btn_rect, btn_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                        if btn_resp.clicked() {
                             state.pending_reset_confirm = true;
                         }
+
+                        let is_hover = btn_resp.hovered();
+                        let bg_fill = if is_hover {
+                            ui.visuals().error_fg_color.gamma_multiply(0.15)
+                        } else {
+                            ui.visuals().faint_bg_color
+                        };
+                        let stroke = if is_hover {
+                            egui::Stroke::new(1.0_f32, ui.visuals().error_fg_color.gamma_multiply(0.6))
+                        } else {
+                            egui::Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color)
+                        };
+                        ui.painter().rect(btn_rect, 5.0, bg_fill, stroke, egui::StrokeKind::Inside);
+
+                        let text_color = if is_hover {
+                            ui.visuals().error_fg_color
+                        } else {
+                            ui.visuals().text_color()
+                        };
+
+                        let content = format!("{} Reset All", crate::icons::ARROW_COUNTER_CLOCKWISE);
+                        let galley = ui.painter().layout_no_wrap(
+                            content,
+                            egui::FontId::proportional(12.5),
+                            text_color,
+                        );
+                        let text_pos = btn_rect.center() - galley.size() * 0.5;
+                        ui.painter().galley(text_pos, galley, egui::Color32::WHITE);
                     });
                 });
             });
@@ -1002,6 +1103,7 @@ pub fn register_preview_fonts(ctx: &egui::Context, families: &[String]) -> HashS
     db.load_system_fonts();
 
     let mut fonts = egui::FontDefinitions::default();
+    crate::icons::init_fonts(&mut fonts);
     let mut ok: HashSet<String> = HashSet::with_capacity(families.len());
 
     for family in families {

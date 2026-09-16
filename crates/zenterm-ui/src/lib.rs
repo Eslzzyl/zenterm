@@ -17,6 +17,7 @@
 mod app;
 mod glyph_cache;
 mod gpu;
+pub mod icons;
 mod layout_io;
 mod legacy;
 mod session;

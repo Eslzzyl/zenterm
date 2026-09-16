@@ -152,10 +152,10 @@ pub static THEME_DARK: Theme = Theme {
     bright_foreground: srgb(255, 255, 255),
 
     // UI chrome.
-    ui_bg: srgb(23, 26, 33),
-    ui_text: srgb(216, 222, 233),
-    ui_accent: srgb(167, 139, 250),
-    ui_surface: srgb(32, 37, 48),
+    ui_bg: srgb(22, 25, 33),
+    ui_text: srgb(226, 232, 240),
+    ui_accent: srgb(129, 140, 248),
+    ui_surface: srgb(30, 34, 45),
 };
 
 /// Built-in light theme (sRGB approximate colour palette).
@@ -165,10 +165,10 @@ pub static THEME_LIGHT: Theme = Theme {
     // Terminal basics.
     foreground: srgb(39, 49, 59),
     background: srgb(251, 250, 247),
-    cursor_bg: srgb(102, 87, 179),
-    cursor_fg: srgb(251, 250, 247),
-    selection_bg: srgb(221, 216, 243),
-    selection_fg: srgb(39, 49, 59),
+    cursor_bg: srgb(99, 102, 241),
+    cursor_fg: srgb(255, 255, 255),
+    selection_bg: srgb(224, 231, 255),
+    selection_fg: srgb(30, 41, 59),
 
     // ANSI normal.
     ansi_normal: [
@@ -199,10 +199,10 @@ pub static THEME_LIGHT: Theme = Theme {
     bright_foreground: srgb(25, 32, 40),
 
     // UI chrome.
-    ui_bg: srgb(243, 241, 237),
-    ui_text: srgb(39, 49, 59),
-    ui_accent: srgb(102, 87, 179),
-    ui_surface: srgb(235, 232, 226),
+    ui_bg: srgb(243, 244, 246),
+    ui_text: srgb(31, 41, 55),
+    ui_accent: srgb(99, 102, 241),
+    ui_surface: srgb(255, 255, 255),
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────
