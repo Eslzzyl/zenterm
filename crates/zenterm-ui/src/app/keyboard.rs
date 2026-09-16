@@ -108,6 +108,17 @@ impl ZentermApp {
             return true;
         }
 
+        // Allow Escape to close the settings viewport when the main window
+        // owns keyboard focus.  The settings viewport handles its own Escape
+        // event when it is focused.
+        if self.settings_state.open && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.settings_state.open = false;
+            ctx.input_mut(|input| {
+                input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            });
+            return true;
+        }
+
         log::warn!("[clipboard] handle_shortcuts entered — checking for copy/paste events");
         let (copy, paste, reload, settings, command_palette, ws_switch, ws_cycle) =
             ctx.input(|input| {

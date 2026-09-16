@@ -51,6 +51,18 @@ impl ZentermApp {
                 return crate::settings::SettingsOutput::default();
             }
 
+            // Escape closes the settings viewport just like the native
+            // close button.  This input is handled here because the
+            // settings window has its own viewport and may own keyboard
+            // focus independently of the main window.
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                settings_state.open = false;
+                ctx.input_mut(|i| {
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                });
+                return crate::settings::SettingsOutput::default();
+            }
+
             // Set the window title (dirty indicator).
             let dirty = settings_state.is_dirty(config);
             let title = if dirty { "Settings ●" } else { "Settings" };
