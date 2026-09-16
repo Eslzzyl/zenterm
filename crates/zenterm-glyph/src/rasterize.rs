@@ -148,7 +148,7 @@ impl GlyphAtlas {
 
 #[cfg(test)]
 mod tests {
-    use super::{correct_coverage, GRAYSCALE_GAMMA};
+    use super::{GRAYSCALE_GAMMA, correct_coverage};
 
     #[test]
     fn coverage_curve_preserves_endpoints() {
