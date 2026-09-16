@@ -1,0 +1,72 @@
+[window]
+title = "Zenterm Font Fixture"
+decorations = false
+macos_option_as_alt = false
+last_window_size = [
+    432.0,
+    144.0,
+]
+
+[window.dimensions]
+columns = 25
+lines = 6
+
+[window.padding]
+x = 0.0
+y = 0.0
+
+[font]
+size = 16.0
+ligatures = false
+hinting = "auto"
+render_mode = "subpixel"
+
+[font.normal]
+family = "JetBrainsMono Nerd Font"
+style = "Regular"
+
+[colors]
+appearance = "Dark"
+palette = "Default"
+
+[colors.primary]
+foreground = "#f2f2f2"
+background = "#101010"
+
+[colors.cursor]
+
+[colors.selection]
+
+[colors.normal]
+
+[colors.bright]
+
+[cursor]
+unfocused_hollow = true
+thickness = 0.15000000596046448
+blink_interval = 30
+blink_timeout = 5
+
+[cursor.style]
+shape = "Block"
+blinking = "Off"
+
+[selection]
+save_to_clipboard = false
+
+[ui]
+tabs_enabled = false
+sidebar_enabled = false
+sidebar_position = "Left"
+sidebar_width = 220.0
+sidebar_min_width = 160.0
+sidebar_max_width = 480.0
+show_add_tab_button = true
+show_close_tab_button = true
+restore_layout_on_startup = false
+persist_layout = false
+layout_debounce_ms = 500
+
+[background]
+image_opacity = 0.800000011920929
+image_mode = "Cover"
