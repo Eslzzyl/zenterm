@@ -123,7 +123,14 @@ pub(crate) fn configure_egui_style(ctx: &egui::Context, theme: &Theme) {
                 weak_bg_fill: active_bg,
                 bg_fill: active_bg,
                 bg_stroke: Stroke::new(1.0_f32, accent),
-                fg_stroke: Stroke::new(1.5_f32, if dark_mode { Color32::WHITE } else { text_color }),
+                fg_stroke: Stroke::new(
+                    1.5_f32,
+                    if dark_mode {
+                        Color32::WHITE
+                    } else {
+                        text_color
+                    },
+                ),
                 corner_radius: small_rounding,
                 expansion: 0.0,
             },

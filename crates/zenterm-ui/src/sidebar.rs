@@ -137,11 +137,7 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
             let btn_text_color = if btn_active {
                 Color32::WHITE
             } else if btn_hovered {
-                if dark_mode {
-                    Color32::WHITE
-                } else {
-                    accent
-                }
+                if dark_mode { Color32::WHITE } else { accent }
             } else {
                 ui.visuals().strong_text_color()
             };
@@ -276,10 +272,8 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
                             ui.visuals().warn_fg_color,
                         );
                         let warn_w = warn_shape.size().x;
-                        let warn_pos = egui::pos2(
-                            right_x - warn_w,
-                            title_y - warn_shape.size().y * 0.5,
-                        );
+                        let warn_pos =
+                            egui::pos2(right_x - warn_w, title_y - warn_shape.size().y * 0.5);
                         ui.painter().galley(warn_pos, warn_shape, Color32::WHITE);
                         right_x -= warn_w + 6.0;
                     }
@@ -323,7 +317,8 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
                             Color32::from_rgba_unmultiplied(0, 0, 0, 14)
                         };
                         ui.painter().rect_filled(badge_rect, 4.0, badge_bg);
-                        let badge_top = badge_rect.top() + (badge_h - badge_text_shape.size().y) * 0.5;
+                        let badge_top =
+                            badge_rect.top() + (badge_h - badge_text_shape.size().y) * 0.5;
                         ui.painter().galley(
                             egui::pos2(badge_rect.left() + 4.0, badge_top),
                             badge_text_shape,
@@ -346,10 +341,7 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
                         icon_color,
                     );
                     let icon_w = icon_shape.size().x;
-                    let icon_pos = egui::pos2(
-                        left_x,
-                        title_y - icon_shape.size().y * 0.5,
-                    );
+                    let icon_pos = egui::pos2(left_x, title_y - icon_shape.size().y * 0.5);
                     ui.painter().galley(icon_pos, icon_shape, Color32::WHITE);
 
                     // 4. Title label
@@ -381,22 +373,20 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
                     );
 
                     // 5. Subtitle (if present)
-                    if has_subtitle {
-                        if let Some(sub) = &ws_entry.tab_title {
-                            let sub_y = card_rect.bottom() - 14.0;
-                            let sub_galley = ui.painter().layout(
-                                sub.clone(),
-                                egui::FontId::proportional(11.0),
-                                weak_text,
-                                (card_rect.right() - 10.0 - title_start_x).max(10.0),
-                            );
-                            let sub_top = sub_y - sub_galley.size().y * 0.5;
-                            ui.painter().galley(
-                                egui::pos2(title_start_x, sub_top),
-                                sub_galley,
-                                Color32::WHITE,
-                            );
-                        }
+                    if has_subtitle && let Some(sub) = &ws_entry.tab_title {
+                        let sub_y = card_rect.bottom() - 14.0;
+                        let sub_galley = ui.painter().layout(
+                            sub.clone(),
+                            egui::FontId::proportional(11.0),
+                            weak_text,
+                            (card_rect.right() - 10.0 - title_start_x).max(10.0),
+                        );
+                        let sub_top = sub_y - sub_galley.size().y * 0.5;
+                        ui.painter().galley(
+                            egui::pos2(title_start_x, sub_top),
+                            sub_galley,
+                            Color32::WHITE,
+                        );
                     }
 
                     // ── Handle card interaction ─────────────────
@@ -407,18 +397,27 @@ pub fn render_sidebar(ui: &mut egui::Ui, data: &SidebarData) -> Vec<SidebarEvent
                         open_dialog(ui, ws_id);
                     }
                     card_resp.context_menu(|ui| {
-                        if ui.button(format!("{}  New Tab", crate::icons::PLUS)).clicked() {
+                        if ui
+                            .button(format!("{}  New Tab", crate::icons::PLUS))
+                            .clicked()
+                        {
                             events.push(SidebarEvent::NewShell);
                             events.push(SidebarEvent::SwitchWorkspace(ws_id));
                             ui.close();
                         }
                         ui.separator();
-                        if ui.button(format!("{}  Rename...", crate::icons::PENCIL_SIMPLE)).clicked() {
+                        if ui
+                            .button(format!("{}  Rename...", crate::icons::PENCIL_SIMPLE))
+                            .clicked()
+                        {
                             open_dialog(ui, ws_id);
                             ui.close();
                         }
                         ui.separator();
-                        if ui.button(format!("{}  Close workspace", crate::icons::TRASH)).clicked() {
+                        if ui
+                            .button(format!("{}  Close workspace", crate::icons::TRASH))
+                            .clicked()
+                        {
                             events.push(SidebarEvent::CloseWorkspace(ws_id));
                             ui.close();
                         }

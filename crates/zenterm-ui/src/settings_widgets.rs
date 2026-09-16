@@ -24,13 +24,11 @@ pub fn section_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     if !subtitle.is_empty() {
         ui.add_space(2.0);
         ui.label(
-            egui::RichText::new(subtitle)
-                .size(12.0)
-                .color(
-                    ui.visuals()
-                        .weak_text_color
-                        .unwrap_or_else(|| ui.visuals().text_color().gamma_multiply(0.65)),
-                ),
+            egui::RichText::new(subtitle).size(12.0).color(
+                ui.visuals()
+                    .weak_text_color
+                    .unwrap_or_else(|| ui.visuals().text_color().gamma_multiply(0.65)),
+            ),
         );
     }
     ui.add_space(6.0);
@@ -55,13 +53,11 @@ where
             if !description.is_empty() {
                 ui.add_space(1.0);
                 ui.label(
-                    egui::RichText::new(description)
-                        .size(11.5)
-                        .color(
-                            ui.visuals()
-                                .weak_text_color
-                                .unwrap_or_else(|| ui.visuals().text_color().gamma_multiply(0.65)),
-                        ),
+                    egui::RichText::new(description).size(11.5).color(
+                        ui.visuals()
+                            .weak_text_color
+                            .unwrap_or_else(|| ui.visuals().text_color().gamma_multiply(0.65)),
+                    ),
                 );
             }
         });

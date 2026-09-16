@@ -31,22 +31,14 @@ pub fn icon_button(
     let is_active = response.is_pointer_button_down_on();
 
     if is_active {
-        ui.painter().rect_filled(
-            rect,
-            6.0,
-            ui.visuals().widgets.active.bg_fill,
-        );
+        ui.painter()
+            .rect_filled(rect, 6.0, ui.visuals().widgets.active.bg_fill);
     } else if is_hovered {
-        ui.painter().rect_filled(
-            rect,
-            6.0,
-            ui.visuals().widgets.hovered.bg_fill,
-        );
+        ui.painter()
+            .rect_filled(rect, 6.0, ui.visuals().widgets.hovered.bg_fill);
     }
 
-    let text_color = if is_active {
-        ui.visuals().strong_text_color()
-    } else if is_hovered {
+    let text_color = if is_active || is_hovered {
         ui.visuals().strong_text_color()
     } else {
         ui.visuals().text_color()
@@ -69,18 +61,8 @@ pub fn icon_button(
 }
 
 /// Draw a Phosphor icon glyph centered inside a given rectangle.
-pub fn draw_icon(
-    painter: &egui::Painter,
-    rect: Rect,
-    icon: &str,
-    icon_size: f32,
-    color: Color32,
-) {
-    let shape = painter.layout_no_wrap(
-        icon.to_string(),
-        FontId::proportional(icon_size),
-        color,
-    );
+pub fn draw_icon(painter: &egui::Painter, rect: Rect, icon: &str, icon_size: f32, color: Color32) {
+    let shape = painter.layout_no_wrap(icon.to_string(), FontId::proportional(icon_size), color);
     let pos = rect.center() - shape.size() * 0.5;
     painter.galley(pos, shape, Color32::WHITE);
 }

@@ -131,7 +131,6 @@ impl ZentermApp {
                     action: CommandAction::SwitchWorkspace(workspace.id),
                 });
             }
-
         }
 
         // View toggles for sidebar and tab bar (always accessible)

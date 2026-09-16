@@ -217,9 +217,15 @@ fn render_settings_content(
 
                         // Text & icon colors — ensure high contrast readability
                         let (text_color, icon_color) = if is_selected {
-                            (ui.visuals().strong_text_color(), ui.visuals().hyperlink_color)
+                            (
+                                ui.visuals().strong_text_color(),
+                                ui.visuals().hyperlink_color,
+                            )
                         } else if is_hovered {
-                            (ui.visuals().strong_text_color(), ui.visuals().strong_text_color())
+                            (
+                                ui.visuals().strong_text_color(),
+                                ui.visuals().strong_text_color(),
+                            )
                         } else {
                             (ui.visuals().text_color(), ui.visuals().text_color())
                         };
@@ -253,7 +259,8 @@ fn render_settings_content(
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                         ui.add_space(10.0);
                         let btn_size = egui::vec2(ui.available_width() - 8.0, 30.0);
-                        let (btn_rect, btn_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                        let (btn_rect, btn_resp) =
+                            ui.allocate_exact_size(btn_size, egui::Sense::click());
                         if btn_resp.clicked() {
                             state.pending_reset_confirm = true;
                         }
@@ -265,11 +272,18 @@ fn render_settings_content(
                             ui.visuals().faint_bg_color
                         };
                         let stroke = if is_hover {
-                            egui::Stroke::new(1.0_f32, ui.visuals().error_fg_color.gamma_multiply(0.6))
+                            egui::Stroke::new(
+                                1.0_f32,
+                                ui.visuals().error_fg_color.gamma_multiply(0.6),
+                            )
                         } else {
-                            egui::Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color)
+                            egui::Stroke::new(
+                                1.0_f32,
+                                ui.visuals().widgets.noninteractive.bg_stroke.color,
+                            )
                         };
-                        ui.painter().rect(btn_rect, 5.0, bg_fill, stroke, egui::StrokeKind::Inside);
+                        ui.painter()
+                            .rect(btn_rect, 5.0, bg_fill, stroke, egui::StrokeKind::Inside);
 
                         let text_color = if is_hover {
                             ui.visuals().error_fg_color
@@ -277,7 +291,8 @@ fn render_settings_content(
                             ui.visuals().text_color()
                         };
 
-                        let content = format!("{} Reset All", crate::icons::ARROW_COUNTER_CLOCKWISE);
+                        let content =
+                            format!("{} Reset All", crate::icons::ARROW_COUNTER_CLOCKWISE);
                         let galley = ui.painter().layout_no_wrap(
                             content,
                             egui::FontId::proportional(12.5),
