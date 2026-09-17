@@ -6,12 +6,6 @@
 
 ## 优先处理
 
-### ZT-05：GPU 实例截断后仍使用未截断的绘制范围（代码已确认；运行影响待复现）
-
-实例缓冲固定容纳 40,000 个实例。超出时 `update_instances` 只上传前 40,000 个，而 `atlas_ranges` 仍由原始实例列表生成，绘制时直接使用原范围。足够大的终端网格或多窗格可使范围越过已上传实例；是否表现为 wgpu 验证错误或画面缺失需运行验证。
-
-依据：[缓冲容量](crates/zenterm-render/src/lib.rs#L182-L189)、[截断](crates/zenterm-render/src/lib.rs#L583-L599)、[范围绘制](crates/zenterm-render/src/lib.rs#L647-L699)、[两者分别传入](crates/zenterm-render/src/callback.rs#L441-L469)。建议按实际实例数扩容，或对上传与全部绘制范围使用同一裁剪结果。
-
 ## 其他功能与可靠性问题
 
 ### ZT-06：PTY 排空没有单帧工作量预算（风险，待压测）

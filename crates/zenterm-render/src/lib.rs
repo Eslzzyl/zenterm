@@ -20,6 +20,8 @@ use zenterm_core::Result;
 
 use crate::shaders::{TERMINAL_FS, TERMINAL_VS};
 
+const MAX_INSTANCES: u32 = 40_000;
+
 /// Glyph type flags for per-instance shader dispatch.
 ///
 /// These tell the fragment shader how to interpret the texture data
@@ -179,7 +181,7 @@ impl TerminalRenderPass {
         });
 
         // Instance buffer.
-        let max_instances = 40_000u32;
+        let max_instances = MAX_INSTANCES;
         let instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("terminal.instances"),
             size: (max_instances as u64) * std::mem::size_of::<CellInstance>() as u64,
@@ -575,28 +577,28 @@ impl TerminalRenderPass {
 
     /// Set the per-slot instance ranges for segmented drawing.
     pub fn set_atlas_ranges(&mut self, ranges: Vec<AtlasRange>) {
-        self.atlas_ranges = ranges;
+        self.atlas_ranges = clamp_atlas_ranges(ranges, self.max_instances);
     }
 
     /// Write a new set of cell instances to the GPU instance buffer.
     ///
     /// `instances` must not exceed `max_instances` (40 000).
     pub fn update_instances(&self, queue: &wgpu::Queue, instances: &[CellInstance]) {
-        let count = instances.len() as u32;
-        if count > self.max_instances {
+        let upload_len = instances.len().min(self.max_instances as usize);
+        let count = upload_len as u32;
+        if instances.len() > upload_len {
             log::warn!(
                 "instance count {} exceeds max {}, truncating",
-                count,
+                instances.len(),
                 self.max_instances
             );
-            let truncated = &instances[..self.max_instances as usize];
-            queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(truncated));
-            self.num_instances
-                .store(self.max_instances, Ordering::Release);
-            return;
         }
         if count > 0 {
-            queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(instances));
+            queue.write_buffer(
+                &self.instance_buf,
+                0,
+                bytemuck::cast_slice(&instances[..upload_len]),
+            );
         }
         self.num_instances.store(count, Ordering::Release);
     }
@@ -717,5 +719,54 @@ impl TerminalRenderPass {
     /// Maximum number of instances this render pass can hold.
     pub fn max_instances(&self) -> u32 {
         self.max_instances
+    }
+}
+
+fn clamp_atlas_ranges(ranges: Vec<AtlasRange>, max_instances: u32) -> Vec<AtlasRange> {
+    ranges
+        .into_iter()
+        .filter_map(|mut range| {
+            let available = max_instances.checked_sub(range.start)?;
+            range.count = range.count.min(available);
+            (range.count > 0).then_some(range)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AtlasRange, clamp_atlas_ranges};
+
+    #[test]
+    fn atlas_ranges_are_clipped_to_instance_buffer() {
+        let ranges = clamp_atlas_ranges(
+            vec![
+                AtlasRange {
+                    atlas_index: 1,
+                    image: false,
+                    start: 10,
+                    count: 5,
+                },
+                AtlasRange {
+                    atlas_index: 2,
+                    image: true,
+                    start: 39_999,
+                    count: 10,
+                },
+                AtlasRange {
+                    atlas_index: 3,
+                    image: false,
+                    start: 40_000,
+                    count: 1,
+                },
+            ],
+            40_000,
+        );
+
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].start, 10);
+        assert_eq!(ranges[0].count, 5);
+        assert_eq!(ranges[1].start, 39_999);
+        assert_eq!(ranges[1].count, 1);
     }
 }
