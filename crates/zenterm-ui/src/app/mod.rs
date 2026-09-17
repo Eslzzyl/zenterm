@@ -117,6 +117,10 @@ pub struct ZentermApp {
 
 // ── Construction ───────────────────────────────────────────────────────
 
+fn should_create_initial_session(tabs_enabled: bool, restored_session_ids: &[SessionId]) -> bool {
+    !tabs_enabled || restored_session_ids.is_empty()
+}
+
 impl ZentermApp {
     pub fn new_with_wgpu(
         egui_ctx: egui::Context,
@@ -178,7 +182,9 @@ impl ZentermApp {
         let config_path = Config::path();
         let layout_io = LayoutIo::from_config_path(&config_path);
 
-        // ── First session (always present, even when tabs are off)
+        // ── Session/workspace restoration ─────────────────────────
+        // Single-session mode deliberately ignores persisted dock state so
+        // the legacy renderer and keyboard routing always target session 0.
         let first_id = SessionId::new(0);
         let size = zenterm_core::size::TermSize::new(
             config.window.dimensions.lines,
@@ -186,28 +192,11 @@ impl ZentermApp {
             0,
             0,
         );
-        let session = TerminalSession::new(
-            first_id,
-            size,
-            scheme.clone(),
-            config.terminal.scrollback_lines,
-            &config.cursor,
-            config.selection.save_to_clipboard,
-            default_bg,
-            gpu.clone(),
-            atlas.clone(),
-            callback.clone(),
-            egui_ctx.clone(),
-        );
-        // `TerminalSession::new` already sets a reasonable initial title
-        // via `detect_shell_name()`.  No override needed.
         let mut sessions = HashMap::new();
-        sessions.insert(first_id, session);
-
-        // ── Restore workspaces if config says so ──────────────────
         let mut workspaces = WorkspaceManager::new();
         let mut restored_session_ids: Vec<SessionId> = Vec::new();
-        if config.ui.restore_layout_on_startup
+        if config.ui.tabs_enabled
+            && config.ui.restore_layout_on_startup
             && let Some(persisted) = layout_io.load_layout()
         {
             for pw in &persisted.workspaces {
@@ -236,8 +225,31 @@ impl ZentermApp {
             }
         }
 
-        // Create TerminalSessions for all persisted tab ids that
-        // don't already exist (id 0 was created above).
+        // A fresh multi-tab layout and every single-session startup need a
+        // visible session 0.  A restored multi-tab layout creates only the
+        // sessions referenced by its tabs; this prevents an unowned PTY from
+        // surviving beside the restored dock tree.
+        if should_create_initial_session(config.ui.tabs_enabled, &restored_session_ids) {
+            let session = TerminalSession::new(
+                first_id,
+                size,
+                scheme.clone(),
+                config.terminal.scrollback_lines,
+                &config.cursor,
+                config.selection.save_to_clipboard,
+                default_bg,
+                gpu.clone(),
+                atlas.clone(),
+                callback.clone(),
+                egui_ctx.clone(),
+            );
+            // `TerminalSession::new` already sets a reasonable initial title
+            // via `detect_shell_name()`.  No override needed.
+            sessions.insert(first_id, session);
+        }
+
+        // Create TerminalSessions for all persisted tab ids that do not
+        // already exist.  Session 0 is created above only when needed.
         for sid in &restored_session_ids {
             if sessions.contains_key(sid) {
                 continue;
@@ -258,7 +270,8 @@ impl ZentermApp {
             sessions.insert(*sid, s);
         }
 
-        // Ensure the first session is registered in the active workspace.
+        // Ensure the initial session is registered when the restored layout
+        // is absent or contains no tabs.
         if workspaces.active_workspace().all_tab_ids().is_empty() {
             workspaces.active_workspace_mut().new_tab(first_id);
         }
@@ -284,12 +297,16 @@ impl ZentermApp {
         }
 
         // Determine the active session from the active workspace.
-        let active_session_id = workspaces
-            .active_workspace()
-            .all_tab_ids()
-            .first()
-            .copied()
-            .or(Some(first_id));
+        let active_session_id = if config.ui.tabs_enabled {
+            workspaces
+                .active_workspace()
+                .all_tab_ids()
+                .first()
+                .copied()
+                .or(Some(first_id))
+        } else {
+            Some(first_id)
+        };
 
         let mut app = Self {
             gpu,
@@ -781,3 +798,19 @@ fn theme_bg_to_color32(theme: &Theme) -> egui::Color32 {
 // signature of the previous single-terminal code paths.
 #[allow(dead_code)]
 fn _unused_path(_p: PathBuf) {}
+
+#[cfg(test)]
+mod construction_tests {
+    use super::*;
+
+    #[test]
+    fn initial_session_policy_keeps_single_session_mode_visible() {
+        assert!(should_create_initial_session(false, &[SessionId::new(7)]));
+    }
+
+    #[test]
+    fn initial_session_policy_skips_unowned_session_on_restore() {
+        assert!(!should_create_initial_session(true, &[SessionId::new(7)]));
+        assert!(should_create_initial_session(true, &[]));
+    }
+}
