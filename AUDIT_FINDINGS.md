@@ -46,12 +46,6 @@ Dock 渲染前后都会对完整 `DockState` 执行 `serde_json::to_vec`，仅�
 
 ## 结构与验证缺口
 
-### ZT-15：架构文档和配置文档存在明显漂移（代码已确认）
-
-`docs/architecture.md` 和 `docs/components.md` 的目录图仍展示根目录 `src/` 与 `alacritty/`、`wezterm/`，依赖表还保留 `copypasta` 等已不符合当前 manifest 的内容，而当前实现为 `crates/` 工作区。配置文档还把窗口 padding 默认值写成 `8,6`，代码默认值为 `12,10`。这些差异会误导模块定位、配置排查和维护。
-
-依据：[旧目录图](docs/architecture.md#L155-L198)、[组件文档](docs/components.md#L119-L126)、[当前工作区](Cargo.toml#L1-L13)、[配置文档](docs/usages/config.md#L14-L20)、[代码默认值](crates/zenterm-config/src/window.rs#L118-L130)。建议更新目录图、依赖表、配置默认值与当前数据流说明。
-
 ## 已确定的行为与跨平台约束
 
 本节记录进入修复阶段时采用的产品行为。协议语义参考 [iTerm2 Inline Images Protocol](https://iterm2.com/documentation-images.html)、[Kitty Graphics Protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/) 和 [Kitty File Transfer Protocol](https://sw.kovidgoyal.net/kitty/file-transfer-protocol/)。

@@ -116,14 +116,15 @@ parser.advance(&mut performer, b"\\x1b[31mHello");
 
 The `vte` parser generates **actions**; your `Perform` impl applies those actions to a **screen buffer** (grid).
 
-We use alacritty's grid, term, and selection modules from the vendored `alacritty/` directory:
+`zenterm-term` wraps the published `alacritty_terminal` grid and term types, then adds
+the project-specific terminal protocol, image, selection, and rendering adapters:
 
 | Alacritty Module | Path | What It Provides |
 |------------------|------|------------------|
-| `grid/` | `alacritty/alacritty_terminal/src/grid/` | Ring buffer grid with O(1) scrolling, row storage, resize |
-| `term/` | `alacritty/alacritty_terminal/src/term/` | Terminal state: cursor, colors, modes, selection, alternate screen |
-| `selection/` | `alacritty/alacritty_terminal/src/selection/` | Text selection (click-drag, double/triple click) |
-| `index/` | `alacritty/alacritty_terminal/src/index/` | Row/Col/Line coordinate types |
+| `grid/` | `alacritty_terminal::grid` via `crates/zenterm-term/src/term/terminal/grid.rs` | Ring buffer access, scrolling, resize, and visible-cell projection |
+| `term/` | `alacritty_terminal::term` via `crates/zenterm-term/src/term/terminal/mod.rs` | Terminal state, cursor, colors, modes, alternate screen, and damage |
+| `selection/` | `alacritty_terminal::selection` via `crates/zenterm-term/src/term/terminal/selection.rs` | Text selection and selected-cell queries |
+| `index/` | `alacritty_terminal::index` | Row/column coordinate types used by the adapter |
 
 This gives us:
 - **Full control** over damage tracking (per-row dirty flags, column ranges)
@@ -166,9 +167,9 @@ Above the visible viewport is the **scrollback buffer** — lines that scrolled 
 
 We use **alacritty's grid implementation** directly:
 
-- `alacritty_terminal/src/grid/` — Ring buffer design with O(1) scroll
-- `alacritty_terminal/src/grid/storage.rs` — The `Storage` struct (circular buffer)
-- `alacritty_terminal/src/term/cell.rs` — Cell representation
+- `alacritty_terminal::grid` — Ring buffer design with O(1) scroll
+- `alacritty_terminal::grid::storage` — Circular row storage
+- `alacritty_terminal::term::cell` — Cell representation consumed by the adapter
 
 This gives full control over damage tracking, selection rendering, and future custom features.
 
@@ -400,7 +401,8 @@ Ctrl+Shift+C        \x1b[99;6u  (kitty protocol)
 
 ### Reference Implementation
 
-**Alacritty's `input.rs`** (`alacritty/src/input.rs`) is the best reference. It handles:
+`crates/zenterm-input/src/` contains the input encoder and follows the terminal
+protocol behavior established by Alacritty. It handles:
 - Standard key encoding (ASCII, Ctrl, Alt, Meta)
 - Application cursor keys (terminal mode-dependent)
 - Kitty keyboard protocol (progressive enhancement)
@@ -457,25 +459,23 @@ if term_mode.contains(MOUSE_REPORT) {
 ## Summary: Crate Dependency Graph
 
 ```
-zenterm (your app)
-├── eframe / egui / egui_dock     (UI framework)
-├── egui-wgpu                      (wgpu backend + CallbackTrait)
-├── wgpu                           (GPU API)
-├── vte                            (low-level VT state machine)
-├── alacritty_terminal             (grid, term, selection — from alacritty/)
-│   └── vte (already a dep)
-├── cosmic-text                    (font shaping + rasterization + ligatures + emoji)
-│   └── (pure Rust: rustybuzz + swash + fontdb)
-├── etagere                        (texture atlas packing)
-├── portable-pty                   (cross-platform PTY)
-├── copypasta                      (clipboard)
-├── linkify                        (URL detection, Phase 3)
-├── serde + toml                   (config, Phase 3)
-├── parking_lot                    (concurrency)
-│
-│   Future phases:
-├── wezterm-toast-notification     (native notifications, Phase 2)
-└── wezterm-font / crossfont       (reference only — not used)
+zenterm
+├── zenterm-ui                      (app, sessions, workspaces, settings)
+│   ├── zenterm-term                (VT state, grid, selection, images)
+│   │   ├── alacritty_terminal      (grid and terminal engine)
+│   │   └── vte                     (ANSI parser)
+│   ├── zenterm-pty                 (PTY lifecycle)
+│   │   └── portable-pty            (ConPTY / Unix PTY implementation)
+│   ├── zenterm-input               (keyboard encoding)
+│   ├── zenterm-render              (wgpu callback and shaders)
+│   │   └── zenterm-glyph           (font shaping and atlas data)
+│   └── zenterm-config              (TOML configuration)
+│       └── zenterm-core            (shared data types and atomic file I/O)
+├── eframe / egui / egui_dock       (UI framework)
+├── arboard                         (clipboard)
+├── linkify                         (URL detection)
+├── serde + toml                    (configuration serialization)
+└── notify-rust                     (desktop notifications)
 ```
 
 All crates have permissive open-source licenses (MIT/Apache 2.0).

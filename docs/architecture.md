@@ -38,8 +38,8 @@ Inspired by [cmux](https://cmux.com/) (macOS-only, Swift + libghostty) — Zente
 │  │  ┌────────────────┐  ┌─────────────────────┐  ┌──────────┐   │   │
 │  │  │ portable-pty   │  │ alacritty_terminal  │  │ Notific. │   │   │
 │  │  │ (PTY I/O)      │→ │ (vte + grid + term, │  │ System   │   │   │
-│  │  │                │  │  from alacritty/)    │  │ (OSC 9/  │   │   │
-│  │  │                │  │                     │  │  99/777) │   │   │
+│  │  │                │  │  terminal core      │  │ (OSC 9/  │   │   │
+│  │  │                │  │ + vte + grid)       │  │  99/777) │   │   │
 │  │  └────────────────┘  └─────────────────────┘  └──────────┘   │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 ```
@@ -71,7 +71,7 @@ Keyboard shortcuts: `Ctrl+1..9` switches workspace by index,
 User Input (keyboard / mouse)
     │
     ▼
-egui event → input.rs → encode to terminal escape sequence
+egui event → zenterm-input → encode to terminal escape sequence
     │                   (alacritty-style key encoding)
     ▼
 portable-pty::PtyMaster::write(bytes)
@@ -83,7 +83,7 @@ portable-pty::PtyMaster::write(bytes)
 portable-pty::PtyMaster::read() → raw bytes (background thread)
     │
     ▼
-channel → main thread → vte::Parser + alacritty_terminal::Term
+channel → main thread → zenterm-term::Terminal
     │                  (grid/ring buffer, screen state, selection)
     ▼
 egui::update() called
@@ -93,7 +93,7 @@ egui::update() called
     ├── Terminal mouse/key input processing (from egui events)
     │   ├── Mouse selection state update (click-drag, double/triple click)
     │   ├── SGR mouse encoding if terminal has mouse reporting enabled
-    │   └── Keyboard → escape sequence via input.rs
+    │   └── Keyboard → escape sequence via zenterm-input
     │
     └── Terminal area: egui_wgpu::CallbackTrait
         │
@@ -125,7 +125,7 @@ Mouse events are interpreted by Zenterm itself for text selection:
 | Scroll wheel | Scroll back through scrollback buffer |
 | Ctrl+Click | Click to open URL |
 
-Selection state is tracked in `src/terminal/selection.rs` (adapted from `alacritty_terminal/src/selection.rs`). Selected cells are rendered with inverted or highlighted background color in the GPU shader.
+Selection state is exposed by `zenterm-term` and implemented in `crates/zenterm-term/src/term/terminal/selection.rs`, on top of `alacritty_terminal`'s selection type. Selected cells are rendered with inverted or highlighted background color in the GPU shader.
 
 ### Mode 2: Mouse Report Mode (vim, htop, nano, mc)
 
@@ -158,43 +158,20 @@ if self.term.mode().contains(MOUSE_REPORT) {
 zenterm/
 ├── Cargo.toml
 ├── docs/                       # This directory
-├── src/
-│   ├── main.rs                 # eframe entry point
-│   ├── app.rs                  # App state, eframe::App impl
-│   ├── config.rs               # TOML config loader
-│   │
-│   ├── ui/                     # egui UI chrome
-│   │   ├── mod.rs
-│   │   ├── app.rs              # Top-level eframe::App orchestrator
-│   │   ├── gpu.rs              # SharedGpuContext (device/queue/SharedRenderState)
-│   │   ├── glyph_cache.rs      # SharedGlyphAtlas (Arc<Mutex<GlyphAtlas>>)
-│   │   ├── session.rs          # TerminalSession (per-tab: PTY + Terminal + view)
-│   │   ├── workspace.rs        # WorkspaceManager, WorkspaceState, WorkspaceId
-│   │   ├── tab_viewer.rs       # egui_dock::TabViewer implementation
-│   │   ├── sidebar.rs          # Cmux-style vertical tab list
-│   │   ├── layout_io.rs        # dock.json / sessions.json persistence
-│   │   └── legacy.rs           # Single-terminal fallback (tabs_enabled=false)
-│   │
-│   ├── terminal/               # Terminal engine + session management
-│   │   ├── mod.rs
-│   │   ├── session.rs          # TerminalSession: PTY + alacritty Term + notif
-│   │   ├── grid.rs             # Thin wrapper around alacritty's Grid
-│   │   ├── selection.rs        # Text selection logic (alacritty-based)
-│   │   ├── notification.rs     # OSC 9/99/777 parser
-│   │   └── input.rs            # Keyboard → escape sequence encoding
-│   │                           # (adapted from alacritty/src/input.rs)
-│   │
-│   ├── render/                 # GPU rendering pipeline
-│   │   ├── mod.rs
-│   │   ├── pipeline.rs         # wgpu pipeline + CallbackTrait impl
-│   │   ├── glyph_atlas.rs      # Glyph cache + etagere texture atlas
-│   │   ├── font.rs             # Font loading via cosmic-text
-│   │   └── shader.wgsl         # Terminal grid vertex/fragment shader
-│   │
-│   └── theme.rs                # Color scheme, spacing, typography tokens
+├── crates/
+│   ├── zenterm/                # eframe entry point
+│   ├── zenterm-ui/             # App orchestration, sessions, workspaces, settings
+│   ├── zenterm-term/           # VT processing, terminal state, grid projection, images
+│   ├── zenterm-input/          # Keyboard and Kitty keyboard encoding
+│   ├── zenterm-pty/            # Cross-platform PTY creation and I/O
+│   ├── zenterm-render/         # wgpu callback, shaders, cell-instance uploads
+│   ├── zenterm-glyph/          # Font discovery, shaping, rasterization, atlas packing
+│   ├── zenterm-config/         # TOML configuration, defaults, hot-reload diffing
+│   └── zenterm-core/           # Shared cells, colors, sizes, damage, images, errors
 │
-├── alacritty/                  # Vendored: Alacritty source (reference only — input.rs patterns, selection logic)
-└── wezterm/                    # Vendored: Wezterm source (reference only — portable-pty API patterns)
+├── docs/                       # Architecture, components, configuration, roadmap
+├── terminal-render-test/       # Cross-platform manual/automated terminal probes
+└── .github/workflows/          # Push/PR CI and tagged release packaging
 
 ## Key Technical Decisions
 
@@ -202,22 +179,22 @@ zenterm/
 |----------|--------|-----------|
 | UI Framework | egui + eframe | Mature, cross-platform, WASM-ready, immediate-mode |
 | Tabs/Docking | egui_dock | 594 stars, production-proven tab/split/dock |
-| Terminal Core | `vte` + `alacritty_terminal` (crates.io) | Battle-tested grid ring buffer, screen state, selection. Published as a library crate. Full control over damage tracking and custom features. The `alacritty/` submodule provides reference for `input.rs` adaptation. |
-| PTY | `portable-pty` | Wezterm's crate, cross-platform (ConPTY on Windows) |
-| Font Loading | `cosmic-text` | Pure Rust font stack (rustybuzz + swash + fontdb). Full shaping, ligatures, BiDi, emoji, and font fallback. Zero C dependencies, published on crates.io. |
-| Glyph Atlas | `etagere` | Efficient space packing for GPU glyph storage |
-| GPU API | wgpu | Cross-platform (Vulkan/Metal/DX12/WebGPU) |
-| Terminal GPU Render | `egui_wgpu::CallbackTrait` | Renders terminal inline within egui's render pass — same window, same frame. No intermediate textures. One instanced draw call for the whole grid. |
-| Config | TOML + serde | Simple, familiar, hot-reloadable |
-| Clipboard | `copypasta` | Cross-platform, used by Alacritty |
-| URL Detection | `linkify` | Standard, lightweight |
+| Terminal Core | `zenterm-term` + `alacritty_terminal` + `vte` | Owns terminal protocol handling, grid projection, selection, OSC/graphics extensions, and damage propagation while reusing the published Alacritty terminal engine. |
+| PTY | `zenterm-pty` + `portable-pty` | Cross-platform PTY abstraction, including ConPTY on Windows. |
+| Font Loading | `zenterm-glyph` + `cosmic-text` | Font discovery, shaping, rasterization, fallback, and ligature handling. |
+| Glyph Atlas | `zenterm-glyph` + `etagere` | Shared atlas allocation and cached glyph image data. |
+| GPU API | `zenterm-render` + `wgpu` | Cross-platform (Vulkan/Metal/DX12/WebGPU) callback and instanced cell rendering. |
+| Terminal GPU Render | `egui_wgpu::CallbackTrait` | Renders terminal cells, images, and decorations inside egui's wgpu pass. |
+| Config | `zenterm-config` + TOML + serde | Typed sections, platform-aware defaults, persistence, and hot-reload diffing. |
+| Clipboard | `arboard` | Cross-platform clipboard access used by terminal sessions. |
+| URL Detection | `linkify` in `zenterm-ui` | Detects visible URLs and email addresses before applying open-link policy. |
 
 ## Reference Projects
 
 | Project | Why Reference |
 |---------|---------------|
-| **Alacritty** (~33k LOC) | **Core reuse target.** Grid/ring buffer, terminal state, selection, index types — all available via the `alacritty_terminal` crate on crates.io. `input.rs` keyboard encoding adapted from the vendored `alacritty/` submodule. |
-| **Wezterm** (~413k LOC) | `portable-pty` (used directly), `wezterm-font` (reference for font shaping patterns), `wezterm-toast-notification` (native notifications), overlay UI patterns. Vendored in `wezterm/` directory. |
+| **Alacritty** | Grid/ring buffer, terminal state, selection, index types, and terminal protocol behavior through the published `alacritty_terminal` crate. |
+| **WezTerm** | `portable-pty` API and cross-platform PTY behavior; reference for terminal font and notification design. No source checkout is required by this project. |
 | **cmux** | Workspace sidebar design, notification system UX, vertical tabs (inspiration only — macOS-only, Swift). |
 | **Terminal Studio** | egui + wgpu terminal approach. **What NOT to do:** it used egui's text system (`ui.label()`) for terminal cells, resulting in 1920+ draw calls per frame. **Lesson:** Use `CallbackTrait` + custom wgpu instanced rendering, NOT egui text for terminal. |
 | **Zed Editor** | Positive example of egui + custom GPU rendering coexistence via CallbackTrait for complex text/content areas. |
