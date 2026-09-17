@@ -10,6 +10,7 @@ icons = [
     "../../assets/macos/zenterm.icns",
     "../../assets/windows/zenterm.ico",
     "../../assets/runtime/zenterm.png",
+    "../../assets/linux/hicolor/*/apps/org.eu.eslzzyl.zenterm.png",
 ]
 resources = [
     { src = "../../assets/windows/zenterm.ico", target = "zenterm.ico" },

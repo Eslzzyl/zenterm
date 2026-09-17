@@ -35,24 +35,39 @@ fn main() -> eframe::Result<()> {
     // Estimate a window size that accommodates the desired terminal grid.
     let initial_size = estimate_window_size(&config);
 
-    // Embed the platform-neutral icon so `cargo run` uses the same artwork as
-    // packaged builds. Platform-specific installers derive their native icon
-    // formats from this asset.
+    // Keep the macOS runtime icon unset so AppKit uses the bundled ICNS and
+    // applies the system Dock mask. eframe otherwise replaces the bundle icon
+    // with the raw square PNG through NSApplication.setApplicationIconImage.
+    #[cfg(target_os = "macos")]
+    let icon = egui::IconData::default();
+
+    // Embed the platform-neutral icon for platforms where eframe needs a
+    // runtime icon. Platform-specific installers derive their native icon
+    // formats from the same canonical artwork.
+    #[cfg(not(target_os = "macos"))]
     let icon = eframe::icon_data::from_png_bytes(include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../assets/runtime/zenterm.png"
     )))
     .expect("embedded application icon must be a valid PNG");
 
+    let viewport = egui::ViewportBuilder::default()
+        .with_inner_size(initial_size)
+        .with_title(&config.window.title)
+        .with_icon(icon)
+        .with_decorations(config.window.decorations)
+        .with_transparent(false)
+        .with_visible(false)
+        .with_resizable(true);
+
+    // Wayland matches a window to its desktop entry by application ID. The
+    // packager emits `zenterm.desktop`, so keep the root window's ID aligned
+    // with that filename. This is ignored by macOS and Windows.
+    #[cfg(target_os = "linux")]
+    let viewport = viewport.with_app_id("zenterm");
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size(initial_size)
-            .with_title(&config.window.title)
-            .with_icon(icon)
-            .with_decorations(config.window.decorations)
-            .with_transparent(false)
-            .with_visible(false)
-            .with_resizable(true),
+        viewport,
         // Use smaller GPU memory blocks — we're a terminal, not a game.
         // Performance (default) pre-allocates 128–256 MB blocks from the
         // driver; MemoryUsage starts at 8 MB and grows as needed.
