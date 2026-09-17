@@ -5,10 +5,8 @@
 use egui::{Color32, CornerRadius, Id, Margin, Stroke};
 use egui_dock::{DockArea, Style, TabAddAlign};
 
-use zenterm_term::ColorScheme;
-
 use super::ZentermApp;
-use crate::session::{SessionId, TerminalSession, default_working_directory};
+use crate::session::SessionId;
 use crate::tab_viewer::TabViewerContext;
 
 // ── Dock rendering ─────────────────────────────────────────────────────
@@ -129,34 +127,14 @@ impl ZentermApp {
                             self.active_session_id.and_then(|id| self.sessions.get(&id));
                         let ws_name =
                             Self::generate_workspace_name(&self.workspaces, active_session);
-                        self.workspaces.create_workspace(ws_name);
-                        // Also spawn a first tab in the new workspace.
-                        let id = self.workspaces.new_session_id();
-                        let scheme = ColorScheme::from_theme(&self.theme);
-                        let size = zenterm_core::size::TermSize::new(
-                            self.config.window.dimensions.lines,
-                            self.config.window.dimensions.columns,
-                            0,
-                            0,
-                        );
-                        let session = TerminalSession::new(
-                            id,
-                            size,
-                            scheme,
-                            self.config.terminal.scrollback_lines,
-                            &self.config.cursor,
-                            default_working_directory(),
-                            self.config.selection.save_to_clipboard,
-                            self.default_bg,
-                            self.gpu.clone(),
-                            self.atlas.clone(),
-                            self.callback.clone(),
-                            self.egui_ctx.clone(),
-                        );
-                        self.sessions.insert(id, session);
-                        self.workspaces.active_workspace_mut().new_tab(id);
-                        self.active_session_id = Some(id);
-                        self.mark_layout_dirty();
+                        let ws_id = self.workspaces.create_workspace(ws_name);
+                        // Also spawn a first tab in the new workspace.  If
+                        // PTY creation fails, remove the empty workspace so
+                        // the failed action does not leave broken state.
+                        if self.spawn_session().is_none() {
+                            self.workspaces.close_workspace(ws_id);
+                            self.focus_first_tab_in_active_workspace();
+                        }
                     }
                     if let Some(ws_id) = queued_switch_ws
                         && self.workspaces.switch_to(ws_id)

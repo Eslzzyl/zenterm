@@ -301,8 +301,11 @@ impl ZentermApp {
             CommandAction::NewWorkspace => {
                 let active_session = self.active_session_id.and_then(|id| self.sessions.get(&id));
                 let name = Self::generate_workspace_name(&self.workspaces, active_session);
-                self.workspaces.create_workspace(name);
-                self.spawn_session();
+                let workspace_id = self.workspaces.create_workspace(name);
+                if self.spawn_session().is_none() {
+                    self.workspaces.close_workspace(workspace_id);
+                    self.focus_first_tab_in_active_workspace();
+                }
             }
             CommandAction::OpenSettings => {
                 self.settings_state.open = true;

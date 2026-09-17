@@ -140,7 +140,7 @@ impl ZentermApp {
         target_format: wgpu::TextureFormat,
         pixels_per_point: f32,
         config: Config,
-    ) -> Self {
+    ) -> zenterm_core::Result<Self> {
         // Resolve and install the configured theme before any expensive
         // renderer setup.  This minimizes the window in which eframe could
         // present its default egui visuals during startup.
@@ -259,7 +259,7 @@ impl ZentermApp {
                 atlas.clone(),
                 callback.clone(),
                 egui_ctx.clone(),
-            );
+            )?;
             // `TerminalSession::new` already sets a reasonable initial title
             // via `detect_shell_name()`.  No override needed.
             sessions.insert(first_id, session);
@@ -288,7 +288,7 @@ impl ZentermApp {
                 atlas.clone(),
                 callback.clone(),
                 egui_ctx.clone(),
-            );
+            )?;
             sessions.insert(*sid, s);
         }
 
@@ -367,7 +367,7 @@ impl ZentermApp {
             app.load_background_image(path);
         }
 
-        app
+        Ok(app)
     }
 }
 

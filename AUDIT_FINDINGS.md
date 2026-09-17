@@ -14,12 +14,6 @@
 
 依据：[会话聚合状态](crates/zenterm-ui/src/session/types.rs#L94-L207)、[普通创建路径](crates/zenterm-ui/src/app/session_lifecycle.rs#L15-L39)、[新工作区创建路径](crates/zenterm-ui/src/app/dock.rs#L132-L158)。建议引入统一的 session factory，并逐步拆分运行时、视图缓存和通知状态。
 
-### ZT-20：PTY 创建失败会直接 panic，缺少用户可恢复路径（代码已确认）
-
-`TerminalSession::new` 对 PTY 创建使用 `expect`。默认 Shell 不存在、PTY 初始化失败或平台环境不满足时，应用会在创建会话阶段崩溃，无法显示错误并允许用户调整配置或重试。
-
-依据：[PTY 创建](crates/zenterm-ui/src/session/new.rs#L69-L95)。建议让会话构造返回 `Result`，由应用层显示错误并决定是否关闭当前标签或回退到可用 Shell。
-
 ### ZT-21：Dock 每帧通过 JSON 序列化检测布局变化（风险，待压测）
 
 Dock 渲染前后都会对完整 `DockState` 执行 `serde_json::to_vec`，仅为判断本帧是否发生布局变化。工作区、分屏和标签数量增加后，这个操作会进入 UI 热路径，并且序列化失败会 panic。

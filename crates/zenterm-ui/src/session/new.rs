@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::mpsc;
 
 use zenterm_config::cursor::{Blinking, CursorConfig, CursorShape};
+use zenterm_core::Result;
 use zenterm_core::size::TermSize;
 use zenterm_render::callback::CallbackHandle;
 use zenterm_term::{BlinkPolicy, ColorScheme, CursorPrefs, Terminal};
@@ -116,7 +117,7 @@ impl TerminalSession {
         atlas: Arc<SharedGlyphAtlas>,
         callback: CallbackHandle,
         egui_ctx: egui::Context,
-    ) -> Self {
+    ) -> Result<Self> {
         // Create a wakeup callback that the PTY reader thread calls
         // after each successful read.  This is the core of the event-
         // driven architecture: instead of the main thread polling PTY
@@ -125,8 +126,7 @@ impl TerminalSession {
             let ctx = egui_ctx.clone();
             Box::new(move || ctx.request_repaint())
         };
-        let mut pty = zenterm_pty::PtySession::spawn_with_cwd(size, Some(wakeup), Some(&cwd))
-            .expect("failed to spawn PTY");
+        let mut pty = zenterm_pty::PtySession::spawn_with_cwd(size, Some(wakeup), Some(&cwd))?;
         let mut terminal = Terminal::new_with_scrollback(
             size,
             scheme,
@@ -157,7 +157,7 @@ impl TerminalSession {
         // resize correctly.  Starting at [0, 0] is fine; the first
         // `update_cell_instances` call will overwrite it.
         let (notification_resp_tx, notification_resp_rx) = mpsc::channel();
-        Self {
+        Ok(Self {
             id,
             title: detect_shell_name(),
             title_override: None,
@@ -218,7 +218,7 @@ impl TerminalSession {
             batch_buf: Vec::new(),
             pending_pty_data: std::collections::VecDeque::new(),
             tab_active: false,
-        }
+        })
     }
 }
 

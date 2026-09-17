@@ -120,7 +120,7 @@ fn main() -> eframe::Result<()> {
                 render_state.target_format,
                 pixels_per_point,
                 config,
-            )))
+            )?))
         }),
     )
 }

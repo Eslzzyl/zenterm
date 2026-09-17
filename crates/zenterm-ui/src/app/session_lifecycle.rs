@@ -12,7 +12,7 @@ use crate::session::{SessionEffect, SessionId, TerminalSession, default_working_
 impl ZentermApp {
     /// Spawn a new session in the active workspace's currently focused
     /// dock leaf and return its id.
-    pub(crate) fn spawn_session(&mut self) -> SessionId {
+    pub(crate) fn spawn_session(&mut self) -> Option<SessionId> {
         let id = self.workspaces.new_session_id();
         let scheme = ColorScheme::from_theme(&self.theme);
         let size = zenterm_core::size::TermSize::new(
@@ -21,7 +21,7 @@ impl ZentermApp {
             0,
             0,
         );
-        let session = TerminalSession::new(
+        let session = match TerminalSession::new(
             id,
             size,
             scheme,
@@ -34,12 +34,23 @@ impl ZentermApp {
             self.atlas.clone(),
             self.callback.clone(),
             self.egui_ctx.clone(),
-        );
+        ) {
+            Ok(session) => session,
+            Err(error) => {
+                self.report_session_spawn_error(error);
+                return None;
+            }
+        };
         self.sessions.insert(id, session);
         self.workspaces.active_workspace_mut().new_tab(id);
         self.active_session_id = Some(id);
         self.mark_layout_dirty();
-        id
+        Some(id)
+    }
+
+    fn report_session_spawn_error(&mut self, error: zenterm_core::Error) {
+        log::error!("failed to create terminal session: {error}");
+        self.error_toast = Some(format!("Failed to start terminal session: {error}"));
     }
 
     /// Close a session and remove its tab from whichever workspace
