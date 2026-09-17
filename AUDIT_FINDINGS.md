@@ -8,12 +8,6 @@
 
 ## 其他功能与可靠性问题
 
-### ZT-07：Windows 覆盖写入存在丢失旧文件的窗口（代码已确认）
-
-配置和布局文件先写 `*.tmp`。重命名失败时，Windows 分支尝试删除原文件后再次重命名；若进程此时中止或第二次重命名失败，旧文件已被移除。“原子写入”的注释不适用于这条路径。
-
-依据：[配置写入](crates/zenterm-config/src/config.rs#L174-L194)、[布局写入](crates/zenterm-ui/src/layout_io.rs#L217-L235)。建议采用可保证替换语义的 Windows 文件操作，并添加失败注入测试。
-
 ### ZT-08：`persist_layout = false` 在退出时仍写布局（代码已确认）
 
 逐帧持久化会检查该开关，但 `on_exit` 无条件调用 `persist_layout_now`；后者写入 `dock.json` 与 `sessions.json`。因此该配置不能阻止正常退出时的保存。

@@ -21,6 +21,77 @@ pub use position::TermPos;
 pub use size::TermSize;
 pub use theme::{THEME_DARK, THEME_LIGHT, Theme, ThemePreference};
 
+/// Replace `target` with a fully written temporary file without deleting the
+/// old target first.  Same-directory replacement keeps the operation on one
+/// volume, which preserves rename atomicity on Unix and Windows.
+pub fn atomic_replace(temp: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        atomic_replace_windows(temp, target)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(temp, target)
+    }
+}
+
+#[cfg(windows)]
+fn atomic_replace_windows(temp: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, REPLACEFILE_WRITE_THROUGH,
+        ReplaceFileW,
+    };
+
+    fn wide_path(path: &std::path::Path) -> std::io::Result<Vec<u16>> {
+        let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if wide.contains(&0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "path contains an embedded NUL",
+            ));
+        }
+        wide.push(0);
+        Ok(wide)
+    }
+
+    let temp = wide_path(temp)?;
+    let target = wide_path(target)?;
+    let replaced = unsafe {
+        ReplaceFileW(
+            target.as_ptr(),
+            temp.as_ptr(),
+            std::ptr::null(),
+            REPLACEFILE_WRITE_THROUGH,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if replaced != 0 {
+        return Ok(());
+    }
+
+    // ReplaceFileW requires an existing target.  MoveFileExW handles the
+    // first save and also covers filesystems where ReplaceFileW is absent.
+    let replace_error = std::io::Error::last_os_error();
+    let moved = unsafe {
+        MoveFileExW(
+            temp.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved != 0 {
+        Ok(())
+    } else {
+        let move_error = std::io::Error::last_os_error();
+        Err(std::io::Error::new(
+            move_error.kind(),
+            format!("ReplaceFileW failed: {replace_error}; MoveFileExW failed: {move_error}"),
+        ))
+    }
+}
+
 // ── iTerm2 proprietary escape codes (OSC 1337) ──────────────────────────
 
 /// iTerm2 proprietary escape code (OSC 1337) sub-commands.

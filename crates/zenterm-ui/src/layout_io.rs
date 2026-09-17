@@ -222,17 +222,7 @@ fn write_atomic(path: &Path, data: &[u8]) -> io::Result<()> {
     }
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, data)?;
-    // On Windows, `rename` fails if the target already exists; use
-    // `fs::rename` after `remove_file` if necessary.  In practice we
-    // always overwrite the same path, so `rename` works.
-    match fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(e) if cfg!(windows) => {
-            let _ = fs::remove_file(path);
-            fs::rename(&tmp, path).map_err(|_| e)
-        }
-        Err(e) => Err(e),
-    }
+    zenterm_core::atomic_replace(&tmp, path)
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -347,6 +337,18 @@ mod tests {
     fn missing_sessions_returns_empty() {
         let io = LayoutIo::with_dir(tempdir());
         assert!(io.load_sessions().is_empty());
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing_file_without_removing_it_first() {
+        let dir = tempdir();
+        let path = dir.join("atomic.json");
+
+        write_atomic(&path, b"old").unwrap();
+        write_atomic(&path, b"new").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert!(!path.with_extension("tmp").exists());
     }
 
     // ── schema version mismatch ───────────────────────────────────

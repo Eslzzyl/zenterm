@@ -182,19 +182,8 @@ impl Config {
             path: tmp_path.clone(),
             source: e,
         })?;
-        match fs::rename(&tmp_path, &path) {
-            Ok(()) => {}
-            Err(rename_error) if cfg!(windows) => {
-                let _ = fs::remove_file(&path);
-                fs::rename(&tmp_path, &path).map_err(|_| ConfigError::Io {
-                    path,
-                    source: rename_error,
-                })?;
-            }
-            Err(source) => {
-                return Err(ConfigError::Io { path, source });
-            }
-        }
+        zenterm_core::atomic_replace(&tmp_path, &path)
+            .map_err(|source| ConfigError::Io { path, source })?;
 
         Ok(())
     }
