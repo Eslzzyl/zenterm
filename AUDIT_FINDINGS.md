@@ -46,12 +46,6 @@ Dock 渲染前后都会对完整 `DockState` 执行 `serde_json::to_vec`，仅�
 
 ## 结构与验证缺口
 
-### ZT-13：终端核心间接依赖 UI 事件类型（架构债务）
-
-九个 crate 的宏观职责划分清晰，但 `zenterm-term` 为获取 Kitty 键盘标志依赖 `zenterm-input`；`zenterm-input` 又以 `egui::Event` 为公开映射输入。这使终端核心的依赖图包含 UI 框架，降低了独立复用与无 UI 测试的便利性。文件长度本身不足以判定设计问题，优先关注这条依赖边界。
-
-依据：[term 依赖](crates/zenterm-term/Cargo.toml#L8)、[input 依赖](crates/zenterm-input/Cargo.toml#L8)、[标志类型使用](crates/zenterm-term/src/term/terminal/effects.rs#L69-L71)。可考虑把协议标志类型放到与 UI 无关的模块。
-
 ### ZT-14：发布检查未覆盖工作区单测，普通推送没有该 CI 检查（代码已确认）
 
 唯一工作流只在 `v*` 标签推送或手动派发时启动；其中 Clippy 与测试都仅指定 `zenterm` 包。其他库 crate 的单元测试不会由这条 `cargo test --package zenterm` 命令执行；项目虽另有终端视觉测试工具，它也没有接入该工作流。不能据此推断库测试当前是否通过。

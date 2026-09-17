@@ -21,6 +21,34 @@ pub use position::TermPos;
 pub use size::TermSize;
 pub use theme::{THEME_DARK, THEME_LIGHT, Theme, ThemePreference};
 
+bitflags::bitflags! {
+    /// Flags for the Kitty keyboard protocol.
+    ///
+    /// These correspond to the bit positions used in the `CSI ? {flags} u`
+    /// query and the keyboard modes stored by the terminal core.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct KittyKeyboardFlags: u8 {
+        const NONE                            = 0;
+        const DISAMBIGUATE_ESCAPE_CODES       = 0b00001;
+        const REPORT_EVENT_TYPES              = 0b00010;
+        const REPORT_ALTERNATE_KEYS           = 0b00100;
+        const REPORT_ALL_KEYS_AS_ESCAPE_CODES = 0b01000;
+        const REPORT_ASSOCIATED_TEXT          = 0b10000;
+    }
+}
+
+impl KittyKeyboardFlags {
+    /// Convert the Kitty keyboard bits stored in the terminal mode word.
+    pub fn from_term_mode(mode: u32) -> Option<Self> {
+        let raw = ((mode >> 18) & 0x1f) as u8;
+        if raw == 0 {
+            None
+        } else {
+            Some(Self::from_bits_truncate(raw))
+        }
+    }
+}
+
 /// Replace `target` with a fully written temporary file without deleting the
 /// old target first.  Same-directory replacement keeps the operation on one
 /// volume, which preserves rename atomicity on Unix and Windows.

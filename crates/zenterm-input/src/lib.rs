@@ -44,48 +44,7 @@ use self::sequences::{
     tilde_seq, tilde_seq_raw,
 };
 
-bitflags::bitflags! {
-    /// Flags for the Kitty keyboard protocol.
-    ///
-    /// These correspond to the bit positions used in the `CSI ? {flags} u`
-    /// query and the `KeyboardModes` type in `vte::ansi`.
-    ///
-    /// | Bit | Constant                   | Meaning                                    |
-    /// |-----|----------------------------|--------------------------------------------|
-    /// | 0   | `DISAMBIGUATE_ESCAPE_CODES`| Send CSI-u sequences for modified keys     |
-    /// | 1   | `REPORT_EVENT_TYPES`       | Include press/repeat/release event type    |
-    /// | 2   | `REPORT_ALTERNATE_KEYS`    | Include shifted/unshifted alternate codes  |
-    /// | 3   | `REPORT_ALL_KEYS_AS_ESCAPE_CODES`| Every key produces a CSI sequence    |
-    /// | 4   | `REPORT_ASSOCIATED_TEXT`   | Include the generated text code points     |
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct KittyKeyboardFlags: u8 {
-        const NONE                          = 0;
-        const DISAMBIGUATE_ESCAPE_CODES     = 0b00001;
-        const REPORT_EVENT_TYPES            = 0b00010;
-        const REPORT_ALTERNATE_KEYS         = 0b00100;
-        const REPORT_ALL_KEYS_AS_ESCAPE_CODES = 0b01000;
-        const REPORT_ASSOCIATED_TEXT        = 0b10000;
-    }
-}
-
-impl KittyKeyboardFlags {
-    /// Convert from the `TermMode` bits used by `alacritty_terminal`.
-    ///
-    /// `alacritty_terminal` stores the five Kitty flags in `TermMode`
-    /// bits 18–22.  This function extracts them and returns the
-    /// corresponding [`KittyKeyboardFlags`].
-    ///
-    /// Returns `None` when **no** Kitty bits are set (equivalent to
-    /// the legacy / xterm encoding path).
-    pub fn from_term_mode(mode: u32) -> Option<Self> {
-        let raw = ((mode >> 18) & 0x1f) as u8;
-        if raw == 0 {
-            None
-        } else {
-            Some(Self::from_bits_truncate(raw))
-        }
-    }
-}
+pub use zenterm_core::KittyKeyboardFlags;
 
 /// Options that affect key encoding behaviour.
 ///

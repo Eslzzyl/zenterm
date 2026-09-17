@@ -13,7 +13,9 @@ use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 use zenterm_core::color::Rgba;
 use zenterm_core::damage::DamageSet;
 use zenterm_core::position::TermPos;
-use zenterm_core::{ITermProprietary, KittyNotification, Progress, SemanticPrompt};
+use zenterm_core::{
+    ITermProprietary, KittyKeyboardFlags, KittyNotification, Progress, SemanticPrompt,
+};
 
 use super::super::color_scheme::ColorScheme;
 use super::super::grid_view::CursorInfo;
@@ -66,8 +68,8 @@ impl Terminal {
         *self.term.mode()
     }
 
-    pub fn kitty_keyboard_flags(&self) -> Option<zenterm_input::KittyKeyboardFlags> {
-        zenterm_input::KittyKeyboardFlags::from_term_mode(self.term.mode().bits())
+    pub fn kitty_keyboard_flags(&self) -> Option<KittyKeyboardFlags> {
+        KittyKeyboardFlags::from_term_mode(self.term.mode().bits())
     }
 
     pub fn set_scheme(&mut self, scheme: ColorScheme) {

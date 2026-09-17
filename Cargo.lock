@@ -5961,6 +5961,7 @@ dependencies = [
 name = "zenterm-core"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.0",
  "serde",
  "sha2",
  "thiserror 2.0.18",
@@ -5985,7 +5986,6 @@ dependencies = [
 name = "zenterm-input"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.0",
  "egui",
  "zenterm-core",
 ]
@@ -6025,7 +6025,6 @@ dependencies = [
  "miniz_oxide",
  "vte",
  "zenterm-core",
- "zenterm-input",
 ]
 
 [[package]]
