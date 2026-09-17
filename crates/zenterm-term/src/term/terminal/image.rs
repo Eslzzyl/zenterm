@@ -441,15 +441,14 @@ impl Terminal {
         }
 
         // Decode the image data using the `image` crate (PNG, JPEG, GIF, …).
-        let decoded = match image::load_from_memory(&file.data) {
-            Ok(img) => img.into_rgba8(),
+        // The fast path keeps JPEG/RGB PNG conversion in one pixel buffer.
+        let (rgba, img_w, img_h) = match crate::image::kitty::decode_image_to_rgba(&file.data) {
+            Ok(decoded) => decoded,
             Err(e) => {
                 log::error!("[iterm-img] failed to decode image: {e}");
                 return;
             }
         };
-        let (img_w, img_h) = decoded.dimensions();
-        let rgba = decoded.into_vec();
 
         // Store in image cache with a unique id.
         let image_data = Arc::new(ImageData::new(ImageDataType::new_rgba8(rgba, img_w, img_h)));
@@ -690,7 +689,7 @@ impl Terminal {
                                 && let Some(first_frame) = frames.first()
                             {
                                 let new_data = zenterm_core::image::ImageDataType::new_rgba8(
-                                    first_frame.clone(),
+                                    first_frame.as_ref().clone(),
                                     *width,
                                     *height,
                                 );

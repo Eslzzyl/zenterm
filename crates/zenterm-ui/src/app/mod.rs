@@ -718,14 +718,11 @@ impl ZentermApp {
         std::thread::spawn(move || {
             let _t0 = std::time::Instant::now();
             let result = (|| -> Option<BackgroundImageData> {
-                let file_data = std::fs::read(&path).ok()?;
-                log::debug!("bg: file read took {:?}", _t0.elapsed());
                 let _t1 = std::time::Instant::now();
-                let img = image::load_from_memory(&file_data).ok()?;
-                log::debug!("bg: decode took {:?}", _t1.elapsed());
-                let _t2 = std::time::Instant::now();
+                let img = image::ImageReader::open(&path).ok()?.decode().ok()?;
+                log::debug!("bg: file read/decode took {:?}", _t1.elapsed());
                 let rgba = img.into_rgba8();
-                log::debug!("bg: into_rgba8 took {:?}", _t2.elapsed());
+                log::debug!("bg: into_rgba8 took {:?}", _t1.elapsed());
                 let (w, h) = rgba.dimensions();
                 Some(BackgroundImageData {
                     data: rgba.into_raw(),

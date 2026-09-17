@@ -5,11 +5,12 @@
 //! <https://github.com/kovidgoyal/kitty/blob/master/docs/graphics-protocol.rst>
 
 use std::collections::BTreeMap;
+use std::io::Cursor;
 use std::sync::Arc;
 
 use base64::Engine as _;
-use image::GenericImageView;
-use image::{RgbImage, load_from_memory};
+use image::load_from_memory;
+use image::{ColorType, GenericImageView, ImageDecoder};
 
 use zenterm_core::image::{ImageData, ImageDataType, hash_bytes};
 
@@ -697,32 +698,22 @@ pub fn decode_image_data(
                 _ => return Err("missing width/height for kitty rgb/rgba data".into()),
             };
             let rgba = match transmit.format {
-                Some(KittyImageFormat::Rgb) => {
-                    let rgb = RgbImage::from_vec(w, h, raw)
-                        .ok_or_else(|| "invalid rgb data".to_string())?;
-                    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-                    for pixel in rgb.pixels() {
-                        rgba.extend_from_slice(&pixel.0);
-                        rgba.push(255);
-                    }
-                    rgba
-                }
+                Some(KittyImageFormat::Rgb) => expand_rgb_to_rgba(raw, w, h)?,
                 _ => raw,
             };
-            if rgba.len() as u32 != w * h * 4 {
+            let expected = checked_image_len(w, h, 4)?;
+            if rgba.len() != expected {
                 return Err(format!(
                     "rgba data length mismatch: got {} bytes, expected {w}x{h}*4={} (diff={})",
                     rgba.len(),
-                    w * h * 4,
-                    rgba.len() as i64 - (w * h * 4) as i64,
+                    expected,
+                    rgba.len() as i64 - expected as i64,
                 ));
             }
             ImageDataType::new_rgba8(rgba, w, h)
         }
         Some(KittyImageFormat::Png) => {
-            let decoded = load_from_memory(&raw).map_err(|e| format!("png decode: {e}"))?;
-            let (w, h) = decoded.dimensions();
-            let rgba = decoded.into_rgba8().into_vec();
+            let (rgba, w, h) = decode_image_to_rgba(&raw)?;
             ImageDataType::new_rgba8(rgba, w, h)
         }
     };
@@ -792,20 +783,9 @@ pub fn decode_image_frame(
         Some(KittyImageFormat::Rgb) => {
             let w = transmit.width.ok_or("missing width")?;
             let h = transmit.height.ok_or("missing height")?;
-            let rgb = RgbImage::from_vec(w, h, raw).ok_or("invalid rgb data")?;
-            let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-            for pixel in rgb.pixels() {
-                rgba.extend_from_slice(&pixel.0);
-                rgba.push(255);
-            }
-            (rgba, w, h)
+            (expand_rgb_to_rgba(raw, w, h)?, w, h)
         }
-        Some(KittyImageFormat::Png) => {
-            let decoded = load_from_memory(&raw).map_err(|e| format!("png decode: {e}"))?;
-            let (w, h) = decoded.dimensions();
-            let rgba = decoded.into_rgba8().into_vec();
-            (rgba, w, h)
-        }
+        Some(KittyImageFormat::Png) => decode_image_to_rgba(&raw)?,
     };
 
     let x = frame.x.unwrap_or(0);
@@ -834,19 +814,19 @@ pub fn decode_image_frame(
             let frame_no = frame.frame_number.unwrap_or(1);
             if frame_no == 1 {
                 // Edit in place: blit the new data onto the existing frame.
-                let mut dest = image::RgbaImage::from_raw(*width, *height, data.clone())
-                    .ok_or("invalid existing rgba data")?;
+                let mut dest =
+                    take_rgba_image(data, *width, *height, "invalid existing rgba data")?;
                 let src = image::RgbaImage::from_raw(frame_w, frame_h, frame_data)
                     .ok_or("invalid frame data")?;
                 apply_blit(&mut dest, &src, x, y, composition_mode);
-                *data = dest.into_vec();
-                *hash = ImageDataType::new_rgba8(data.clone(), *width, *height).hash();
+                *data = Arc::new(dest.into_vec());
+                *hash = hash_bytes(data.as_slice());
             } else {
                 // Create a second frame: convert to AnimRgba8.
                 let bg_duration =
                     std::time::Duration::from_millis(frame.duration_ms.unwrap_or(40) as u64);
                 let base = if frame.base_frame.unwrap_or(0) == 1 {
-                    data.clone()
+                    data.as_ref().clone()
                 } else {
                     [bg.0[0], bg.0[1], bg.0[2], bg.0[3]].repeat((*width * *height) as usize)
                 };
@@ -860,7 +840,7 @@ pub fn decode_image_frame(
                 *guard = ImageDataType::AnimRgba8 {
                     width: *width,
                     height: *height,
-                    frames: vec![old_data, new_frame.into_vec()],
+                    frames: vec![old_data, Arc::new(new_frame.into_vec())],
                     durations: vec![std::time::Duration::from_secs(0), bg_duration],
                     hashes: Vec::new(),
                 };
@@ -871,7 +851,7 @@ pub fn decode_image_frame(
                     ..
                 } = *guard
                 {
-                    *hashes = frames.iter().map(|f| hash_bytes(f)).collect();
+                    *hashes = frames.iter().map(|f| hash_bytes(f.as_slice())).collect();
                 }
             }
         }
@@ -885,24 +865,25 @@ pub fn decode_image_frame(
             let frame_no = frame.frame_number.unwrap_or(frames.len() as u32 + 1);
             if frame_no <= frames.len() as u32 {
                 // Edit existing frame in place.
-                let mut dest = image::RgbaImage::from_raw(
+                let frame_idx = frame_no as usize - 1;
+                let mut dest = take_rgba_image(
+                    &mut frames[frame_idx],
                     *width,
                     *height,
-                    frames[frame_no as usize - 1].clone(),
-                )
-                .ok_or("invalid anim frame data")?;
+                    "invalid anim frame data",
+                )?;
                 let src = image::RgbaImage::from_raw(frame_w, frame_h, frame_data)
                     .ok_or("invalid frame data")?;
                 apply_blit(&mut dest, &src, x, y, composition_mode);
-                frames[frame_no as usize - 1] = dest.into_vec();
-                hashes[frame_no as usize - 1] = hash_bytes(&frames[frame_no as usize - 1]);
+                frames[frame_idx] = Arc::new(dest.into_vec());
+                hashes[frame_idx] = hash_bytes(frames[frame_idx].as_slice());
             } else {
                 // Append a new frame.
                 let bg_duration =
                     std::time::Duration::from_millis(frame.duration_ms.unwrap_or(40) as u64);
                 let base = match frame.base_frame {
                     Some(n) if n > 0 && n as usize <= frames.len() => {
-                        frames[n as usize - 1].clone()
+                        frames[n as usize - 1].as_ref().clone()
                     }
                     _ => [bg.0[0], bg.0[1], bg.0[2], bg.0[3]].repeat((*width * *height) as usize),
                 };
@@ -911,9 +892,9 @@ pub fn decode_image_frame(
                 let src = image::RgbaImage::from_raw(frame_w, frame_h, frame_data)
                     .ok_or("invalid frame data")?;
                 apply_blit(&mut new_frame, &src, x, y, composition_mode);
-                frames.push(new_frame.into_vec());
+                frames.push(Arc::new(new_frame.into_vec()));
                 durations.push(bg_duration);
-                hashes.push(hash_bytes(frames.last().unwrap()));
+                hashes.push(hash_bytes(frames.last().unwrap().as_slice()));
             }
         }
     }
@@ -963,14 +944,13 @@ pub fn handle_compose_frame(
             let (src_data, src_w, src_h) = clip_view(
                 *width,
                 *height,
-                data,
+                data.as_slice(),
                 frame.src_x,
                 frame.src_y,
                 frame.w,
                 frame.h,
             )?;
-            let mut dest = image::RgbaImage::from_raw(*width, *height, data.clone())
-                .ok_or("invalid rgba data")?;
+            let mut dest = take_rgba_image(data, *width, *height, "invalid rgba data")?;
             let src_img =
                 image::RgbaImage::from_raw(src_w, src_h, src_data).ok_or("invalid clip")?;
             apply_blit(
@@ -980,8 +960,8 @@ pub fn handle_compose_frame(
                 frame.y.unwrap_or(0),
                 frame.composition_mode,
             );
-            *data = dest.into_vec();
-            *hash = hash_bytes(data);
+            *data = Arc::new(dest.into_vec());
+            *hash = hash_bytes(data.as_slice());
         }
         ImageDataType::AnimRgba8 {
             width,
@@ -998,15 +978,18 @@ pub fn handle_compose_frame(
             let (src_data, src_w, src_h) = clip_view(
                 *width,
                 *height,
-                &frames[src_frame_idx - 1],
+                frames[src_frame_idx - 1].as_slice(),
                 frame.src_x,
                 frame.src_y,
                 frame.w,
                 frame.h,
             )?;
-            let mut dest =
-                image::RgbaImage::from_raw(*width, *height, frames[dst_frame_idx - 1].clone())
-                    .ok_or("invalid anim frame")?;
+            let mut dest = take_rgba_image(
+                &mut frames[dst_frame_idx - 1],
+                *width,
+                *height,
+                "invalid anim frame",
+            )?;
             let src_img =
                 image::RgbaImage::from_raw(src_w, src_h, src_data).ok_or("invalid clip")?;
             apply_blit(
@@ -1016,8 +999,8 @@ pub fn handle_compose_frame(
                 frame.y.unwrap_or(0),
                 frame.composition_mode,
             );
-            frames[dst_frame_idx - 1] = dest.into_vec();
-            hashes[dst_frame_idx - 1] = hash_bytes(&frames[dst_frame_idx - 1]);
+            frames[dst_frame_idx - 1] = Arc::new(dest.into_vec());
+            hashes[dst_frame_idx - 1] = hash_bytes(frames[dst_frame_idx - 1].as_slice());
         }
     }
     Ok(())
@@ -1043,17 +1026,39 @@ fn clip_view(
     let vh = view_h
         .unwrap_or(height.saturating_sub(src_y))
         .min(height.saturating_sub(src_y));
-    let mut out = vec![0u8; (vw * vh * 4) as usize];
+    let row_bytes = checked_image_len(vw, 1, 4)?;
+    let output_len = checked_image_len(vw, vh, 4)?;
+    let mut out = vec![0u8; output_len];
     for y in 0..vh {
-        for x in 0..vw {
-            let si = (((src_y + y) * width + (src_x + x)) * 4) as usize;
-            let di = ((y * vw + x) * 4) as usize;
-            if si + 3 < data.len() && di + 3 < out.len() {
-                out[di..di + 4].copy_from_slice(&data[si..si + 4]);
-            }
-        }
+        let src_start = checked_image_len((src_y + y) * width + src_x, 1, 4)?;
+        let src_end = src_start
+            .checked_add(row_bytes)
+            .ok_or_else(|| "image clip range overflow".to_string())?;
+        let dst_start = checked_image_len(y * vw, 1, 4)?;
+        let dst_end = dst_start
+            .checked_add(row_bytes)
+            .ok_or_else(|| "image clip range overflow".to_string())?;
+        let src_row = data
+            .get(src_start..src_end)
+            .ok_or_else(|| "image clip source range out of bounds".to_string())?;
+        out[dst_start..dst_end].copy_from_slice(src_row);
     }
     Ok((out, vw, vh))
+}
+
+/// Apply a blit operation (overwrite or alpha-blend).
+fn take_rgba_image(
+    data: &mut Arc<Vec<u8>>,
+    width: u32,
+    height: u32,
+    error: &'static str,
+) -> Result<image::RgbaImage, String> {
+    let expected = checked_image_len(width, height, 4)?;
+    if data.len() != expected {
+        return Err(error.into());
+    }
+    let data = Arc::make_mut(data);
+    image::RgbaImage::from_raw(width, height, std::mem::take(data)).ok_or_else(|| error.into())
 }
 
 /// Apply a blit operation (overwrite or alpha-blend).
@@ -1072,6 +1077,83 @@ fn apply_blit(
             image::imageops::replace(dest, src, x.into(), y.into());
         }
     }
+}
+
+fn checked_image_len(width: u32, height: u32, channels: u64) -> Result<usize, String> {
+    let len = (width as u64)
+        .checked_mul(height as u64)
+        .and_then(|pixels| pixels.checked_mul(channels))
+        .ok_or_else(|| format!("image dimensions overflow: {width}x{height}x{channels}"))?;
+    usize::try_from(len).map_err(|_| "image buffer is too large for this platform".into())
+}
+
+/// Decode a regular image directly into the RGBA representation used by the
+/// terminal.  The generic `DynamicImage` path allocates an RGB buffer and a
+/// second RGBA buffer for JPEGs and RGB PNGs; decoding into a single reusable
+/// vector and expanding it backwards keeps only one full-size pixel buffer.
+pub fn decode_image_to_rgba(data: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
+    let reader = image::ImageReader::new(Cursor::new(data))
+        .with_guessed_format()
+        .map_err(|e| format!("image format detection: {e}"))?;
+    let decoder = reader
+        .into_decoder()
+        .map_err(|e| format!("image decoder: {e}"))?;
+    let (width, height) = decoder.dimensions();
+    let color_type = decoder.color_type();
+
+    match color_type {
+        ColorType::Rgba8 => {
+            let expected = checked_image_len(width, height, 4)?;
+            let mut rgba = vec![0u8; expected];
+            decoder
+                .read_image(&mut rgba)
+                .map_err(|e| format!("image decode: {e}"))?;
+            Ok((rgba, width, height))
+        }
+        ColorType::Rgb8 => {
+            let expected = checked_image_len(width, height, 3)?;
+            let mut rgb = vec![0u8; expected];
+            decoder
+                .read_image(&mut rgb)
+                .map_err(|e| format!("image decode: {e}"))?;
+            Ok((expand_rgb_to_rgba(rgb, width, height)?, width, height))
+        }
+        _ => {
+            // Keep the existing image-crate coverage for grayscale, 16-bit,
+            // animated and other formats that need color conversion.
+            let decoded = load_from_memory(data).map_err(|e| format!("image decode: {e}"))?;
+            let (width, height) = decoded.dimensions();
+            Ok((decoded.into_rgba8().into_vec(), width, height))
+        }
+    }
+}
+
+/// Expand an RGB buffer in place, walking backwards so no second full-size
+/// pixel buffer is needed for the common uncompressed RGB Kitty path.
+pub(crate) fn expand_rgb_to_rgba(
+    mut rgb: Vec<u8>,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, String> {
+    let pixels = checked_image_len(width, height, 1)?;
+    let expected_rgb = checked_image_len(width, height, 3)?;
+    let expected_rgba = checked_image_len(width, height, 4)?;
+    if rgb.len() != expected_rgb {
+        return Err(format!(
+            "invalid rgb data length: got {}, expected {}",
+            rgb.len(),
+            expected_rgb
+        ));
+    }
+
+    rgb.resize(expected_rgba, 255);
+    for pixel in (0..pixels).rev() {
+        let src = pixel * 3;
+        let dst = pixel * 4;
+        rgb.copy_within(src..src + 3, dst);
+        rgb[dst + 3] = 255;
+    }
+    Ok(rgb)
 }
 
 // ── chunk accumulation ─────────────────────────────────────────────────
@@ -1128,7 +1210,10 @@ impl KittyAccumulator {
             self.verbosity = verb;
             // Decode first chunk immediately.
             let bytes = tx.data.load_data()?;
-            self.data_buf.extend_from_slice(&bytes);
+            // The accumulator is empty on the first chunk, so take ownership
+            // directly instead of copying the complete decoded chunk into a
+            // second buffer.
+            self.data_buf = bytes;
         } else {
             match img {
                 KittyImage::TransmitData { transmit, .. }
@@ -1211,5 +1296,11 @@ mod tests {
     fn test_parse_display() {
         let img = KittyImage::parse_apc(b"Ga=p,i=1,c=2,r=3").unwrap();
         assert!(matches!(img, KittyImage::Display { .. }));
+    }
+
+    #[test]
+    fn expands_rgb_in_place_without_changing_pixel_order() {
+        let rgba = expand_rgb_to_rgba(vec![1, 2, 3, 4, 5, 6], 2, 1).unwrap();
+        assert_eq!(rgba, vec![1, 2, 3, 255, 4, 5, 6, 255]);
     }
 }

@@ -19,7 +19,10 @@ impl TextureCoordinate {
 pub enum ImageDataType {
     /// Single decoded RGBA frame.
     Rgba8 {
-        data: Vec<u8>,
+        /// Shared so the render upload can borrow the decoded pixels without
+        /// making a second full-size staging copy.  Frame edits use
+        /// copy-on-write before mutating the buffer.
+        data: Arc<Vec<u8>>,
         width: u32,
         height: u32,
         hash: [u8; 32],
@@ -28,7 +31,7 @@ pub enum ImageDataType {
     AnimRgba8 {
         width: u32,
         height: u32,
-        frames: Vec<Vec<u8>>,
+        frames: Vec<Arc<Vec<u8>>>,
         durations: Vec<Duration>,
         hashes: Vec<[u8; 32]>,
     },
@@ -133,12 +136,12 @@ fn compute_hash(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
 
-fn compute_frames_hash(frames: &[Vec<u8>]) -> [u8; 32] {
+fn compute_frames_hash(frames: &[Arc<Vec<u8>>]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update((frames.len() as u64).to_le_bytes());
     for frame in frames {
-        hasher.update(compute_hash(frame));
+        hasher.update(compute_hash(frame.as_slice()));
     }
     hasher.finalize().into()
 }
@@ -153,7 +156,7 @@ impl ImageDataType {
     pub fn new_rgba8(data: Vec<u8>, width: u32, height: u32) -> Self {
         let hash = compute_hash(&data);
         Self::Rgba8 {
-            data,
+            data: Arc::new(data),
             width,
             height,
             hash,
@@ -169,7 +172,8 @@ impl ImageDataType {
         width: u32,
         height: u32,
     ) -> Self {
-        let hashes: Vec<[u8; 32]> = frames.iter().map(|f| compute_hash(f)).collect();
+        let frames: Vec<Arc<Vec<u8>>> = frames.into_iter().map(Arc::new).collect();
+        let hashes: Vec<[u8; 32]> = frames.iter().map(|f| compute_hash(f.as_slice())).collect();
         Self::AnimRgba8 {
             width,
             height,
@@ -181,7 +185,7 @@ impl ImageDataType {
 
     pub fn hash(&self) -> [u8; 32] {
         match self {
-            Self::Rgba8 { data, .. } => compute_hash(data),
+            Self::Rgba8 { data, .. } => compute_hash(data.as_slice()),
             Self::AnimRgba8 { frames, .. } => compute_frames_hash(frames),
         }
     }
@@ -209,7 +213,7 @@ mod tests {
         let original = image.hash();
 
         if let ImageDataType::Rgba8 { data, .. } = &mut *image.data() {
-            data[0] = 9;
+            std::sync::Arc::make_mut(data)[0] = 9;
         }
 
         assert_ne!(image.hash(), original);
@@ -226,7 +230,7 @@ mod tests {
         let original = image.hash();
 
         if let ImageDataType::AnimRgba8 { frames, .. } = &mut *image.data() {
-            frames[0][0] = 9;
+            std::sync::Arc::make_mut(&mut frames[0])[0] = 9;
         }
 
         assert_ne!(image.hash(), original);
