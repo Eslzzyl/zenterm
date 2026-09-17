@@ -8,7 +8,7 @@ use egui_dock::{DockArea, Style, TabAddAlign};
 use zenterm_term::ColorScheme;
 
 use super::ZentermApp;
-use crate::session::{SessionId, TerminalSession};
+use crate::session::{SessionId, TerminalSession, default_working_directory};
 use crate::tab_viewer::TabViewerContext;
 
 // ── Dock rendering ─────────────────────────────────────────────────────
@@ -145,6 +145,7 @@ impl ZentermApp {
                             scheme,
                             self.config.terminal.scrollback_lines,
                             &self.config.cursor,
+                            default_working_directory(),
                             self.config.selection.save_to_clipboard,
                             self.default_bg,
                             self.gpu.clone(),

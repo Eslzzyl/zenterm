@@ -4,6 +4,7 @@
 //! read/write access via a background thread.
 
 use std::io::{BufReader, Read, Write};
+use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
@@ -77,7 +78,16 @@ impl PtySession {
         size: TermSize,
         wakeup: Option<Box<dyn Fn() + Send + Sync>>,
     ) -> Result<Self> {
-        Self::spawn_with_handlers(size, wakeup, None)
+        Self::spawn_with_cwd(size, wakeup, None)
+    }
+
+    /// Spawn a new shell with an optional initial working directory.
+    pub fn spawn_with_cwd(
+        size: TermSize,
+        wakeup: Option<Box<dyn Fn() + Send + Sync>>,
+        cwd: Option<&Path>,
+    ) -> Result<Self> {
+        Self::spawn_with_handlers_and_cwd(size, wakeup, cwd, None)
     }
 
     /// Spawn a new shell with wakeup and optional data handler.
@@ -99,6 +109,15 @@ impl PtySession {
         wakeup: Option<Box<dyn Fn() + Send + Sync>>,
         on_data: Option<DataHandler>,
     ) -> Result<Self> {
+        Self::spawn_with_handlers_and_cwd(size, wakeup, None, on_data)
+    }
+
+    fn spawn_with_handlers_and_cwd(
+        size: TermSize,
+        wakeup: Option<Box<dyn Fn() + Send + Sync>>,
+        cwd: Option<&Path>,
+        on_data: Option<DataHandler>,
+    ) -> Result<Self> {
         let pty_system = NativePtySystem::default();
 
         let pair = pty_system
@@ -112,6 +131,9 @@ impl PtySession {
 
         let mut cmd = CommandBuilder::new_default_prog();
         configure_command_environment(&mut cmd);
+        if let Some(cwd) = cwd {
+            cmd.cwd(cwd);
+        }
         let child = pair
             .slave
             .spawn_command(cmd)

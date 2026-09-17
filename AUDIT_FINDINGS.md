@@ -8,12 +8,6 @@
 
 ## 其他功能与可靠性问题
 
-### ZT-11：恢复的 `cwd` 只更新元数据，未设置新 shell 的工作目录（代码已确认；产品意图待确认）
-
-恢复时先构造 `TerminalSession` 并启动默认 shell，之后才从 `sessions.json` 给会话的 `cwd` 字段赋值。PTY 启动命令没有使用保存的目录。若“恢复会话”预期包含 shell 工作目录，当前行为与预期不符。
-
-依据：[PTY 启动](crates/zenterm-pty/src/lib.rs#L104-L123)、[会话构造](crates/zenterm-ui/src/session/new.rs#L69-L102)、[元数据赋值](crates/zenterm-ui/src/app/mod.rs#L270-L284)。
-
 ### ZT-12：重启提示按非默认值判断，可能长期误报（代码已确认）
 
 `Config::diff_to` 只要变更前后任一窗口配置的标题或装饰不同于默认值，就设置 `needs_restart`，即使用户没有修改这些字段。设置页据此显示重启提示。

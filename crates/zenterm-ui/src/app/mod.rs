@@ -38,7 +38,7 @@ use crate::glyph_cache::SharedGlyphAtlas;
 use crate::gpu::SharedGpuContext;
 use crate::layout_io::LayoutIo;
 use crate::legacy::render_legacy_single;
-use crate::session::{SessionId, TerminalSession};
+use crate::session::{SessionId, TerminalSession, session_working_directory};
 use crate::settings::SettingsState;
 use crate::workspace::WorkspaceManager;
 
@@ -192,6 +192,7 @@ impl ZentermApp {
         // ── Layout persistence ────────────────────────────────────
         let config_path = Config::path();
         let layout_io = LayoutIo::from_config_path(&config_path);
+        let saved_meta = layout_io.load_sessions();
 
         // ── Session/workspace restoration ─────────────────────────
         // Single-session mode deliberately ignores persisted dock state so
@@ -247,6 +248,11 @@ impl ZentermApp {
                 scheme.clone(),
                 config.terminal.scrollback_lines,
                 &config.cursor,
+                session_working_directory(
+                    saved_meta
+                        .get(&first_id.raw())
+                        .and_then(|meta| meta.cwd.as_deref()),
+                ),
                 config.selection.save_to_clipboard,
                 default_bg,
                 gpu.clone(),
@@ -271,6 +277,11 @@ impl ZentermApp {
                 scheme.clone(),
                 config.terminal.scrollback_lines,
                 &config.cursor,
+                session_working_directory(
+                    saved_meta
+                        .get(&sid.raw())
+                        .and_then(|meta| meta.cwd.as_deref()),
+                ),
                 config.selection.save_to_clipboard,
                 default_bg,
                 gpu.clone(),
@@ -287,22 +298,19 @@ impl ZentermApp {
             workspaces.active_workspace_mut().new_tab(first_id);
         }
 
-        // Hydrate session cwd and title_override from sessions.json.
+        // Hydrate the manual title override from sessions.json.  The cwd was
+        // validated and passed to the PTY before each shell was spawned.
         // Note: `title` is NOT restored here — it's a transient value
         // that the shell will set via OSC shortly after startup, and
         // restoring a stale title from disk would only cause confusion
         // (e.g. overwriting the constructor's detected shell name).
-        let saved_meta = layout_io.load_sessions();
-        for (id, meta) in saved_meta {
-            if let Some(session) = sessions.get_mut(&SessionId(id)) {
+        for (id, meta) in &saved_meta {
+            if let Some(session) = sessions.get_mut(&SessionId(*id)) {
                 // Restore manual title override if one was persisted.
                 if let Some(ref override_title) = meta.title_override
                     && !override_title.is_empty()
                 {
                     session.title_override = Some(override_title.clone());
-                }
-                if let Some(cwd) = meta.cwd {
-                    session.cwd = Some(cwd);
                 }
             }
         }

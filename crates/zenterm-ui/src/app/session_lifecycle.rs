@@ -7,7 +7,7 @@ use egui::Context;
 use zenterm_term::ColorScheme;
 
 use super::ZentermApp;
-use crate::session::{SessionEffect, SessionId, TerminalSession};
+use crate::session::{SessionEffect, SessionId, TerminalSession, default_working_directory};
 
 impl ZentermApp {
     /// Spawn a new session in the active workspace's currently focused
@@ -27,6 +27,7 @@ impl ZentermApp {
             scheme,
             self.config.terminal.scrollback_lines,
             &self.config.cursor,
+            default_working_directory(),
             self.config.selection.save_to_clipboard,
             self.default_bg,
             self.gpu.clone(),
