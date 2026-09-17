@@ -11,6 +11,7 @@ pub mod shaders;
 
 pub use callback::{BackgroundImageData, CallbackHandle, FrameData};
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use wgpu::util::DeviceExt;
@@ -84,8 +85,10 @@ pub struct CellInstance {
 /// belong to one atlas texture slot.
 #[derive(Debug, Clone)]
 pub struct AtlasRange {
-    /// Index into [`TerminalRenderPass::atlas_bind_groups`].
+    /// Index into the glyph or image bind-group vector selected by `image`.
     pub atlas_index: usize,
+    /// Whether this range samples an exact-size terminal image texture.
+    pub image: bool,
     /// Start offset (in instances) within the GPU instance buffer.
     pub start: u32,
     /// Number of instances in this range.
@@ -106,6 +109,8 @@ pub struct TerminalRenderPass {
     bind_group_layout: wgpu::BindGroupLayout,
     /// One bind group per atlas texture slot.
     atlas_bind_groups: Vec<wgpu::BindGroup>,
+    /// One bind group per exact-size terminal image texture.
+    image_bind_groups: Vec<wgpu::BindGroup>,
     /// Sampler shared by all atlas textures.
     atlas_sampler: wgpu::Sampler,
     /// Linear sampler for the background image (avoids aliasing).
@@ -145,6 +150,7 @@ impl TerminalRenderPass {
         device: &wgpu::Device,
         target_format: wgpu::TextureFormat,
         atlas_views: &[&wgpu::TextureView],
+        image_views: &[&wgpu::TextureView],
         sampler: &wgpu::Sampler,
     ) -> Result<Self> {
         let vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -210,6 +216,26 @@ impl TerminalRenderPass {
             .map(|view| {
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("terminal.atlas_bind_group"),
+                    layout: &bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
+                    ],
+                })
+            })
+            .collect();
+
+        let image_bind_groups: Vec<wgpu::BindGroup> = image_views
+            .iter()
+            .map(|view| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("terminal.image_bind_group"),
                     layout: &bind_group_layout,
                     entries: &[
                         wgpu::BindGroupEntry {
@@ -400,6 +426,7 @@ impl TerminalRenderPass {
             index_buf,
             bind_group_layout,
             atlas_bind_groups,
+            image_bind_groups,
             atlas_sampler: sampler.clone(),
             bg_sampler,
             atlas_ranges: Vec::new(),
@@ -453,7 +480,7 @@ impl TerminalRenderPass {
         let padded_size = bytes_per_row as u64 * height as u64;
         // Build a padded copy so wgpu doesn't reject the upload on
         // backends that require tight alignment (D3D12, Vulkan).
-        let padded = if padding > 0 {
+        let padded: Cow<'_, [u8]> = if padding > 0 {
             let mut buf = Vec::with_capacity(padded_size as usize);
             for row in 0..height as usize {
                 buf.extend_from_slice(
@@ -461,9 +488,9 @@ impl TerminalRenderPass {
                 );
                 buf.extend(std::iter::repeat_n(0u8, padding as usize));
             }
-            buf
+            Cow::Owned(buf)
         } else {
-            data.to_vec()
+            Cow::Borrowed(data)
         };
         log::debug!(
             "bg: pad/copy {}x{} (pad={}) took {:?}",
@@ -589,6 +616,33 @@ impl TerminalRenderPass {
         rpass.draw_indexed(0..6, 0, 0..1);
     }
 
+    /// Replace the bind groups for exact-size terminal image textures.
+    pub fn update_image_views(
+        &mut self,
+        device: &wgpu::Device,
+        image_views: &[&wgpu::TextureView],
+    ) {
+        self.image_bind_groups = image_views
+            .iter()
+            .map(|view| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("terminal.image_bind_group"),
+                    layout: &self.bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.atlas_sampler),
+                        },
+                    ],
+                })
+            })
+            .collect();
+    }
+
     /// Draw only terminal cell instances into an existing render pass.
     pub fn draw_cells_to_pass(&self, rpass: &mut wgpu::RenderPass) {
         let count = self.num_instances.load(Ordering::Acquire);
@@ -615,11 +669,17 @@ impl TerminalRenderPass {
             if range.count == 0 {
                 continue;
             }
-            if range.atlas_index >= self.atlas_bind_groups.len() {
+            let bind_groups = if range.image {
+                &self.image_bind_groups
+            } else {
+                &self.atlas_bind_groups
+            };
+            if range.atlas_index >= bind_groups.len() {
                 log::warn!(
-                    "draw_to_pass: atlas_index {} out of range ({} bind groups)",
+                    "draw_to_pass: {} texture index {} out of range ({} bind groups)",
+                    if range.image { "image" } else { "atlas" },
                     range.atlas_index,
-                    self.atlas_bind_groups.len()
+                    bind_groups.len()
                 );
                 continue;
             }
@@ -629,7 +689,7 @@ impl TerminalRenderPass {
                 rpass.draw_indexed(0..6, 0, drawn_end..range.start);
             }
 
-            rpass.set_bind_group(0, &self.atlas_bind_groups[range.atlas_index], &[]);
+            rpass.set_bind_group(0, &bind_groups[range.atlas_index], &[]);
             rpass.draw_indexed(0..6, 0, range.start..range.start + range.count);
             drawn_end = range.start + range.count;
         }

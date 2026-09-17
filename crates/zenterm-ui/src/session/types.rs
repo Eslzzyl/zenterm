@@ -3,6 +3,7 @@
 //! Defines [`SessionId`], [`NotificationState`], and the
 //! [`TerminalSession`] struct that represents a single terminal tab.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -168,6 +169,9 @@ pub struct TerminalSession {
     pub(crate) cached_image_below: Vec<Vec<CellInstance>>,
     /// Image quads with z_index >= 0 (render on top of text), per atlas slot.
     pub(crate) cached_image_above: Vec<Vec<CellInstance>>,
+    /// Image source identities that have been registered in the shared GPU
+    /// cache.  They are released when this session is closed.
+    pub(crate) image_sources: HashSet<usize>,
 
     /// ── Reusable batch buffer for PTY data ──────────────────────────
     /// Avoids allocating a new Vec in `pump_pty()` on every call.
@@ -238,6 +242,14 @@ pub struct TerminalSession {
     /// Whether this session's tab is the currently active tab.
     /// Set by the app layer before [`Self::handle_side_effects`].
     pub(crate) tab_active: bool,
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        for source_id in self.image_sources.drain() {
+            self.atlas.release_image_source(source_id);
+        }
+    }
 }
 
 // ── Constants ──────────────────────────────────────────────────────────

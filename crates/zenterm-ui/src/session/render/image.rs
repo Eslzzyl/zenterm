@@ -3,10 +3,19 @@
 use zenterm_core::image::{ImageCell, ImageDataType};
 use zenterm_render::{CellInstance, glyph_type};
 
+use crate::glyph_cache::{ImageEntry, ImageKey, ImagePixels, SharedGlyphAtlas};
+
+pub(super) type ImageEntryCache = std::collections::HashMap<(usize, ImageKey), ImageEntry>;
+
+pub(super) fn image_source_id(img: &ImageCell) -> usize {
+    std::sync::Arc::as_ptr(&img.data) as usize
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_image_quad(
     bufs: &mut Vec<Vec<CellInstance>>,
-    atlas: &mut zenterm_glyph::GlyphAtlas,
+    atlas: &SharedGlyphAtlas,
+    image_entries: &mut ImageEntryCache,
     img: &ImageCell,
     col: usize,
     row: usize,
@@ -17,43 +26,49 @@ pub(super) fn emit_image_quad(
     x_scale: f32,
     y_scale: f32,
 ) {
-    let (pixels, img_w, img_h, img_hash) = {
-        let guard = img.data.data();
-        match &*guard {
-            ImageDataType::Rgba8 {
-                data,
-                width,
-                height,
-                hash,
-            } => (data.clone(), *width, *height, *hash),
-            ImageDataType::AnimRgba8 {
-                width,
-                height,
-                frames,
-                hashes,
-                ..
-            } => {
-                // Use the first frame for rendering (frame 0).
-                // FUTURE: cycle through frames based on timing.
-                (frames[0].clone(), *width, *height, hashes[0])
-            }
+    let guard = img.data.data();
+    let (pixels, img_w, img_h, img_hash) = match &*guard {
+        ImageDataType::Rgba8 {
+            data,
+            width,
+            height,
+            hash,
+        } => (ImagePixels::Shared(data), *width, *height, *hash),
+        ImageDataType::AnimRgba8 {
+            width,
+            height,
+            frames,
+            hashes,
+            ..
+        } => {
+            // Use the first frame for rendering (frame 0).
+            // FUTURE: cycle through frames based on timing.
+            let Some((data, hash)) = frames.first().zip(hashes.first()) else {
+                return;
+            };
+            (ImagePixels::Shared(data), *width, *height, *hash)
         }
     };
-
-    let entry = match atlas.ensure_image(&pixels, img_w, img_h, img_hash) {
-        Ok(e) => e,
-        Err(_) => return,
+    let key = ImageKey {
+        hash: img_hash,
+        width: img_w,
+        height: img_h,
+    };
+    let source_id = image_source_id(img);
+    let local_key = (source_id, key);
+    let entry = if let Some(entry) = image_entries.get(&local_key) {
+        *entry
+    } else {
+        let entry = atlas.ensure_image(pixels, img_w, img_h, img_hash, source_id);
+        image_entries.insert(local_key, entry);
+        entry
     };
 
-    let slot_size = atlas.slots[entry.atlas_index as usize].size as f32;
-    let ax = entry.atlas_rect.min.x as f32;
-    let ay = entry.atlas_rect.min.y as f32;
-
-    // Map ImageCell UV (image-space) → atlas UV.
-    let u_min = (ax + img.top_left.x * img_w as f32) / slot_size;
-    let v_min = (ay + img.top_left.y * img_h as f32) / slot_size;
-    let u_max = (ax + img.bottom_right.x * img_w as f32) / slot_size;
-    let v_max = (ay + img.bottom_right.y * img_h as f32) / slot_size;
+    // Image textures use image-space UVs directly.
+    let u_min = img.top_left.x;
+    let v_min = img.top_left.y;
+    let u_max = img.bottom_right.x;
+    let v_max = img.bottom_right.y;
 
     // Cell position in pixels (dock-relative).
     let clip_x = x_off + col as f32 * cw;
@@ -71,7 +86,7 @@ pub(super) fn emit_image_quad(
         flags: glyph_type::IMAGE,
     };
 
-    let ai = entry.atlas_index as usize;
+    let ai = entry.texture_index;
     if ai >= bufs.len() {
         bufs.resize_with(ai + 1, Vec::new);
     }

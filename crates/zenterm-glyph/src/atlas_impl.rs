@@ -20,9 +20,9 @@ use zenterm_core::{Error, HintingMode, RenderMode, Result, SubpixelLayout};
 
 use crate::builtin;
 use crate::{
-    AtlasSlot, GlyphAtlas, GlyphCacheKey, GlyphContentType, GlyphEntry, GlyphStyle,
-    MAX_CACHED_RUN_BYTES, MAX_NO_EFFECT_CACHE_ENTRIES, MAX_RUN_CACHE_ENTRIES, RunCacheKey,
-    ShapedGlyph,
+    AtlasDirtyRegion, AtlasSlot, GlyphAtlas, GlyphCacheKey, GlyphContentType, GlyphEntry,
+    GlyphStyle, MAX_CACHED_RUN_BYTES, MAX_NO_EFFECT_CACHE_ENTRIES, MAX_RUN_CACHE_ENTRIES,
+    RunCacheKey, ShapedGlyph,
 };
 
 /// Convert an LCD coverage image to a grayscale mask before any geometric
@@ -42,6 +42,27 @@ fn desubpixelize(img: &mut swash::scale::image::Image) {
 }
 
 impl GlyphAtlas {
+    /// Mark a rectangular atlas region for a partial GPU upload.
+    pub(crate) fn mark_dirty_region(&mut self, atlas_index: usize, rectangle: etagere::Rectangle) {
+        let width = rectangle.max.x.saturating_sub(rectangle.min.x) as u32;
+        let height = rectangle.max.y.saturating_sub(rectangle.min.y) as u32;
+        if width == 0 || height == 0 {
+            return;
+        }
+        self.dirty_regions.push(AtlasDirtyRegion {
+            atlas_index: atlas_index as u32,
+            x: rectangle.min.x as u32,
+            y: rectangle.min.y as u32,
+            width,
+            height,
+        });
+    }
+
+    /// Take all pending pixel regions for the next GPU synchronization.
+    pub fn take_dirty_regions(&mut self) -> Vec<AtlasDirtyRegion> {
+        std::mem::take(&mut self.dirty_regions)
+    }
+
     /// Create a new glyph atlas with the given font size (in pixels),
     /// font family, and LCD subpixel layout.
     ///
@@ -93,6 +114,7 @@ impl GlyphAtlas {
             run_cache: HashMap::new(),
             no_effect_cache: HashSet::new(),
             image_cache: HashMap::new(),
+            dirty_regions: Vec::new(),
             swash_ctx: ScaleContext::new(),
             cell_width: 0.0,
             cell_height: 0.0,
@@ -644,6 +666,8 @@ impl GlyphAtlas {
             }
         }
 
+        self.mark_dirty_region(slot_idx, rectangle);
+
         let content_type = match img.content {
             SwashContent::SubpixelMask => GlyphContentType::Subpixel,
             SwashContent::Mask => GlyphContentType::Mask,
@@ -878,6 +902,8 @@ impl GlyphAtlas {
             }
         }
 
+        self.mark_dirty_region(slot_idx, rectangle);
+
         // Derive content type from the swash image.
         let content_type = match img.content {
             SwashContent::SubpixelMask => GlyphContentType::Subpixel,
@@ -984,6 +1010,8 @@ impl GlyphAtlas {
                 }
             }
         }
+
+        self.mark_dirty_region(slot_idx, rectangle);
 
         self.glyph_cache.insert(
             key,

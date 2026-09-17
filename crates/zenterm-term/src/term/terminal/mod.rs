@@ -173,6 +173,11 @@ pub struct Terminal {
 }
 
 impl Terminal {
+    /// Drain image hashes evicted by the CPU image-cache budget.
+    pub fn take_evicted_image_hashes(&mut self) -> Vec<[u8; 32]> {
+        self.image_cache.take_evicted_hashes()
+    }
+
     /// Create a new terminal with the given dimensions.
     pub fn new(size: TermSize, scheme: ColorScheme, cursor: CursorPrefs) -> Self {
         let config = TermConfig {

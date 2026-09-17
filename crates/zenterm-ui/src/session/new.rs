@@ -162,6 +162,7 @@ impl TerminalSession {
             cached_deco: Vec::new(),
             cached_image_below: Vec::new(),
             cached_image_above: Vec::new(),
+            image_sources: std::collections::HashSet::new(),
             pending_title: None,
             preedit_text: None,
             url_open: true,

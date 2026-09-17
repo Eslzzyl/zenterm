@@ -18,8 +18,23 @@ impl GlyphAtlas {
         height: u32,
         hash: [u8; 32],
     ) -> Result<GlyphEntry> {
+        self.ensure_image_with_status(data, width, height, hash)
+            .map(|(entry, _)| entry)
+    }
+
+    /// Ensure an image is present and report whether atlas pixels were added.
+    ///
+    /// The status lets the renderer synchronize image uploads even when no
+    /// new glyph was rasterised in the same frame.
+    pub fn ensure_image_with_status(
+        &mut self,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        hash: [u8; 32],
+    ) -> Result<(GlyphEntry, bool)> {
         if let Some((entry, _)) = self.image_cache.get(&hash) {
-            return Ok(entry.clone());
+            return Ok((entry.clone(), false));
         }
 
         let iw = width as i32;
@@ -51,6 +66,7 @@ impl GlyphAtlas {
                 }
             }
         }
+        self.mark_dirty_region(slot_idx, rect);
 
         let entry = GlyphEntry {
             atlas_index: slot_idx as u32,
@@ -63,7 +79,7 @@ impl GlyphAtlas {
         };
         self.image_cache
             .insert(hash, (entry.clone(), allocation.id));
-        Ok(entry)
+        Ok((entry, true))
     }
 
     /// Remove an image from the atlas, freeing its texture slot.

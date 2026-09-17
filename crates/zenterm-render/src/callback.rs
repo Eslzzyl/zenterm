@@ -22,7 +22,9 @@ use std::sync::{Arc, Mutex};
 use egui::PaintCallbackInfo;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 
-use crate::atlas::{create_atlas_sampler, create_atlas_texture, update_atlas_texture};
+use crate::atlas::{
+    create_atlas_sampler, create_atlas_texture, create_image_texture, update_atlas_texture_region,
+};
 use crate::{AtlasRange, CellInstance, TerminalRenderPass};
 
 /// Thread-safe shared state between `ZentermApp` (updates each frame) and
@@ -40,6 +42,8 @@ pub struct SharedRenderState {
     /// When `atlas_dirty` is true, this holds the per-slot data so
     /// `prepare()` can upload or recreate textures.
     pub atlas_update: Mutex<Option<AtlasUpdate>>,
+    /// Pending terminal-image texture creations or releases.
+    pub image_update: Mutex<Option<ImageTextureUpdate>>,
     /// Pending background image upload.  Written by the UI thread when the
     /// user sets/changes the background image; consumed by `prepare()`.
     pub background_data: Mutex<Option<BackgroundImageData>>,
@@ -56,6 +60,24 @@ pub struct BackgroundImageData {
     pub width: u32,
     /// Image height in pixels.
     pub height: u32,
+}
+
+/// Updates for exact-size terminal image textures.
+pub struct ImageTextureUpdate {
+    /// New image textures keyed by their stable texture index.
+    pub uploads: Vec<ImageTextureData>,
+    /// Image texture indices that no longer have a live CPU image reference.
+    pub releases: Vec<usize>,
+}
+
+/// One exact-size RGBA image to upload to the GPU.
+pub struct ImageTextureData {
+    pub index: usize,
+    pub width: u32,
+    pub height: u32,
+    /// Shared with the terminal's CPU image cache to avoid another full
+    /// image-sized staging allocation while the upload is pending.
+    pub data: Arc<Vec<u8>>,
 }
 
 /// Per-frame instance data shared between the UI thread and GPU prepare.
@@ -79,17 +101,34 @@ pub struct FrameData {
 /// Pixel data for one slot in the texture atlas.
 #[derive(Debug, Clone)]
 pub struct AtlasSlotData {
+    /// Stable atlas slot index represented by this full texture payload.
+    pub index: u32,
     /// Width and height of this slot (square, power of two).
     pub size: u32,
     /// RGBA pixel data of the full slot texture.
     pub data: Vec<u8>,
 }
 
+/// Pixel payload for a changed rectangular atlas region.
+#[derive(Debug)]
+pub struct AtlasRegionData {
+    pub atlas_index: u32,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    /// Rows are padded to wgpu's copy-row alignment.
+    pub data: Vec<u8>,
+}
+
 /// Payload for a glyph atlas texture update.
 pub struct AtlasUpdate {
-    /// Per-slot texture data, one entry per slot.  Slots are appended
-    /// but never removed — indices are stable across updates.
+    /// Full payloads for newly created or rebuilt slots.
     pub slots: Vec<AtlasSlotData>,
+    /// Partial payloads for already-existing slots.
+    pub regions: Vec<AtlasRegionData>,
+    /// Total number of slots after this update.
+    pub total_slots: u32,
 }
 
 impl SharedRenderState {
@@ -104,6 +143,7 @@ impl SharedRenderState {
             instance_gen: AtomicU64::new(1),
             atlas_dirty: AtomicBool::new(false),
             atlas_update: Mutex::new(None),
+            image_update: Mutex::new(None),
             background_data: Mutex::new(None),
             background_gen: AtomicU64::new(0),
         }
@@ -126,6 +166,10 @@ pub struct TerminalWgpuCallback {
     atlas_textures: Mutex<Vec<wgpu::Texture>>,
     /// Views for the corresponding textures.
     atlas_views: Mutex<Vec<wgpu::TextureView>>,
+    /// Exact-size terminal image textures.
+    image_textures: Mutex<Vec<wgpu::Texture>>,
+    /// Views for terminal image textures.
+    image_views: Mutex<Vec<wgpu::TextureView>>,
     atlas_sampler: wgpu::Sampler,
 
     /// Number of atlas slots known to the GPU side.  When the UI thread
@@ -168,6 +212,8 @@ impl TerminalWgpuCallback {
             render_pass: Mutex::new(None),
             atlas_textures: Mutex::new(Vec::new()),
             atlas_views: Mutex::new(Vec::new()),
+            image_textures: Mutex::new(Vec::new()),
+            image_views: Mutex::new(Vec::new()),
             atlas_sampler,
             current_slot_count: AtomicU32::new(0),
             shared,
@@ -190,30 +236,30 @@ impl CallbackTrait for TerminalWgpuCallback {
             let update = self.shared.atlas_update.lock().unwrap().take();
             if let Some(update) = update {
                 log::debug!(
-                    "callback prepare: atlas update {} slots",
+                    "callback prepare: atlas update total_slots={}, full_slots={}, regions={}",
+                    update.total_slots,
                     update.slots.len(),
+                    update.regions.len(),
                 );
 
-                let atlas_changed =
-                    update.slots.len() as u32 != self.current_slot_count.load(Ordering::Relaxed);
+                let full_snapshot = update.slots.len() == update.total_slots as usize
+                    && update.slots.first().is_some_and(|slot| slot.index == 0);
+                let atlas_changed = full_snapshot
+                    || update.total_slots != self.current_slot_count.load(Ordering::Relaxed);
 
                 // Ensure we have GPU textures + views for every slot.
                 {
                     let mut textures = self.atlas_textures.lock().unwrap();
                     let mut views = self.atlas_views.lock().unwrap();
 
-                    for (i, slot_data) in update.slots.iter().enumerate() {
-                        if i < textures.len() {
-                            // Update existing texture in-place.
-                            if let Some(tex) = textures.get(i) {
-                                update_atlas_texture(
-                                    &self.queue,
-                                    tex,
-                                    slot_data.size,
-                                    &slot_data.data,
-                                );
-                            }
-                        } else {
+                    if full_snapshot {
+                        textures.clear();
+                        views.clear();
+                    }
+
+                    for slot_data in &update.slots {
+                        let i = slot_data.index as usize;
+                        if i == textures.len() {
                             // Create a new texture + view for this slot.
                             let (tex, view) = create_atlas_texture(
                                 &self.device,
@@ -226,14 +272,31 @@ impl CallbackTrait for TerminalWgpuCallback {
                         }
                     }
 
-                    // Truncate in case the CPU side somehow shrank (shouldn't happen).
-                    textures.truncate(update.slots.len());
-                    views.truncate(update.slots.len());
+                    for region in &update.regions {
+                        if let Some(tex) = textures.get(region.atlas_index as usize) {
+                            update_atlas_texture_region(
+                                &self.queue,
+                                tex,
+                                region.x,
+                                region.y,
+                                region.width,
+                                region.height,
+                                &region.data,
+                            );
+                        }
+                    }
+
+                    // A full snapshot is the only operation that can shrink
+                    // the CPU slot list (e.g. DPI reinitialisation).
+                    if full_snapshot {
+                        textures.truncate(update.total_slots as usize);
+                        views.truncate(update.total_slots as usize);
+                    }
                 }
 
                 if atlas_changed {
                     self.current_slot_count
-                        .store(update.slots.len() as u32, Ordering::Relaxed);
+                        .store(update.total_slots, Ordering::Relaxed);
 
                     // Recreate bind groups in the render pass.
                     let views = self.atlas_views.lock().unwrap();
@@ -249,11 +312,15 @@ impl CallbackTrait for TerminalWgpuCallback {
                             }
                             None => {
                                 // First frame — create the render pass.
+                                let image_views = self.image_views.lock().unwrap();
+                                let image_view_refs: Vec<&wgpu::TextureView> =
+                                    image_views.iter().collect();
                                 *rp_guard = Some(
                                     TerminalRenderPass::new(
                                         &self.device,
                                         self.target_format,
                                         &view_refs,
+                                        &image_view_refs,
                                         &self.atlas_sampler,
                                     )
                                     .expect("failed to create TerminalRenderPass"),
@@ -269,7 +336,37 @@ impl CallbackTrait for TerminalWgpuCallback {
             log::trace!("callback prepare: atlas not dirty");
         }
 
-        // ── 1b. Update background texture if dirty ─────────────────────
+        // ── 1b. Update exact-size terminal image textures ───────────────
+        if let Some(update) = self.shared.image_update.lock().unwrap().take() {
+            let mut textures = self.image_textures.lock().unwrap();
+            let mut views = self.image_views.lock().unwrap();
+
+            for index in update.releases {
+                let (texture, view) =
+                    create_image_texture(&self.device, &self.queue, 1, 1, &[0; 4]);
+                ensure_image_texture_slot(&mut textures, &mut views, index, texture, view);
+            }
+
+            for image in update.uploads {
+                let (texture, view) = create_image_texture(
+                    &self.device,
+                    &self.queue,
+                    image.width,
+                    image.height,
+                    &image.data,
+                );
+                ensure_image_texture_slot(&mut textures, &mut views, image.index, texture, view);
+            }
+
+            if let Ok(mut rp_guard) = self.render_pass.lock()
+                && let Some(ref mut rp) = *rp_guard
+            {
+                let view_refs: Vec<&wgpu::TextureView> = views.iter().collect();
+                rp.update_image_views(&self.device, &view_refs);
+            }
+        }
+
+        // ── 1c. Update background texture if dirty ─────────────────────
         {
             let _t0 = std::time::Instant::now();
             let update = self.shared.background_data.lock().unwrap().take();
@@ -454,5 +551,27 @@ impl CallbackTrait for CallbackHandle {
     ) {
         self.inner
             .paint_with_mode(info, render_pass, callback_resources, self.mode)
+    }
+}
+
+fn ensure_image_texture_slot(
+    textures: &mut Vec<wgpu::Texture>,
+    views: &mut Vec<wgpu::TextureView>,
+    index: usize,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+) {
+    if index == textures.len() {
+        textures.push(texture);
+        views.push(view);
+    } else if index < textures.len() {
+        textures[index] = texture;
+        views[index] = view;
+    } else {
+        log::warn!(
+            "image texture index {} has a gap after {} slots",
+            index,
+            textures.len()
+        );
     }
 }

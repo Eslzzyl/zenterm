@@ -19,7 +19,7 @@ use zenterm_glyph::{GlyphContentType, GlyphStyle};
 use zenterm_render::glyph_type;
 use zenterm_render::{AtlasRange, CellInstance};
 
-use self::image::emit_image_quad;
+use self::image::{ImageEntryCache, emit_image_quad, image_source_id};
 use self::pass1::emit_background_quad;
 use self::pass3::emit_deco_for_cell;
 use super::shaping;
@@ -94,6 +94,7 @@ impl TerminalSession {
                     fd.instances.extend(instances);
                     fd.atlas_ranges.push(AtlasRange {
                         atlas_index: slot_idx,
+                        image: true,
                         start,
                         count: instances.len() as u32,
                     });
@@ -107,6 +108,7 @@ impl TerminalSession {
                     fd.instances.extend(instances);
                     fd.atlas_ranges.push(AtlasRange {
                         atlas_index: slot_idx,
+                        image: false,
                         start,
                         count: instances.len() as u32,
                     });
@@ -121,6 +123,7 @@ impl TerminalSession {
                     fd.instances.extend(instances);
                     fd.atlas_ranges.push(AtlasRange {
                         atlas_index: slot_idx,
+                        image: true,
                         start,
                         count: instances.len() as u32,
                     });
@@ -133,12 +136,18 @@ impl TerminalSession {
         let cw = self.cell_width;
         let ch = self.cell_height;
 
+        let evicted_hashes = self.terminal.take_evicted_image_hashes();
+        self.terminal
+            .pending_image_deallocations
+            .extend(evicted_hashes);
+
         // Read cursor info BEFORE visible_cells() since both borrow
         // self.terminal (one mut, one immut).
         // Drain pending image atlas deallocations (images removed by kitty
         // delete commands).
         for hash in self.terminal.pending_image_deallocations.drain(..) {
-            self.atlas.remove_image(&hash);
+            self.atlas
+                .release_image_hash_for_sources(&hash, &mut self.image_sources);
         }
 
         let cursor = self.terminal.cursor();
@@ -215,22 +224,10 @@ impl TerminalSession {
             self.cached_bg
                 .reserve(instances_cap - self.cached_bg.capacity());
         }
-        if self.cached_deco.capacity() < instances_cap {
-            self.cached_deco
-                .reserve(instances_cap - self.cached_deco.capacity());
-        }
-        if self.cached_image_below.capacity() < instances_cap {
-            self.cached_image_below
-                .reserve(instances_cap - self.cached_image_below.capacity());
-        }
-        if self.cached_image_above.capacity() < instances_cap {
-            self.cached_image_above
-                .reserve(instances_cap - self.cached_image_above.capacity());
-        }
-        if self.cached_deco.capacity() < instances_cap {
-            self.cached_deco
-                .reserve(instances_cap - self.cached_deco.capacity());
-        }
+        // Decorations and image quads are sparse for ordinary terminal
+        // output.  Let these buffers grow only when such instances exist;
+        // reserving a full screen for each empty buffer wastes memory in
+        // every session without changing the rendered result.
         // Shrink cached buffers when the grid shrinks significantly
         // (capacity > 2x needed) to avoid retaining large allocations
         // after window resize.
@@ -248,6 +245,7 @@ impl TerminalSession {
             self.cached_image_above.shrink_to(instances_cap);
         }
         let mut has_new_glyphs = false;
+        let mut image_entries = ImageEntryCache::new();
         let mut img_below_count: usize = 0;
         let mut img_above_count: usize = 0;
 
@@ -555,9 +553,11 @@ impl TerminalSession {
                 if let Some(ref img) = cell.image
                     && img.z_index < 0
                 {
+                    self.image_sources.insert(image_source_id(img));
                     emit_image_quad(
                         &mut self.cached_image_below,
-                        &mut atlas,
+                        &self.atlas,
+                        &mut image_entries,
                         img,
                         col,
                         row,
@@ -740,9 +740,11 @@ impl TerminalSession {
                 if let Some(ref img) = cell.image
                     && img.z_index >= 0
                 {
+                    self.image_sources.insert(image_source_id(img));
                     emit_image_quad(
                         &mut self.cached_image_above,
-                        &mut atlas,
+                        &self.atlas,
+                        &mut image_entries,
                         img,
                         col,
                         row,
@@ -787,6 +789,7 @@ impl TerminalSession {
             fd.instances.extend(instances);
             fd.atlas_ranges.push(AtlasRange {
                 atlas_index: slot_idx,
+                image: true,
                 start,
                 count: instances.len() as u32,
             });
@@ -800,6 +803,7 @@ impl TerminalSession {
             fd.instances.extend(instances);
             fd.atlas_ranges.push(AtlasRange {
                 atlas_index: slot_idx,
+                image: false,
                 start,
                 count: instances.len() as u32,
             });
@@ -814,6 +818,7 @@ impl TerminalSession {
             fd.instances.extend(instances);
             fd.atlas_ranges.push(AtlasRange {
                 atlas_index: slot_idx,
+                image: true,
                 start,
                 count: instances.len() as u32,
             });

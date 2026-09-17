@@ -148,6 +148,17 @@ pub(crate) struct RunCacheKey {
     pub style: GlyphStyle,
 }
 
+/// A rectangular region whose CPU atlas pixels changed since the last GPU
+/// synchronization.
+#[derive(Debug, Clone, Copy)]
+pub struct AtlasDirtyRegion {
+    pub atlas_index: u32,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Cache key for a single character glyph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct GlyphCacheKey {
@@ -237,6 +248,8 @@ pub struct GlyphAtlas {
     /// Value is `(GlyphEntry, AllocationId)` so individual images can be
     /// removed from the atlas without invalidating a whole slot.
     image_cache: HashMap<[u8; 32], (GlyphEntry, etagere::AllocId)>,
+    /// Pixel regions changed since the last renderer synchronization.
+    pub(crate) dirty_regions: Vec<AtlasDirtyRegion>,
 
     /// Swash scale context (replaces cosmic-text's `SwashCache`).
     swash_ctx: ScaleContext,
