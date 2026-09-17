@@ -29,6 +29,12 @@ use swash::scale::ScaleContext;
 
 use zenterm_core::{HintingMode, RenderMode, SubpixelLayout};
 
+/// Bound the ligature caches so arbitrary terminal output cannot retain an
+/// unbounded number of owned run strings and shaped-glyph vectors.
+pub(crate) const MAX_RUN_CACHE_ENTRIES: usize = 1024;
+pub(crate) const MAX_NO_EFFECT_CACHE_ENTRIES: usize = 4096;
+pub(crate) const MAX_CACHED_RUN_BYTES: usize = 4096;
+
 pub mod allocate;
 pub mod atlas_impl;
 pub mod builtin;

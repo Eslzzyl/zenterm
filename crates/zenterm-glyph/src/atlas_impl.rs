@@ -20,7 +20,8 @@ use zenterm_core::{Error, HintingMode, RenderMode, Result, SubpixelLayout};
 
 use crate::builtin;
 use crate::{
-    AtlasSlot, GlyphAtlas, GlyphCacheKey, GlyphContentType, GlyphEntry, GlyphStyle, RunCacheKey,
+    AtlasSlot, GlyphAtlas, GlyphCacheKey, GlyphContentType, GlyphEntry, GlyphStyle,
+    MAX_CACHED_RUN_BYTES, MAX_NO_EFFECT_CACHE_ENTRIES, MAX_RUN_CACHE_ENTRIES, RunCacheKey,
     ShapedGlyph,
 };
 
@@ -437,13 +438,41 @@ impl GlyphAtlas {
 
         if had_effect {
             // Only cache runs that actually produced a ligature/substitution.
-            self.run_cache.insert(key, shaped.clone());
+            self.cache_run(key, shaped.clone());
         } else {
             // Cache the "no effect" result so future calls skip shaping.
-            self.no_effect_cache.insert(key);
+            self.cache_no_effect(key);
         }
 
         Ok((shaped, true, had_effect))
+    }
+
+    /// Cache a shaped run unless it is too large or the bounded cache is full.
+    /// Eviction only affects the shaping fast path; a later cache miss
+    /// produces the same glyph output by running the normal shaping path.
+    fn cache_run(&mut self, key: RunCacheKey, shaped: Vec<ShapedGlyph>) {
+        if key.text.len() > MAX_CACHED_RUN_BYTES {
+            return;
+        }
+        if self.run_cache.len() >= MAX_RUN_CACHE_ENTRIES
+            && let Some(old_key) = self.run_cache.keys().next().cloned()
+        {
+            self.run_cache.remove(&old_key);
+        }
+        self.run_cache.insert(key, shaped);
+    }
+
+    /// Cache a negative shaping result with the same bounded policy.
+    fn cache_no_effect(&mut self, key: RunCacheKey) {
+        if key.text.len() > MAX_CACHED_RUN_BYTES {
+            return;
+        }
+        if self.no_effect_cache.len() >= MAX_NO_EFFECT_CACHE_ENTRIES
+            && let Some(old_key) = self.no_effect_cache.iter().next().cloned()
+        {
+            self.no_effect_cache.remove(&old_key);
+        }
+        self.no_effect_cache.insert(key);
     }
 
     /// Rasterize a glyph at a cell-safe size when the first pass shows that a
