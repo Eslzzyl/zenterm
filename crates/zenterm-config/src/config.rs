@@ -206,7 +206,7 @@ impl Config {
             terminal: self.terminal != other.terminal,
             ui: self.ui != other.ui,
             background: self.background != other.background,
-            needs_restart: self.window.needs_restart() || other.window.needs_restart(),
+            needs_restart: self.window.needs_restart_from(&other.window),
         }
     }
 
@@ -233,6 +233,19 @@ mod tests {
         let mut changed = Config::default();
         changed.terminal.scrollback_lines = 500;
         assert!(Config::default().diff_to(&changed).terminal);
+    }
+
+    #[test]
+    fn restart_hint_only_reports_changed_restart_fields() {
+        let mut previous = Config::default();
+        previous.window.title = "Custom".into();
+        let mut current = previous.clone();
+        current.terminal.scrollback_lines += 1;
+
+        assert!(!previous.diff_to(&current).needs_restart);
+
+        current.window.decorations = !previous.window.decorations;
+        assert!(previous.diff_to(&current).needs_restart);
     }
 }
 

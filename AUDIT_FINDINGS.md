@@ -8,12 +8,6 @@
 
 ## 其他功能与可靠性问题
 
-### ZT-12：重启提示按非默认值判断，可能长期误报（代码已确认）
-
-`Config::diff_to` 只要变更前后任一窗口配置的标题或装饰不同于默认值，就设置 `needs_restart`，即使用户没有修改这些字段。设置页据此显示重启提示。
-
-依据：[判定](crates/zenterm-config/src/config.rs#L210-L221)、[窗口条件](crates/zenterm-config/src/window.rs#L65-L77)、[设置页提示](crates/zenterm-ui/src/settings.rs#L313-L326)。建议按本次变更的字段判断。
-
 ### ZT-16：字体热更新没有同步终端的物理 cell 尺寸（代码已确认）
 
 修改字体后，UI 会更新 `session.cell_width/cell_height`，但没有同步 `Terminal::cell_pixel_width/height`。如果行列数没有变化，后续 resize 会提前返回；即使发生 resize，`Terminal::resize` 也只更新总像素尺寸，不更新 cell 像素尺寸。Kitty/Sixel 图像布局及终端尺寸查询因此可能继续使用旧字体指标。

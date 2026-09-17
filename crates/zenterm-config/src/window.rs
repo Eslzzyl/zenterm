@@ -64,15 +64,13 @@ impl Default for WindowConfig {
 }
 
 impl WindowConfig {
-    /// Returns `true` if a change to this section requires restarting
-    /// the application to fully take effect.
+    /// Returns `true` if the restart-sensitive fields differ from `other`.
     ///
     /// Window title and decorations are baked into the
     /// `eframe::ViewportBuilder` passed at startup and cannot be
     /// changed at runtime.
-    pub fn needs_restart(&self) -> bool {
-        let defaults = Self::default();
-        self.decorations != defaults.decorations || self.title != defaults.title
+    pub fn needs_restart_from(&self, other: &Self) -> bool {
+        self.decorations != other.decorations || self.title != other.title
     }
 }
 
