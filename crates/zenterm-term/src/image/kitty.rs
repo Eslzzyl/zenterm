@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
+use std::path::{Component, Path};
 use std::sync::Arc;
 
 use base64::Engine as _;
@@ -87,19 +88,37 @@ impl KittyImageData {
                 data_size,
             } => {
                 let data = read_file_data(&path, data_offset, data_size)?;
-                // Only remove if the path is in a known temp directory.
-                if path.starts_with("/tmp/")
-                    || path.starts_with("/var/tmp/")
-                    || path.starts_with("/dev/shm/")
-                    || std::env::var("TMPDIR").is_ok_and(|t| path.starts_with(&t))
-                {
+                // Kitty marks its protocol-owned temporary namespace with a
+                // `tty-graphics-protocol` path component.  Require both that
+                // marker and a canonical path below the platform temp
+                // directory; a generic temp-directory prefix is not enough
+                // to establish ownership.
+                if is_owned_kitty_temp_path(Path::new(&path)) {
                     let _ = std::fs::remove_file(&path);
+                } else {
+                    log::debug!("kitty: retaining unowned temporary path after read: {path}");
                 }
                 Ok(data)
             }
             Self::SharedMem { .. } => Err("shared memory not supported in this build".into()),
         }
     }
+}
+
+const KITTY_TEMP_NAMESPACE: &str = "tty-graphics-protocol";
+
+fn is_owned_kitty_temp_path(path: &Path) -> bool {
+    let Ok(canonical_path) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    let Ok(canonical_temp_dir) = std::fs::canonicalize(std::env::temp_dir()) else {
+        return false;
+    };
+
+    canonical_path.starts_with(&canonical_temp_dir)
+        && canonical_path.components().any(|component| {
+            matches!(component, Component::Normal(name) if name == KITTY_TEMP_NAMESPACE)
+        })
 }
 
 fn read_file_data(path: &str, offset: Option<u32>, size: Option<u32>) -> Result<Vec<u8>, String> {
@@ -1302,5 +1321,51 @@ mod tests {
     fn expands_rgb_in_place_without_changing_pixel_order() {
         let rgba = expand_rgb_to_rgba(vec![1, 2, 3, 4, 5, 6], 2, 1).unwrap();
         assert_eq!(rgba, vec![1, 2, 3, 255, 4, 5, 6, 255]);
+    }
+
+    fn temp_test_path(namespace: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "zenterm-kitty-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let dir = root.join(namespace);
+        std::fs::create_dir_all(&dir).expect("create kitty test directory");
+        dir.join("payload.bin")
+    }
+
+    #[test]
+    fn temporary_file_is_removed_only_from_kitty_namespace() {
+        let owned = temp_test_path(KITTY_TEMP_NAMESPACE);
+        std::fs::write(&owned, b"owned").expect("write owned temporary file");
+        let owned_path = owned.to_string_lossy().into_owned();
+        let data = KittyImageData::TemporaryFile {
+            path: owned_path,
+            data_size: None,
+            data_offset: None,
+        }
+        .load_data()
+        .expect("read owned temporary file");
+        assert_eq!(data, b"owned");
+        assert!(!owned.exists());
+
+        let unowned = temp_test_path("other-temp-namespace");
+        std::fs::write(&unowned, b"keep").expect("write unowned temporary file");
+        let unowned_path = unowned.to_string_lossy().into_owned();
+        let data = KittyImageData::TemporaryFile {
+            path: unowned_path,
+            data_size: None,
+            data_offset: None,
+        }
+        .load_data()
+        .expect("read unowned temporary file");
+        assert_eq!(data, b"keep");
+        assert!(unowned.exists());
+
+        let _ = std::fs::remove_dir_all(owned.parent().and_then(Path::parent).unwrap());
+        let _ = std::fs::remove_dir_all(unowned.parent().and_then(Path::parent).unwrap());
     }
 }
