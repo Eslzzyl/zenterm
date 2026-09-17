@@ -16,6 +16,14 @@ use image::{ColorType, GenericImageView, ImageDecoder};
 use zenterm_core::image::{ImageData, ImageDataType, hash_bytes};
 
 use crate::image::ImageCache;
+use crate::term::MAX_ESCAPE_SEQUENCE_BYTES;
+
+/// Maximum decoded pixel payload accepted by the image pipeline.
+pub const MAX_IMAGE_BYTES: usize = 100 * 1024 * 1024;
+/// Maximum pixel count accepted before allocating a decoded image.
+pub const MAX_IMAGE_PIXELS: u64 = 25_000_000;
+/// Maximum raw bytes accumulated across one multi-chunk Kitty transfer.
+const MAX_ACCUMULATED_IMAGE_BYTES: usize = MAX_IMAGE_BYTES;
 
 // ── helpers ────────────────────────────────────────────────────────────
 
@@ -75,19 +83,28 @@ impl KittyImageData {
 
     pub fn load_data(self) -> Result<Vec<u8>, String> {
         match self {
-            Self::Direct(data) => decode_base64(data.as_bytes()),
-            Self::DirectBin(bin) => Ok(bin),
+            Self::Direct(data) => decode_base64_limited(data.as_bytes(), MAX_IMAGE_BYTES),
+            Self::DirectBin(bin) => {
+                if bin.len() > MAX_IMAGE_BYTES {
+                    Err(format!(
+                        "image payload exceeds {} byte limit",
+                        MAX_IMAGE_BYTES
+                    ))
+                } else {
+                    Ok(bin)
+                }
+            }
             Self::File {
                 path,
                 data_offset,
                 data_size,
-            } => read_file_data(&path, data_offset, data_size),
+            } => read_file_data(&path, data_offset, data_size, MAX_IMAGE_BYTES),
             Self::TemporaryFile {
                 path,
                 data_offset,
                 data_size,
             } => {
-                let data = read_file_data(&path, data_offset, data_size)?;
+                let data = read_file_data(&path, data_offset, data_size, MAX_IMAGE_BYTES)?;
                 // Kitty marks its protocol-owned temporary namespace with a
                 // `tty-graphics-protocol` path component.  Require both that
                 // marker and a canonical path below the platform temp
@@ -121,7 +138,12 @@ fn is_owned_kitty_temp_path(path: &Path) -> bool {
         })
 }
 
-fn read_file_data(path: &str, offset: Option<u32>, size: Option<u32>) -> Result<Vec<u8>, String> {
+fn read_file_data(
+    path: &str,
+    offset: Option<u32>,
+    size: Option<u32>,
+    max_size: usize,
+) -> Result<Vec<u8>, String> {
     use std::io::{Read, Seek};
     let mut f = std::fs::File::open(path).map_err(|e| format!("open {path}: {e}"))?;
     if let Some(o) = offset {
@@ -129,15 +151,27 @@ fn read_file_data(path: &str, offset: Option<u32>, size: Option<u32>) -> Result<
             .map_err(|e| format!("seek {path}: {e}"))?;
     }
     if let Some(len) = size {
-        let mut buf = vec![0u8; len as usize];
+        let len = usize::try_from(len).map_err(|_| "file size is too large".to_string())?;
+        if len > max_size {
+            return Err(format!("file payload exceeds {max_size} byte limit"));
+        }
+        let mut buf = vec![0u8; len];
         f.read_exact(&mut buf)
             .map_err(|e| format!("read {path}: {e}"))?;
         Ok(buf)
     } else {
-        let mut buf = vec![];
-        f.read_to_end(&mut buf)
+        let max_read = max_size
+            .checked_add(1)
+            .ok_or_else(|| "file size limit overflow".to_string())?;
+        let mut buf = Vec::new();
+        f.take(max_read as u64)
+            .read_to_end(&mut buf)
             .map_err(|e| format!("read {path}: {e}"))?;
-        Ok(buf)
+        if buf.len() > max_size {
+            Err(format!("file payload exceeds {max_size} byte limit"))
+        } else {
+            Ok(buf)
+        }
     }
 }
 
@@ -145,6 +179,32 @@ fn decode_base64(data: &[u8]) -> Result<Vec<u8>, String> {
     base64::engine::general_purpose::STANDARD
         .decode(data)
         .map_err(|e| format!("base64 decode: {e}"))
+}
+
+fn decode_base64_limited(data: &[u8], max_output: usize) -> Result<Vec<u8>, String> {
+    let blocks = data
+        .len()
+        .checked_add(3)
+        .and_then(|len| len.checked_div(4))
+        .ok_or_else(|| "base64 payload size overflow".to_string())?;
+    let padding = data
+        .iter()
+        .rev()
+        .take_while(|&&byte| byte == b'=')
+        .count()
+        .min(2);
+    let estimated = blocks
+        .checked_mul(3)
+        .and_then(|bytes| bytes.checked_sub(padding))
+        .ok_or_else(|| "base64 payload size overflow".to_string())?;
+    if estimated > max_output {
+        return Err(format!("decoded payload exceeds {max_output} byte limit"));
+    }
+    let decoded = decode_base64(data)?;
+    if decoded.len() > max_output {
+        return Err(format!("decoded payload exceeds {max_output} byte limit"));
+    }
+    Ok(decoded)
 }
 
 #[allow(dead_code)]
@@ -426,7 +486,7 @@ pub enum KittyImage {
 impl KittyImage {
     /// Parse an APC payload (bytes after `\x1b_G` and before `\x1b\\`).
     pub fn parse_apc(data: &[u8]) -> Option<Self> {
-        if data.is_empty() || data[0] != b'G' {
+        if data.is_empty() || data[0] != b'G' || data.len() > MAX_ESCAPE_SEQUENCE_BYTES {
             return None;
         }
         let mut iter = data[1..].splitn(2, |&d| d == b';');
@@ -704,11 +764,7 @@ pub fn decode_image_data(
         transmit.format,
         transmit.compression,
     );
-    let raw = match transmit.compression {
-        KittyImageCompression::None => raw,
-        KittyImageCompression::Deflate => miniz_oxide::inflate::decompress_to_vec_zlib(&raw)
-            .map_err(|e| format!("deflate decompress: {e:?}"))?,
-    };
+    let raw = decompress_image_payload(raw, transmit.compression)?;
 
     let img = match transmit.format {
         None | Some(KittyImageFormat::Rgba) | Some(KittyImageFormat::Rgb) => {
@@ -716,17 +772,17 @@ pub fn decode_image_data(
                 (Some(w), Some(h)) => (w, h),
                 _ => return Err("missing width/height for kitty rgb/rgba data".into()),
             };
+            let expected_rgba = validate_image_dimensions(w, h)?;
             let rgba = match transmit.format {
                 Some(KittyImageFormat::Rgb) => expand_rgb_to_rgba(raw, w, h)?,
                 _ => raw,
             };
-            let expected = checked_image_len(w, h, 4)?;
-            if rgba.len() != expected {
+            if rgba.len() != expected_rgba {
                 return Err(format!(
                     "rgba data length mismatch: got {} bytes, expected {w}x{h}*4={} (diff={})",
                     rgba.len(),
-                    expected,
-                    rgba.len() as i64 - expected as i64,
+                    expected_rgba,
+                    rgba.len() as i64 - expected_rgba as i64,
                 ));
             }
             ImageDataType::new_rgba8(rgba, w, h)
@@ -736,19 +792,6 @@ pub fn decode_image_data(
             ImageDataType::new_rgba8(rgba, w, h)
         }
     };
-
-    // Safety: reject images whose decoded pixel buffer exceeds 100 MB.
-    const MAX_IMAGE_PIXELS: u32 = 100_000_000;
-    let pixel_count = img.width() as u64 * img.height() as u64;
-    if pixel_count > MAX_IMAGE_PIXELS as u64 {
-        return Err(format!(
-            "image too large: {}x{} ({} pixels) exceeds limit of {}",
-            img.width(),
-            img.height(),
-            pixel_count,
-            MAX_IMAGE_PIXELS,
-        ));
-    }
 
     let data = Arc::new(ImageData::new(img));
     let image_id = image_cache.assign_id(transmit.image_id, transmit.image_number);
@@ -780,21 +823,18 @@ pub fn decode_image_frame(
     };
 
     let raw = transmit.data.load_data()?;
-    let raw = match transmit.compression {
-        KittyImageCompression::None => raw,
-        KittyImageCompression::Deflate => miniz_oxide::inflate::decompress_to_vec_zlib(&raw)
-            .map_err(|e| format!("deflate decompress: {e:?}"))?,
-    };
+    let raw = decompress_image_payload(raw, transmit.compression)?;
 
     let (frame_data, frame_w, frame_h) = match transmit.format {
         None | Some(KittyImageFormat::Rgba) => {
             let w = transmit.width.ok_or("missing width")?;
             let h = transmit.height.ok_or("missing height")?;
-            if raw.len() as u32 != w * h * 4 {
+            let expected = validate_image_dimensions(w, h)?;
+            if raw.len() != expected {
                 return Err(format!(
                     "rgba data length mismatch in frame: got {} bytes, expected {w}x{h}*4={}",
                     raw.len(),
-                    w * h * 4,
+                    expected,
                 ));
             }
             (raw, w, h)
@@ -802,6 +842,7 @@ pub fn decode_image_frame(
         Some(KittyImageFormat::Rgb) => {
             let w = transmit.width.ok_or("missing width")?;
             let h = transmit.height.ok_or("missing height")?;
+            validate_image_dimensions(w, h)?;
             (expand_rgb_to_rgba(raw, w, h)?, w, h)
         }
         Some(KittyImageFormat::Png) => decode_image_to_rgba(&raw)?,
@@ -830,6 +871,7 @@ pub fn decode_image_frame(
             height,
             hash,
         } => {
+            validate_image_dimensions(*width, *height)?;
             let frame_no = frame.frame_number.unwrap_or(1);
             if frame_no == 1 {
                 // Edit in place: blit the new data onto the existing frame.
@@ -847,7 +889,8 @@ pub fn decode_image_frame(
                 let base = if frame.base_frame.unwrap_or(0) == 1 {
                     data.as_ref().clone()
                 } else {
-                    [bg.0[0], bg.0[1], bg.0[2], bg.0[3]].repeat((*width * *height) as usize)
+                    [bg.0[0], bg.0[1], bg.0[2], bg.0[3]]
+                        .repeat(checked_image_len(*width, *height, 1)?)
                 };
                 let mut new_frame = image::RgbaImage::from_raw(*width, *height, base)
                     .ok_or("invalid base frame")?;
@@ -881,6 +924,7 @@ pub fn decode_image_frame(
             durations,
             hashes,
         } => {
+            validate_image_dimensions(*width, *height)?;
             let frame_no = frame.frame_number.unwrap_or(frames.len() as u32 + 1);
             if frame_no <= frames.len() as u32 {
                 // Edit existing frame in place.
@@ -904,7 +948,8 @@ pub fn decode_image_frame(
                     Some(n) if n > 0 && n as usize <= frames.len() => {
                         frames[n as usize - 1].as_ref().clone()
                     }
-                    _ => [bg.0[0], bg.0[1], bg.0[2], bg.0[3]].repeat((*width * *height) as usize),
+                    _ => [bg.0[0], bg.0[1], bg.0[2], bg.0[3]]
+                        .repeat(checked_image_len(*width, *height, 1)?),
                 };
                 let mut new_frame = image::RgbaImage::from_raw(*width, *height, base)
                     .ok_or("invalid base frame")?;
@@ -1049,11 +1094,19 @@ fn clip_view(
     let output_len = checked_image_len(vw, vh, 4)?;
     let mut out = vec![0u8; output_len];
     for y in 0..vh {
-        let src_start = checked_image_len((src_y + y) * width + src_x, 1, 4)?;
+        let src_pixel = (src_y as u64)
+            .checked_add(y as u64)
+            .and_then(|row| row.checked_mul(width as u64))
+            .and_then(|pixel| pixel.checked_add(src_x as u64))
+            .ok_or_else(|| "image clip source offset overflow".to_string())?;
+        let src_start = src_pixel
+            .checked_mul(4)
+            .and_then(|offset| usize::try_from(offset).ok())
+            .ok_or_else(|| "image clip source offset overflow".to_string())?;
         let src_end = src_start
             .checked_add(row_bytes)
             .ok_or_else(|| "image clip range overflow".to_string())?;
-        let dst_start = checked_image_len(y * vw, 1, 4)?;
+        let dst_start = checked_image_len(y, vw, 4)?;
         let dst_end = dst_start
             .checked_add(row_bytes)
             .ok_or_else(|| "image clip range overflow".to_string())?;
@@ -1106,6 +1159,37 @@ fn checked_image_len(width: u32, height: u32, channels: u64) -> Result<usize, St
     usize::try_from(len).map_err(|_| "image buffer is too large for this platform".into())
 }
 
+fn validate_image_dimensions(width: u32, height: u32) -> Result<usize, String> {
+    let pixel_count = (width as u64)
+        .checked_mul(height as u64)
+        .ok_or_else(|| format!("image dimensions overflow: {width}x{height}"))?;
+    if pixel_count > MAX_IMAGE_PIXELS {
+        return Err(format!(
+            "image too large: {width}x{height} ({pixel_count} pixels) exceeds limit of {MAX_IMAGE_PIXELS}"
+        ));
+    }
+    let rgba_bytes = checked_image_len(width, height, 4)?;
+    if rgba_bytes > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "decoded image exceeds {MAX_IMAGE_BYTES} byte limit"
+        ));
+    }
+    Ok(rgba_bytes)
+}
+
+fn decompress_image_payload(
+    raw: Vec<u8>,
+    compression: KittyImageCompression,
+) -> Result<Vec<u8>, String> {
+    match compression {
+        KittyImageCompression::None => Ok(raw),
+        KittyImageCompression::Deflate => {
+            miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&raw, MAX_IMAGE_BYTES)
+                .map_err(|e| format!("deflate decompress: {e:?}"))
+        }
+    }
+}
+
 /// Decode a regular image directly into the RGBA representation used by the
 /// terminal.  The generic `DynamicImage` path allocates an RGB buffer and a
 /// second RGBA buffer for JPEGs and RGB PNGs; decoding into a single reusable
@@ -1118,12 +1202,12 @@ pub fn decode_image_to_rgba(data: &[u8]) -> Result<(Vec<u8>, u32, u32), String> 
         .into_decoder()
         .map_err(|e| format!("image decoder: {e}"))?;
     let (width, height) = decoder.dimensions();
+    let expected_rgba = validate_image_dimensions(width, height)?;
     let color_type = decoder.color_type();
 
     match color_type {
         ColorType::Rgba8 => {
-            let expected = checked_image_len(width, height, 4)?;
-            let mut rgba = vec![0u8; expected];
+            let mut rgba = vec![0u8; expected_rgba];
             decoder
                 .read_image(&mut rgba)
                 .map_err(|e| format!("image decode: {e}"))?;
@@ -1142,7 +1226,15 @@ pub fn decode_image_to_rgba(data: &[u8]) -> Result<(Vec<u8>, u32, u32), String> 
             // animated and other formats that need color conversion.
             let decoded = load_from_memory(data).map_err(|e| format!("image decode: {e}"))?;
             let (width, height) = decoded.dimensions();
-            Ok((decoded.into_rgba8().into_vec(), width, height))
+            let rgba = decoded.into_rgba8().into_vec();
+            let expected = validate_image_dimensions(width, height)?;
+            if rgba.len() != expected {
+                return Err(format!(
+                    "decoded image length mismatch: got {}, expected {expected}",
+                    rgba.len()
+                ));
+            }
+            Ok((rgba, width, height))
         }
     }
 }
@@ -1154,6 +1246,7 @@ pub(crate) fn expand_rgb_to_rgba(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, String> {
+    validate_image_dimensions(width, height)?;
     let pixels = checked_image_len(width, height, 1)?;
     let expected_rgb = checked_image_len(width, height, 3)?;
     let expected_rgba = checked_image_len(width, height, 4)?;
@@ -1215,6 +1308,12 @@ impl KittyAccumulator {
                 } => (transmit, Some(placement), verbosity),
                 _ => unreachable!(),
             };
+            let bytes = tx.data.load_data()?;
+            if bytes.len() > MAX_ACCUMULATED_IMAGE_BYTES {
+                return Err(format!(
+                    "image transmission exceeds {MAX_ACCUMULATED_IMAGE_BYTES} byte limit"
+                ));
+            }
             self.transmit = Some(KittyImageTransmit {
                 format: tx.format,
                 data: KittyImageData::DirectBin(vec![]),
@@ -1227,8 +1326,6 @@ impl KittyAccumulator {
             });
             self.placement = pl;
             self.verbosity = verb;
-            // Decode first chunk immediately.
-            let bytes = tx.data.load_data()?;
             // The accumulator is empty on the first chunk, so take ownership
             // directly instead of copying the complete decoded chunk into a
             // second buffer.
@@ -1239,6 +1336,17 @@ impl KittyAccumulator {
                 | KittyImage::TransmitDataAndDisplay { transmit, .. } => {
                     // Decode immediately — no intermediate storage.
                     let bytes = transmit.data.load_data()?;
+                    let new_len = self
+                        .data_buf
+                        .len()
+                        .checked_add(bytes.len())
+                        .ok_or_else(|| "image transmission size overflow".to_string())?;
+                    if new_len > MAX_ACCUMULATED_IMAGE_BYTES {
+                        self.reset();
+                        return Err(format!(
+                            "image transmission exceeds {MAX_ACCUMULATED_IMAGE_BYTES} byte limit"
+                        ));
+                    }
                     self.data_buf.extend_from_slice(&bytes);
                 }
                 _ => unreachable!(),
@@ -1261,16 +1369,13 @@ impl KittyAccumulator {
             );
             if let Some(tx) = self.transmit.as_ref()
                 && let (Some(w), Some(h)) = (tx.width, tx.height)
+                && let Some(expected) = expected_transmission_bytes(tx.format, w, h)?
+                && data_len != expected
             {
-                let expected = w * h * 4;
-                if data_len as u32 != expected {
-                    log::warn!(
-                        "[acc] DATA LENGTH MISMATCH: assembled {} bytes, \
-                             expected {w}x{h}*4={expected} (diff={})",
-                        data_len,
-                        data_len as i64 - expected as i64,
-                    );
-                }
+                self.reset();
+                return Err(format!(
+                    "image transmission length mismatch: got {data_len}, expected {expected}"
+                ));
             }
             if let Some(tx) = self.transmit.take() {
                 let assembled = KittyImageTransmit {
@@ -1292,6 +1397,31 @@ impl KittyAccumulator {
             }
         }
         Ok(None)
+    }
+
+    fn reset(&mut self) {
+        self.data_buf.clear();
+        self.transmit = None;
+        self.placement = None;
+        self.verbosity = KittyImageVerbosity::default();
+    }
+}
+
+fn expected_transmission_bytes(
+    format: Option<KittyImageFormat>,
+    width: u32,
+    height: u32,
+) -> Result<Option<usize>, String> {
+    match format {
+        Some(KittyImageFormat::Png) => Ok(None),
+        Some(KittyImageFormat::Rgb) => {
+            validate_image_dimensions(width, height)?;
+            checked_image_len(width, height, 3).map(Some)
+        }
+        None | Some(KittyImageFormat::Rgba) => {
+            validate_image_dimensions(width, height)?;
+            checked_image_len(width, height, 4).map(Some)
+        }
     }
 }
 
@@ -1321,6 +1451,23 @@ mod tests {
     fn expands_rgb_in_place_without_changing_pixel_order() {
         let rgba = expand_rgb_to_rgba(vec![1, 2, 3, 4, 5, 6], 2, 1).unwrap();
         assert_eq!(rgba, vec![1, 2, 3, 255, 4, 5, 6, 255]);
+    }
+
+    #[test]
+    fn image_dimensions_are_rejected_before_allocation() {
+        assert!(validate_image_dimensions(5_001, 5_001).is_err());
+        assert!(validate_image_dimensions(u32::MAX, u32::MAX).is_err());
+        assert_eq!(
+            validate_image_dimensions(5_000, 5_000).unwrap(),
+            100_000_000
+        );
+    }
+
+    #[test]
+    fn zlib_decompression_observes_output_limit() {
+        let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&vec![0; 1024], 6);
+        let result = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&compressed, 512);
+        assert!(result.is_err());
     }
 
     fn temp_test_path(namespace: &str) -> std::path::PathBuf {

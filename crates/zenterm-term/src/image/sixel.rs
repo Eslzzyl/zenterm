@@ -11,6 +11,8 @@ use image::RgbaImage;
 
 use zenterm_core::image::{ImageData, ImageDataType};
 
+use super::kitty::{MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS};
+
 // ── sixel data types ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -45,11 +47,14 @@ pub struct Sixel {
     pub pixel_height: Option<u32>,
     pub background_is_transparent: bool,
     pub data: Vec<SixelData>,
+    truncated: bool,
+    invalid_dimensions: bool,
 }
 
 // ── builder ────────────────────────────────────────────────────────────
 
 const MAX_PARAMS: usize = 5;
+const MAX_SIXEL_DATA_ITEMS: usize = 1_000_000;
 
 pub struct SixelBuilder {
     pub sixel: Sixel,
@@ -77,6 +82,8 @@ impl SixelBuilder {
                 pixel_height: None,
                 background_is_transparent,
                 data: vec![],
+                truncated: false,
+                invalid_dimensions: false,
             },
             param_no: 0,
             params: [-1; MAX_PARAMS],
@@ -88,22 +95,29 @@ impl SixelBuilder {
         match data {
             b'$' => {
                 self.finish_command();
-                self.sixel.data.push(SixelData::CarriageReturn);
+                self.push_data(SixelData::CarriageReturn);
             }
             b'-' => {
                 self.finish_command();
-                self.sixel.data.push(SixelData::NewLine);
+                self.push_data(SixelData::NewLine);
             }
             0x3f..=0x7e if self.current_command == b'!' => {
-                self.sixel.data.push(SixelData::Repeat {
-                    repeat_count: self.params[0] as u32,
+                let repeat_count = match u32::try_from(self.params[0]) {
+                    Ok(count) => count,
+                    Err(_) => {
+                        self.sixel.invalid_dimensions = true;
+                        0
+                    }
+                };
+                self.push_data(SixelData::Repeat {
+                    repeat_count,
                     data: data - 0x3f,
                 });
                 self.finish_command();
             }
             0x3f..=0x7e => {
                 self.finish_command();
-                self.sixel.data.push(SixelData::Data(data - 0x3f));
+                self.push_data(SixelData::Data(data - 0x3f));
             }
             b'#' | b'!' | b'"' => {
                 self.finish_command();
@@ -132,6 +146,14 @@ impl SixelBuilder {
         }
     }
 
+    fn push_data(&mut self, data: SixelData) {
+        if self.sixel.data.len() < MAX_SIXEL_DATA_ITEMS {
+            self.sixel.data.push(data);
+        } else {
+            self.sixel.truncated = true;
+        }
+    }
+
     fn finish_command(&mut self) {
         match self.current_command {
             b'#' if self.param_no >= 4 => {
@@ -141,7 +163,7 @@ impl SixelBuilder {
                 let b = self.params[3] as u8;
                 let c = self.params[4] as u8;
                 if system == 1 {
-                    self.sixel.data.push(SixelData::DefineColorMapHSL {
+                    self.push_data(SixelData::DefineColorMapHSL {
                         color_number,
                         hue_angle: a,
                         lightness: b,
@@ -151,7 +173,7 @@ impl SixelBuilder {
                     let r = (a as f32 * 255.0 / 100.0) as u8;
                     let g = (b as f32 * 255.0 / 100.0) as u8;
                     let b = (c as f32 * 255.0 / 100.0) as u8;
-                    self.sixel.data.push(SixelData::DefineColorMapRGB {
+                    self.push_data(SixelData::DefineColorMapRGB {
                         color_number,
                         r,
                         g,
@@ -161,9 +183,7 @@ impl SixelBuilder {
             }
             b'#' => {
                 let color_number = self.params[0] as u16;
-                self.sixel
-                    .data
-                    .push(SixelData::SelectColorMapEntry(color_number));
+                self.push_data(SixelData::SelectColorMapEntry(color_number));
             }
             b'"' => {
                 let pan = if self.params[0] == -1 {
@@ -181,8 +201,13 @@ impl SixelBuilder {
                 self.sixel.pan = pan;
                 self.sixel.pad = pad;
                 if self.param_no >= 3 && pixel_width > 0 && pixel_height > 0 {
-                    self.sixel.pixel_width = Some(pixel_width as u32);
-                    self.sixel.pixel_height = Some(pixel_height as u32);
+                    match (u32::try_from(pixel_width), u32::try_from(pixel_height)) {
+                        (Ok(width), Ok(height)) => {
+                            self.sixel.pixel_width = Some(width);
+                            self.sixel.pixel_height = Some(height);
+                        }
+                        _ => self.sixel.invalid_dimensions = true,
+                    }
                 }
             }
             _ => {}
@@ -201,7 +226,7 @@ impl SixelBuilder {
 
 /// Convert parsed sixel data into an [`ImageData`] (RGBA).
 pub fn render_sixel(sixel: &Sixel) -> Result<Arc<ImageData>, String> {
-    let (width, height) = sixel_dimensions(sixel);
+    let (width, height) = sixel_dimensions(sixel)?;
     if width == 0 || height == 0 {
         return Err("sixel has zero dimensions".into());
     }
@@ -227,12 +252,13 @@ pub fn render_sixel(sixel: &Sixel) -> Result<Arc<ImageData>, String> {
         match d {
             SixelData::Data(d) => {
                 emit_sixel_bitplane(&mut image, *d, &fg, x, y, width, height);
-                x += 1;
+                x = x.saturating_add(1);
             }
             SixelData::Repeat { repeat_count, data } => {
-                for _ in 0..*repeat_count {
+                let count = (*repeat_count).min(width.saturating_sub(x));
+                for _ in 0..count {
                     emit_sixel_bitplane(&mut image, *data, &fg, x, y, width, height);
-                    x += 1;
+                    x = x.saturating_add(1);
                 }
             }
             SixelData::CarriageReturn => x = 0,
@@ -276,9 +302,16 @@ pub fn render_sixel(sixel: &Sixel) -> Result<Arc<ImageData>, String> {
     Ok(Arc::new(ImageData::new(data_type)))
 }
 
-fn sixel_dimensions(sixel: &Sixel) -> (u32, u32) {
+fn sixel_dimensions(sixel: &Sixel) -> Result<(u32, u32), String> {
+    if sixel.truncated {
+        return Err("sixel command stream exceeds item limit".into());
+    }
+    if sixel.invalid_dimensions {
+        return Err("sixel dimensions are out of range".into());
+    }
     if let (Some(w), Some(h)) = (sixel.pixel_width, sixel.pixel_height) {
-        return (w, h);
+        validate_sixel_dimensions(w, h)?;
+        return Ok((w, h));
     }
     // Compute dimensions from the data stream.
     let mut max_x = 0u32;
@@ -293,19 +326,45 @@ fn sixel_dimensions(sixel: &Sixel) -> (u32, u32) {
                     SixelData::Repeat { repeat_count, .. } => *repeat_count,
                     _ => unreachable!(),
                 };
-                x += count;
+                x = x
+                    .checked_add(count)
+                    .ok_or_else(|| "sixel width overflows".to_string())?;
                 max_x = max_x.max(x);
-                max_y = max_y.max(y + 6);
+                max_y = max_y.max(
+                    y.checked_add(6)
+                        .ok_or_else(|| "sixel height overflows".to_string())?,
+                );
             }
             SixelData::CarriageReturn => x = 0,
             SixelData::NewLine => {
                 x = 0;
-                y = y.saturating_add(6);
+                y = y
+                    .checked_add(6)
+                    .ok_or_else(|| "sixel height overflows".to_string())?;
             }
             _ => {}
         }
     }
-    (max_x, max_y)
+    validate_sixel_dimensions(max_x, max_y)?;
+    Ok((max_x, max_y))
+}
+
+fn validate_sixel_dimensions(width: u32, height: u32) -> Result<(), String> {
+    let pixels = (width as u64)
+        .checked_mul(height as u64)
+        .ok_or_else(|| format!("sixel dimensions overflow: {width}x{height}"))?;
+    if pixels > MAX_IMAGE_PIXELS {
+        return Err(format!(
+            "sixel too large: {width}x{height} ({pixels} pixels) exceeds limit of {MAX_IMAGE_PIXELS}"
+        ));
+    }
+    let bytes = pixels
+        .checked_mul(4)
+        .ok_or_else(|| format!("sixel buffer size overflows: {width}x{height}"))?;
+    if bytes > MAX_IMAGE_BYTES as u64 {
+        return Err(format!("sixel buffer exceeds {MAX_IMAGE_BYTES} byte limit"));
+    }
+    Ok(())
 }
 
 fn emit_sixel_bitplane(
@@ -321,7 +380,7 @@ fn emit_sixel_bitplane(
         return;
     }
     for bitno in 0..6 {
-        let py = y + bitno;
+        let py = y.saturating_add(bitno);
         if py >= height {
             break;
         }
@@ -407,5 +466,16 @@ mod tests {
         let img = render_sixel(&builder.sixel).unwrap();
         assert!(img.data().width() > 0);
         assert!(img.data().height() > 0);
+    }
+
+    #[test]
+    fn oversized_explicit_dimensions_are_rejected_before_rendering() {
+        let mut builder = SixelBuilder::new(&[]);
+        for byte in b"\";1;1;5000000000;1" {
+            builder.push(*byte);
+        }
+        builder.finish();
+
+        assert!(render_sixel(&builder.sixel).is_err());
     }
 }

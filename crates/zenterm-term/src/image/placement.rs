@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 use zenterm_core::image::{ImageCell, ImageData, TextureCoordinate};
 
+const MAX_PLACEMENT_CELLS: usize = 1_000_000;
+
 /// Parameters for placing an image on the terminal grid.
 #[derive(Debug, Clone)]
 pub struct PlacementParams {
@@ -107,6 +109,8 @@ pub fn assign_image_to_cells(request: PlacementRequest<'_>) -> PlacementResult {
         || max_rows == 0
         || params.columns == Some(0)
         || params.rows == Some(0)
+        || cursor_col >= max_cols
+        || cursor_row >= max_rows
     {
         return PlacementResult {
             cells: Vec::new(),
@@ -178,8 +182,16 @@ pub fn assign_image_to_cells(request: PlacementRequest<'_>) -> PlacementResult {
         height_in_cells
     };
 
-    let target_pixel_w = full_cells_w * cell_pixel_w as usize + _rem_w;
-    let target_pixel_h = full_cells_h * cell_pixel_h as usize + _rem_h;
+    let target_pixel_w = (full_cells_w as u64)
+        .checked_mul(cell_pixel_w as u64)
+        .and_then(|pixels| pixels.checked_add(_rem_w as u64))
+        .and_then(|pixels| usize::try_from(pixels).ok())
+        .unwrap_or(usize::MAX);
+    let target_pixel_h = (full_cells_h as u64)
+        .checked_mul(cell_pixel_h as u64)
+        .and_then(|pixels| pixels.checked_add(_rem_h as u64))
+        .and_then(|pixels| usize::try_from(pixels).ok())
+        .unwrap_or(usize::MAX);
 
     // Normalised source origin.
     let start_xpos = src_x as f32 / image_width as f32;
@@ -187,23 +199,34 @@ pub fn assign_image_to_cells(request: PlacementRequest<'_>) -> PlacementResult {
 
     let x_delta_divisor = params
         .columns
-        .map(|cols| (cols * cell_pixel_w as usize) as u32 * image_width / draw_w)
-        .unwrap_or(image_width);
+        .map(|columns| {
+            (columns as f64 * cell_pixel_w as f64 * image_width as f64 / draw_w as f64).max(1.0)
+                as f32
+        })
+        .unwrap_or(image_width as f32);
     let y_delta_divisor = params
         .rows
-        .map(|rows| (rows * cell_pixel_h as usize) as u32 * image_height / draw_h)
-        .unwrap_or(image_height);
+        .map(|rows| {
+            (rows as f64 * cell_pixel_h as f64 * image_height as f64 / draw_h as f64).max(1.0)
+                as f32
+        })
+        .unwrap_or(image_height as f32);
 
-    let mut cells = Vec::with_capacity(width_in_cells * height_in_cells);
+    let visible_width = width_in_cells.min(max_cols.saturating_sub(cursor_col));
+    let visible_height = height_in_cells
+        .min(max_rows.saturating_sub(cursor_row))
+        .min(MAX_PLACEMENT_CELLS / visible_width.max(1));
+    let capacity = visible_width.saturating_mul(visible_height);
+    let mut cells = Vec::with_capacity(capacity);
     let mut remain_y = if params.rows.is_some() {
         draw_h
     } else {
         target_pixel_h as u32
     };
 
-    for row_offset in 0..height_in_cells {
+    for row_offset in 0..visible_height {
         let padding_bottom = cell_pixel_h.saturating_sub(remain_y) as u16;
-        let y_delta = (remain_y.min(cell_pixel_h) as f32) / y_delta_divisor as f32;
+        let y_delta = (remain_y.min(cell_pixel_h) as f32) / y_delta_divisor;
         remain_y = remain_y.saturating_sub(cell_pixel_h);
 
         let mut xpos = start_xpos;
@@ -218,9 +241,9 @@ pub fn assign_image_to_cells(request: PlacementRequest<'_>) -> PlacementResult {
             break;
         }
 
-        for col_offset in 0..width_in_cells {
+        for col_offset in 0..visible_width {
             let padding_right = cell_pixel_w.saturating_sub(remain_x) as u16;
-            let x_delta = (remain_x.min(cell_pixel_w) as f32) / x_delta_divisor as f32;
+            let x_delta = (remain_x.min(cell_pixel_w) as f32) / x_delta_divisor;
             remain_x = remain_x.saturating_sub(cell_pixel_w);
 
             let grid_x = cursor_col + col_offset;
@@ -369,5 +392,22 @@ mod tests {
                 .all(|(col, row, _)| *col < 3 && *row < 3)
         );
         assert!(result.move_cursor);
+    }
+
+    #[test]
+    fn huge_requested_span_has_bounded_cell_allocation() {
+        let mut params = params();
+        params.columns = Some(usize::MAX);
+        params.rows = Some(usize::MAX);
+        let result = assign_image_to_cells(request(
+            image(),
+            &params,
+            (10, 10),
+            (1, 1),
+            (0, 0),
+            (10, 10),
+        ));
+
+        assert_eq!(result.cells.len(), 100);
     }
 }

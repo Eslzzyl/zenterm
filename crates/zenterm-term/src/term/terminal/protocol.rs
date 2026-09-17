@@ -7,6 +7,7 @@ use alacritty_terminal::grid::Dimensions;
 use crate::image::kitty::KittyImage;
 use crate::image::sixel;
 
+use super::super::MAX_ESCAPE_SEQUENCE_BYTES;
 use super::Terminal;
 
 impl Terminal {
@@ -28,8 +29,7 @@ impl Terminal {
             }
 
             if esc_pos + 2 >= bytes.len() {
-                self.apc_remainder.clear();
-                self.apc_remainder.extend_from_slice(&bytes[esc_pos..]);
+                self.buffer_apc_remainder(bytes, esc_pos);
                 break;
             }
 
@@ -58,8 +58,7 @@ impl Terminal {
                         esc_pos,
                         bytes.len() - esc_pos,
                     );
-                    self.apc_remainder.clear();
-                    self.apc_remainder.extend_from_slice(&bytes[esc_pos..]);
+                    self.buffer_apc_remainder(bytes, esc_pos);
                     break;
                 }
             }
@@ -74,7 +73,15 @@ impl Terminal {
                     let payload_start = j + 1;
                     if let Some(st_rel) = find_st(&bytes[payload_start..]) {
                         let params = sixel::parse_dcs_params(&bytes[param_start..j]);
-                        self.handle_sixel(&bytes[payload_start..payload_start + st_rel], &params);
+                        let payload = &bytes[payload_start..payload_start + st_rel];
+                        if payload.len() <= MAX_ESCAPE_SEQUENCE_BYTES {
+                            self.handle_sixel(payload, &params);
+                        } else {
+                            log::warn!(
+                                "[img] dropping oversized sixel payload ({} bytes)",
+                                payload.len()
+                            );
+                        }
                         prev_end = Some(payload_start + st_rel + 2);
                     }
                 }
@@ -139,6 +146,19 @@ impl Terminal {
             elapsed,
         );
         elapsed
+    }
+
+    fn buffer_apc_remainder(&mut self, bytes: &[u8], esc_pos: usize) {
+        let remainder = &bytes[esc_pos..];
+        self.apc_remainder.clear();
+        if remainder.len() <= MAX_ESCAPE_SEQUENCE_BYTES {
+            self.apc_remainder.extend_from_slice(remainder);
+        } else {
+            log::warn!(
+                "[img] dropping oversized unterminated Kitty APC ({} bytes)",
+                remainder.len()
+            );
+        }
     }
 }
 

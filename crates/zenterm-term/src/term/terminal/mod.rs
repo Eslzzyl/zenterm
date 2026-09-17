@@ -319,8 +319,15 @@ impl Terminal {
         };
         let (oscs, incomplete_osc_start) = scan_oscs_with_remainder(osc_scan_bytes);
         if let Some(start) = incomplete_osc_start {
-            self.osc_remainder
-                .extend_from_slice(&osc_scan_bytes[start..]);
+            let remainder = &osc_scan_bytes[start..];
+            if remainder.len() <= super::MAX_ESCAPE_SEQUENCE_BYTES {
+                self.osc_remainder.extend_from_slice(remainder);
+            } else {
+                log::warn!(
+                    "Terminal::feed: dropping oversized unterminated OSC ({} bytes)",
+                    remainder.len()
+                );
+            }
         }
         let t_osc_elapsed = t_osc_start.elapsed();
 

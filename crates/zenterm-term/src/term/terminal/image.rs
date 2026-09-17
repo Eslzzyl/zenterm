@@ -236,11 +236,13 @@ impl Terminal {
                 );
                 return;
             }
+            let max_columns = u32::try_from(self.term.columns()).unwrap_or(u32::MAX);
+            let max_rows = u32::try_from(self.term.screen_lines()).unwrap_or(u32::MAX);
             let vp = VirtualPlacement {
                 image_id: id,
                 placement_id: placement.placement_id,
-                columns: placement.columns.unwrap_or(0),
-                rows: placement.rows.unwrap_or(0),
+                columns: placement.columns.unwrap_or(0).min(max_columns),
+                rows: placement.rows.unwrap_or(0).min(max_rows),
                 source_x: placement.x,
                 source_y: placement.y,
                 source_w: placement.w,
@@ -287,13 +289,34 @@ impl Terminal {
         let cols = self.term.columns();
         let rows = self.term.screen_lines();
 
+        let columns = match placement.columns {
+            Some(value) => match usize::try_from(value) {
+                Ok(value) => Some(value),
+                Err(_) => {
+                    log::warn!("[img] kitty placement columns do not fit platform usize");
+                    return;
+                }
+            },
+            None => None,
+        };
+        let placement_rows = match placement.rows {
+            Some(value) => match usize::try_from(value) {
+                Ok(value) => Some(value),
+                Err(_) => {
+                    log::warn!("[img] kitty placement rows do not fit platform usize");
+                    return;
+                }
+            },
+            None => None,
+        };
+
         // X/Y (unsigned) are the primary cell padding offsets.
         // H/V (signed) are for relative placements (P/Q parent);
         // since parent placement is not yet supported, H/V are stored
         // but do not affect the placement coordinates.
         let params = PlacementParams {
-            columns: placement.columns.map(|c| c as usize),
-            rows: placement.rows.map(|r| r as usize),
+            columns,
+            rows: placement_rows,
             source_x: placement.x,
             source_y: placement.y,
             source_w: placement.w,

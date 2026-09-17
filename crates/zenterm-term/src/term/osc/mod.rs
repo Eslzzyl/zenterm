@@ -110,6 +110,16 @@ pub(crate) fn scan_oscs_with_remainder(bytes: &[u8]) -> (Vec<OscMatch>, Option<u
         match find_terminator(tail) {
             Some(end) => {
                 let payload_bytes = &tail[..end];
+                if payload_bytes.len() > super::MAX_ESCAPE_SEQUENCE_BYTES {
+                    // Consume an oversized complete sequence without
+                    // allocating a payload string or dispatching it.
+                    let terminator_len = match tail[end] {
+                        0x07 => 1,
+                        _ => 2,
+                    };
+                    i = payload_start + end + terminator_len;
+                    continue;
+                }
                 if let Ok(payload) = std::str::from_utf8(payload_bytes) {
                     let byte_start = i;
                     let terminator_len = match tail[end] {
@@ -137,6 +147,9 @@ pub(crate) fn scan_oscs_with_remainder(bytes: &[u8]) -> (Vec<OscMatch>, Option<u
             None => {
                 // Unterminated — retain the sequence so a later chunk can
                 // complete it without losing its custom side effect.
+                if bytes.len() - i > super::MAX_ESCAPE_SEQUENCE_BYTES {
+                    return (results, None);
+                }
                 return (results, Some(i));
             }
         }

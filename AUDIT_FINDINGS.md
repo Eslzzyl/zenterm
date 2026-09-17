@@ -6,12 +6,6 @@
 
 ## 优先处理
 
-### ZT-04：图像协议缺少统一的输入、解压、累积和布局上限（代码已确认；运行影响待复现）
-
-Kitty Deflate 在像素数检查前使用无输出上限的解压；PNG 等图像也在解码后才检查像素数。多块传输、未结束的 OSC/APC 会持续累积数据。帧尺寸检查和分块日志还直接计算 `w * h * 4`，存在整数溢出路径。Sixel 按协议尺寸直接创建 RGBA 图像，没有对应的像素预算；Kitty placement 的 `columns/rows` 也会直接参与 `Vec::with_capacity`，未先限制到网格范围。`ImageCache` 的 320 MiB 预算在图像解码和分块累积之后才起作用，不能约束这些峰值。
-
-依据：[解压与后置检查](crates/zenterm-term/src/image/kitty.rs#L679-L735)、[帧尺寸](crates/zenterm-term/src/image/kitty.rs#L763-L788)、[Sixel 分配](crates/zenterm-term/src/image/sixel.rs#L203-L309)、[placement 分配](crates/zenterm-term/src/image/placement.rs#L171-L197)、[分块累积](crates/zenterm-term/src/image/kitty.rs#L1166-L1255)、[OSC 缓冲](crates/zenterm-term/src/term/terminal/mod.rs#L311-L324)、[APC 缓冲](crates/zenterm-term/src/term/terminal/protocol.rs#L54-L63)。建议设置协议字节与解码像素预算，按预算解压，限制 placement，并使用检查过的乘法。
-
 ### ZT-05：GPU 实例截断后仍使用未截断的绘制范围（代码已确认；运行影响待复现）
 
 实例缓冲固定容纳 40,000 个实例。超出时 `update_instances` 只上传前 40,000 个，而 `atlas_ranges` 仍由原始实例列表生成，绘制时直接使用原范围。足够大的终端网格或多窗格可使范围越过已上传实例；是否表现为 wgpu 验证错误或画面缺失需运行验证。
