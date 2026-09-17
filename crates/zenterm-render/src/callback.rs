@@ -98,6 +98,26 @@ pub struct FrameData {
     pub background_active: bool,
 }
 
+const INSTANCE_HIGH_WATER_CAPACITY: usize = 16 * 1024;
+
+impl FrameData {
+    /// Clear per-frame instances and release capacity left by a large frame.
+    ///
+    /// The previous frame length is used as the next retained size, so a
+    /// one-off large render does not permanently pin a large allocation.
+    pub fn clear_for_next_frame(&mut self) {
+        let previous_len = self.instances.len();
+        let retained = previous_len.max(80 * 24);
+        if self.instances.capacity() >= INSTANCE_HIGH_WATER_CAPACITY
+            && self.instances.capacity() > retained.saturating_mul(2)
+        {
+            self.instances.shrink_to(retained);
+        }
+        self.instances.clear();
+        self.atlas_ranges.clear();
+    }
+}
+
 /// Pixel data for one slot in the texture atlas.
 #[derive(Debug, Clone)]
 pub struct AtlasSlotData {
@@ -147,6 +167,26 @@ impl SharedRenderState {
             background_data: Mutex::new(None),
             background_gen: AtomicU64::new(0),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_data_releases_a_large_instance_capacity() {
+        let mut frame_data = FrameData {
+            instances: Vec::with_capacity(32 * 1024),
+            atlas_ranges: Vec::new(),
+            background_active: false,
+        };
+        let old_capacity = frame_data.instances.capacity();
+
+        frame_data.clear_for_next_frame();
+
+        assert_eq!(frame_data.instances.len(), 0);
+        assert!(frame_data.instances.capacity() < old_capacity);
     }
 }
 
@@ -427,6 +467,14 @@ impl CallbackTrait for TerminalWgpuCallback {
             {
                 rp.set_atlas_ranges(atlas_ranges);
                 rp.set_background_active(background_active);
+            }
+
+            // Reuse the instance allocation on the next frame.  If the UI
+            // thread has already started a newer frame, keep that data and
+            // let this upload buffer drop instead of overwriting it.
+            let mut guard = self.shared.frame_data.lock().unwrap();
+            if guard.instances.is_empty() {
+                guard.instances = instances;
             }
         } else {
             log::trace!(

@@ -26,6 +26,20 @@ use super::shaping;
 use super::types::{TerminalSession, UrlSpan};
 use ligature::process_ligature_run;
 
+const GLYPH_HIGH_WATER_CAPACITY: usize = 16 * 1024;
+
+/// Clear a reusable instance vector and release capacity that is far above
+/// its most recent working size.
+fn clear_high_water_buffer<T>(buffer: &mut Vec<T>) {
+    let previous_len = buffer.len();
+    if buffer.capacity() >= GLYPH_HIGH_WATER_CAPACITY
+        && buffer.capacity() > previous_len.saturating_mul(2)
+    {
+        buffer.shrink_to(previous_len);
+    }
+    buffer.clear();
+}
+
 impl TerminalSession {
     /// Rebuild the cell-instance buffers for this session's visible
     /// terminal grid.
@@ -211,7 +225,21 @@ impl TerminalSession {
         let instances_cap = rows * cols;
         self.cached_bg.clear();
         for v in &mut self.cached_glyph_per_atlas {
-            v.clear();
+            clear_high_water_buffer(v);
+        }
+        while self
+            .cached_glyph_per_atlas
+            .last()
+            .is_some_and(Vec::is_empty)
+        {
+            self.cached_glyph_per_atlas.pop();
+        }
+        if self.cached_glyph_per_atlas.capacity() >= GLYPH_HIGH_WATER_CAPACITY
+            && self.cached_glyph_per_atlas.capacity()
+                > self.cached_glyph_per_atlas.len().saturating_mul(2)
+        {
+            self.cached_glyph_per_atlas
+                .shrink_to(self.cached_glyph_per_atlas.len());
         }
         for v in &mut self.cached_image_below {
             v.clear();
@@ -833,5 +861,22 @@ impl TerminalSession {
 
         self.terminal_dirty = false;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn glyph_buffer_releases_capacity_above_recent_usage() {
+        let mut buffer = Vec::with_capacity(32 * 1024);
+        buffer.resize(512, 0u8);
+        let old_capacity = buffer.capacity();
+
+        clear_high_water_buffer(&mut buffer);
+
+        assert_eq!(buffer.len(), 0);
+        assert!(buffer.capacity() < old_capacity);
     }
 }

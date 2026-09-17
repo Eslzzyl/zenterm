@@ -8,6 +8,18 @@ use super::effects::SessionEffect;
 use super::osc7::osc7_url_to_path;
 use super::types::{TITLE_DEBOUNCE_MS, TerminalSession};
 
+const PTY_BATCH_MIN_CAPACITY: usize = 64 * 1024;
+const PTY_BATCH_HIGH_WATER_CAPACITY: usize = PTY_BATCH_MIN_CAPACITY * 4;
+
+fn trim_batch_capacity(batch: &mut Vec<u8>) {
+    let recent_len = batch.len().max(PTY_BATCH_MIN_CAPACITY);
+    if batch.capacity() >= PTY_BATCH_HIGH_WATER_CAPACITY
+        && batch.capacity() > recent_len.saturating_mul(2)
+    {
+        batch.shrink_to(recent_len);
+    }
+}
+
 impl TerminalSession {
     /// Drain pending PTY bytes into the terminal state machine, write
     /// terminal-query responses back to the PTY, and detect shell exit
@@ -22,9 +34,10 @@ impl TerminalSession {
             return;
         }
         let batch = &mut self.batch_buf;
+        trim_batch_capacity(batch);
         batch.clear();
-        if batch.capacity() < 65536 {
-            batch.reserve(65536 - batch.capacity());
+        if batch.capacity() < PTY_BATCH_MIN_CAPACITY {
+            batch.reserve(PTY_BATCH_MIN_CAPACITY - batch.capacity());
         }
         while let Some(result) = self.pty.try_read() {
             match result {
@@ -453,5 +466,22 @@ impl TerminalSession {
         if let Err(e) = self.pty.write(seq.as_bytes()) {
             log::error!("SGR mouse write error: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_capacity_returns_to_a_bounded_working_size() {
+        let mut batch = Vec::with_capacity(1024 * 1024);
+        batch.resize(4096, 0);
+        let old_capacity = batch.capacity();
+
+        trim_batch_capacity(&mut batch);
+
+        assert!(batch.capacity() < old_capacity);
+        assert!(batch.capacity() >= PTY_BATCH_MIN_CAPACITY);
     }
 }

@@ -89,8 +89,7 @@ impl SharedGpuContext {
     /// Call once per frame before any session writes its instances.
     pub fn clear_frame(&self) {
         let mut fd = self.lock_frame_data();
-        fd.instances.clear();
-        fd.atlas_ranges.clear();
+        fd.clear_for_next_frame();
     }
 
     /// Bump the instance generation counter.  Call once per frame
