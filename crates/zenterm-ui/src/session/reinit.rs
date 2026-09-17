@@ -7,6 +7,27 @@ use super::types::TerminalSession;
 use zenterm_term::CursorPrefs;
 
 impl TerminalSession {
+    /// Apply the current atlas cell metrics to both the UI and terminal
+    /// layers.  This is also used for font hot-reload, where the grid size
+    /// may stay unchanged and `Terminal::resize` would otherwise be skipped.
+    pub(crate) fn update_cell_metrics(&mut self, cell_width: f32, cell_height: f32) {
+        self.cell_width = cell_width;
+        self.cell_height = cell_height;
+
+        let cell_pixel_width = cell_width.ceil() as u32;
+        let cell_pixel_height = cell_height.ceil() as u32;
+        self.terminal
+            .set_cell_pixel_size(cell_pixel_width, cell_pixel_height);
+
+        if let Err(error) = self.pty.resize(self.terminal.size()) {
+            log::warn!(
+                "failed to propagate cell metrics for session {} to PTY: {error}",
+                self.id.0
+            );
+        }
+        self.terminal_dirty = true;
+    }
+
     // ── Viewport (dock) helpers ─────────────────────────────────────
 
     /// Update the session's tracked viewport.  Called by the
@@ -53,11 +74,7 @@ impl TerminalSession {
         self.atlas.seed_ascii();
         // Ensure the seeded atlas reaches the GPU before the next prepare().
         self.atlas.sync_to_gpu();
-        self.cell_width = cw;
-        self.cell_height = ch;
-        self.terminal.cell_pixel_width = cw.ceil() as u32;
-        self.terminal.cell_pixel_height = ch.ceil() as u32;
-        self.terminal_dirty = true;
+        self.update_cell_metrics(cw, ch);
         log::info!(
             "DPI reinit: session={} new_ppp={new_ppp:.2} font_size={new_font_size:.1} \
              cw={cw:.1} ch={ch:.1}",

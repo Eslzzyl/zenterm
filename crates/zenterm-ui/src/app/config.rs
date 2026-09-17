@@ -141,8 +141,7 @@ impl ZentermApp {
             self.atlas.seed_ascii();
             self.atlas.sync_to_gpu();
             for session in self.sessions.values_mut() {
-                session.cell_width = cw;
-                session.cell_height = ch;
+                session.update_cell_metrics(cw, ch);
             }
         }
 

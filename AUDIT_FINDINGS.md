@@ -8,12 +8,6 @@
 
 ## 其他功能与可靠性问题
 
-### ZT-16：字体热更新没有同步终端的物理 cell 尺寸（代码已确认）
-
-修改字体后，UI 会更新 `session.cell_width/cell_height`，但没有同步 `Terminal::cell_pixel_width/height`。如果行列数没有变化，后续 resize 会提前返回；即使发生 resize，`Terminal::resize` 也只更新总像素尺寸，不更新 cell 像素尺寸。Kitty/Sixel 图像布局及终端尺寸查询因此可能继续使用旧字体指标。
-
-依据：[字体配置写回](crates/zenterm-ui/src/app/config.rs#L127-L146)、[DPI 更新](crates/zenterm-ui/src/session/reinit.rs#L56-L60)、[Terminal resize](crates/zenterm-term/src/term/terminal/grid.rs#L18-L34)。建议把 cell 物理尺寸更新收敛到统一的字体/DPI 重建流程，并补充热更新回归测试。
-
 ### ZT-17：光标闪烁间隔的单位在文档与实现之间不一致（代码已确认）
 
 配置和字段注释把 `blink_interval` 定义为帧数，并以 60 FPS 计算；渲染和重绘调度却把它当作毫秒。默认值 `30` 的实际闪烁节奏与文档描述不一致，且最小周期逻辑又额外使用了 100 ms 下限。

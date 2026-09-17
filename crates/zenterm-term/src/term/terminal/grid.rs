@@ -15,6 +15,20 @@ use super::Terminal;
 use super::unicode::{PLACEHOLDER_CHAR, diacritic_value};
 
 impl Terminal {
+    /// Update the physical cell metrics without changing the terminal grid.
+    ///
+    /// Font and DPI changes can leave the row/column count unchanged, so a
+    /// normal resize would be skipped by the UI.  Keep the image protocol's
+    /// cell metrics and the PTY-reported pixel dimensions in sync explicitly.
+    pub fn set_cell_pixel_size(&mut self, width: u32, height: u32) {
+        self.cell_pixel_width = width.max(1);
+        self.cell_pixel_height = height.max(1);
+        self.pixel_width = (self.term.columns() as u32).saturating_mul(self.cell_pixel_width);
+        self.pixel_height =
+            (self.term.screen_lines() as u32).saturating_mul(self.cell_pixel_height);
+        self.damage.mark_all();
+    }
+
     pub fn resize(&mut self, size: TermSize) {
         let dim = TermDimensions(size);
         let cols = dim.columns();

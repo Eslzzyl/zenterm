@@ -728,4 +728,22 @@ mod tests {
         assert_eq!(terminal.take_title().as_deref(), Some("split title"));
         assert_eq!(terminal.take_clipboard_store().as_deref(), Some("hello"));
     }
+
+    #[test]
+    fn cell_pixel_size_updates_image_metrics_without_resizing_grid() {
+        let mut terminal = Terminal::new(
+            TermSize::new(3, 4, 0, 0),
+            ColorScheme::default(),
+            CursorPrefs::default(),
+        );
+
+        terminal.set_cell_pixel_size(7, 9);
+
+        assert_eq!(terminal.cell_pixel_width, 7);
+        assert_eq!(terminal.cell_pixel_height, 9);
+        assert_eq!(terminal.size(), TermSize::new(3, 4, 28, 27));
+        let view = terminal.visible_cells();
+        assert_eq!(view.col_count(), 4);
+        assert_eq!(view.row_count(), 3);
+    }
 }
