@@ -8,12 +8,6 @@
 
 ## 其他功能与可靠性问题
 
-### ZT-10：背景图相对路径与配置说明不一致（代码已确认）
-
-配置类型说明相对路径以配置文件目录为基准，加载器却直接 `ImageReader::open(&path)`，因此实际以进程工作目录为基准。
-
-依据：[配置说明](crates/zenterm-config/src/background.rs#L28-L33)、[打开文件](crates/zenterm-ui/src/app/mod.rs#L741)。建议在加载前依据 `Config::path()` 解析相对路径。
-
 ### ZT-11：恢复的 `cwd` 只更新元数据，未设置新 shell 的工作目录（代码已确认；产品意图待确认）
 
 恢复时先构造 `TerminalSession` 并启动默认 shell，之后才从 `sessions.json` 给会话的 `cwd` 字段赋值。PTY 启动命令没有使用保存的目录。若“恢复会话”预期包含 shell 工作目录，当前行为与预期不符。

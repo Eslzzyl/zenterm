@@ -20,7 +20,7 @@ pub mod settings;
 pub mod theme;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use egui::Context;
@@ -119,6 +119,17 @@ pub struct ZentermApp {
 
 fn should_create_initial_session(tabs_enabled: bool, restored_session_ids: &[SessionId]) -> bool {
     !tabs_enabled || restored_session_ids.is_empty()
+}
+
+fn resolve_config_relative_path(path: &Path, config_file: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        config_file
+            .parent()
+            .map(|parent| parent.join(path))
+            .unwrap_or_else(|| path.to_path_buf())
+    }
 }
 
 impl ZentermApp {
@@ -749,7 +760,7 @@ impl ZentermApp {
             + 1;
         *shared.background_data.lock().expect("background_data lock") = None;
 
-        let path = path.to_owned();
+        let path = resolve_config_relative_path(Path::new(path), &Config::path());
         let egui_ctx = self.egui_ctx.clone();
 
         std::thread::spawn(move || {
@@ -780,11 +791,12 @@ impl ZentermApp {
                         log::debug!("bg: total async load took {:?}", _t0.elapsed());
                     } else {
                         log::debug!(
-                            "bg: discarding stale async load for {path} (request gen {request_gen})"
+                            "bg: discarding stale async load for {} (request gen {request_gen})",
+                            path.display()
                         );
                     }
                 }
-                None => log::warn!("Failed to load background image: {path}"),
+                None => log::warn!("Failed to load background image: {}", path.display()),
             }
 
             // Wake the UI thread so the next frame picks up the data.
@@ -824,5 +836,24 @@ mod construction_tests {
     fn initial_session_policy_skips_unowned_session_on_restore() {
         assert!(!should_create_initial_session(true, &[SessionId::new(7)]));
         assert!(should_create_initial_session(true, &[]));
+    }
+
+    #[test]
+    fn background_relative_path_uses_config_directory() {
+        let config_file = PathBuf::from("config-dir").join("config.toml");
+        assert_eq!(
+            resolve_config_relative_path(Path::new("wallpaper.png"), &config_file),
+            PathBuf::from("config-dir").join("wallpaper.png")
+        );
+    }
+
+    #[test]
+    fn background_absolute_path_is_unchanged() {
+        let config_file = PathBuf::from("config-dir").join("config.toml");
+        let absolute = std::env::temp_dir().join("wallpaper.png");
+        assert_eq!(
+            resolve_config_relative_path(&absolute, &config_file),
+            absolute
+        );
     }
 }
