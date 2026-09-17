@@ -8,12 +8,6 @@
 
 ## 其他功能与可靠性问题
 
-### ZT-08：`persist_layout = false` 在退出时仍写布局（代码已确认）
-
-逐帧持久化会检查该开关，但 `on_exit` 无条件调用 `persist_layout_now`；后者写入 `dock.json` 与 `sessions.json`。因此该配置不能阻止正常退出时的保存。
-
-依据：[逐帧检查](crates/zenterm-ui/src/app/persistence.rs#L17-L31)、[退出调用](crates/zenterm-ui/src/app/mod.rs#L569-L578)。建议让退出路径遵守同一开关。
-
 ### ZT-09：背景图异步加载可能被旧请求覆盖（代码已确认；触发取决于完成顺序）
 
 每次路径变化都会启动新的解码线程，但完成时没有核对当前配置路径或请求版本。旧图片若在新图片加载或“清除背景”之后完成，仍可把数据写回共享状态。

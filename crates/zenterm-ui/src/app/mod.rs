@@ -584,7 +584,9 @@ impl eframe::App for ZentermApp {
     }
 
     fn on_exit(&mut self) {
-        self.persist_layout_now();
+        if self.config.ui.persist_layout {
+            self.persist_layout_now();
+        }
         // Save any pending config changes (window size, settings, etc.)
         // immediately so the next session starts with the correct state.
         if self.config_dirty {
