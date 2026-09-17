@@ -295,7 +295,7 @@ impl Drop for PtySession {
 
 #[cfg(test)]
 mod tests {
-    use super::{configure_command_environment, DEFAULT_TERM};
+    use super::{DEFAULT_TERM, configure_command_environment};
     use portable_pty::CommandBuilder;
     use std::ffi::OsStr;
 
