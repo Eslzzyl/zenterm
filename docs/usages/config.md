@@ -246,7 +246,7 @@ Controls the appearance and animation of the terminal cursor.
 | `style` | `{ shape, blinking? }` | `{ shape = "Block", blinking = "Off" }` | Cursor appearance and blink mode. |
 | `unfocused_hollow` | `bool` | `true` | Show a hollow (`□`) cursor when the terminal window is not focused. |
 | `thickness` | `float` | `0.15` | Thickness of the Underline or Beam cursor, as a fraction of cell height (`0.0`–`1.0`). |
-| `blink_interval` | `int` | `30` | Number of frames between cursor blink toggles. At 60 FPS, `30` ≈ 500 ms. |
+| `blink_interval` | `int` | `500` | Milliseconds between cursor blink toggles. The full on/off cycle is twice this value; values below 100 are clamped to 100. |
 | `blink_timeout` | `int` | `5` | Time in seconds after which blinking stops (`0` = blink forever). |
 
 ### `CursorStyle` `{ shape, blinking? }`
@@ -268,7 +268,7 @@ Controls the appearance and animation of the terminal cursor.
 style = { shape = "Block", blinking = "Off" }
 unfocused_hollow = true
 thickness = 0.15
-blink_interval = 30
+blink_interval = 500
 blink_timeout = 5
 ```
 
@@ -404,7 +404,7 @@ white   = "#b3b3b3"
 [cursor]
 style = { shape = "Block", blinking = "Off" }
 unfocused_hollow = true
-blink_interval = 30
+blink_interval = 500
 blink_timeout = 5
 
 [selection]

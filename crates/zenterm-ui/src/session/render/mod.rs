@@ -183,7 +183,7 @@ impl TerminalSession {
             if timeout_ms > 0 && elapsed >= timeout_ms {
                 true
             } else {
-                let period = (self.blink_interval as u128).max(100) * 2;
+                let period = self.blink_interval.max(100) as u128 * 2;
                 (elapsed % period) < period / 2
             }
         } else {

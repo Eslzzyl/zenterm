@@ -451,7 +451,7 @@ impl eframe::App for ZentermApp {
                 );
             if blinking {
                 session.terminal_dirty = true;
-                ctx.request_repaint_after(Duration::from_millis(session.blink_interval));
+                ctx.request_repaint_after(Duration::from_millis(session.blink_interval.max(100)));
             }
         }
 

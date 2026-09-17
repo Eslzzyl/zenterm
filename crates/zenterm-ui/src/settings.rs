@@ -960,8 +960,8 @@ fn render_cursor_section(ui: &mut egui::Ui, c: &mut CursorConfig) {
         ui,
         "Blink Interval",
         &mut c.blink_interval,
-        1.0,
-        "Frames between blinks at 60 FPS (30 ≈ 500 ms)",
+        10.0,
+        "Milliseconds between cursor blink toggles (minimum 100 ms)",
     );
     settings_widgets::drag_u64(
         ui,

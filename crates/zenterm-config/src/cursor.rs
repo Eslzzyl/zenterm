@@ -25,7 +25,7 @@ pub struct CursorConfig {
     #[serde(default = "default_thickness")]
     pub thickness: f32,
 
-    /// Blink interval in **frames** (at 60 FPS; 30 frames ≈ 500 ms).
+    /// Time between cursor blink toggles, in **milliseconds**.
     #[serde(default = "default_blink_interval")]
     pub blink_interval: u64,
 
@@ -53,7 +53,7 @@ fn default_thickness() -> f32 {
     0.15
 }
 fn default_blink_interval() -> u64 {
-    30
+    500
 }
 fn default_blink_timeout() -> u64 {
     5
@@ -100,4 +100,14 @@ pub enum Blinking {
     /// Follow the terminal's cursor-blinking escape sequence.
     #[serde(rename = "Terminal")]
     Terminal,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CursorConfig;
+
+    #[test]
+    fn default_blink_interval_is_time_based() {
+        assert_eq!(CursorConfig::default().blink_interval, 500);
+    }
 }

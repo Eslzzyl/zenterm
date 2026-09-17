@@ -139,6 +139,7 @@ pub struct TerminalSession {
     pub selecting: bool,
     pub terminal_dirty: bool,
     pub last_resize_at: Option<f64>,
+    /// Blink interval in milliseconds (minimum effective interval: 100 ms).
     pub blink_interval: u64,
     /// Blink timeout in seconds (0 = blink forever).  Blinking stops
     /// once this long has elapsed since the last activity.
