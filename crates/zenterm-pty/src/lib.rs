@@ -15,6 +15,16 @@ use zenterm_core::{Error, Result, TermSize};
 
 type DataHandler = Box<dyn Fn(&[u8]) + Send + Sync>;
 
+const DEFAULT_TERM: &str = "xterm-256color";
+
+fn configure_command_environment(cmd: &mut CommandBuilder) {
+    // Advertise the terminal capabilities implemented by zenterm. GUI
+    // launchers do not necessarily provide TERM, which leaves shells such as
+    // zsh without terminfo bindings for keys like forward Delete.
+    cmd.env("TERM", DEFAULT_TERM);
+    cmd.env("TERM_PROGRAM", "zenterm");
+}
+
 /// A running PTY session connected to a shell process.
 ///
 /// Ownership order in the struct is significant for [`Drop`]:
@@ -101,9 +111,7 @@ impl PtySession {
             .map_err(|e| Error::Pty(e.to_string()))?;
 
         let mut cmd = CommandBuilder::new_default_prog();
-        // Declare we are zenterm, so programs querying TERM_PROGRAM (e.g.
-        // ratatui-image's Picker) don't mistake us for another terminal.
-        cmd.env("TERM_PROGRAM", "zenterm");
+        configure_command_environment(&mut cmd);
         let child = pair
             .slave
             .spawn_command(cmd)
@@ -282,5 +290,45 @@ impl PtySession {
 impl Drop for PtySession {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{configure_command_environment, DEFAULT_TERM};
+    use portable_pty::CommandBuilder;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn command_environment_sets_term_when_parent_does_not() {
+        let mut cmd = CommandBuilder::new_default_prog();
+        cmd.env_remove("TERM");
+
+        configure_command_environment(&mut cmd);
+
+        assert_eq!(cmd.get_env("TERM"), Some(OsStr::new(DEFAULT_TERM)));
+        assert_eq!(cmd.get_env("TERM_PROGRAM"), Some(OsStr::new("zenterm")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_zsh_binds_forward_delete_with_default_term() {
+        let output = std::process::Command::new("/bin/zsh")
+            .args(["-flic", r#"source /etc/zshrc; bindkey "^[[3~""#])
+            .env_remove("TERM")
+            .env("TERM", DEFAULT_TERM)
+            .env("TERM_PROGRAM", "zenterm")
+            .output()
+            .expect("failed to run zsh");
+
+        assert!(
+            output.status.success(),
+            "zsh failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            r#""^[[3~" delete-char"#
+        );
     }
 }
