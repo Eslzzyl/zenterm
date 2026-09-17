@@ -41,14 +41,42 @@ impl SessionId {
 /// Per-session notification badge state.  Resolved from OSC 9 / OSC 99
 /// / OSC 777 escape sequences.  Phase 2.4 (per `roadmap.md`) will
 /// expand this with text payloads, timestamps, and click handlers.
-/// A URL span detected in the visible grid.
-#[derive(Debug, Clone)]
-pub(crate) struct UrlSpan {
+/// The kind of hyperlink detected in terminal output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DetectedLinkKind {
+    /// A URL found in visible text.
+    Url,
+    /// An email address found in visible text.
+    Email,
+    /// An explicit OSC 8 hyperlink.
+    Osc8,
+}
+
+/// One visible row segment belonging to a detected hyperlink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LinkSegment {
     pub row: usize,
     pub col_start: usize,
     pub col_end: usize,
-    #[allow(dead_code)]
-    pub url: String,
+}
+
+/// A hyperlink with its displayed range and normalized launch target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DetectedLink {
+    pub kind: DetectedLinkKind,
+    /// Text or OSC 8 target as it appeared in the terminal data.
+    pub original: String,
+    /// Target passed to the OS opener after normalization and policy checks.
+    pub target: String,
+    pub segments: Vec<LinkSegment>,
+}
+
+impl DetectedLink {
+    pub fn contains_cell(&self, row: usize, col: usize) -> bool {
+        self.segments
+            .iter()
+            .any(|segment| segment.row == row && col >= segment.col_start && col < segment.col_end)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -195,8 +223,8 @@ pub struct TerminalSession {
     pub(crate) url_hover_underline: bool,
     /// Mouse-hovered cell position, updated every frame by `handle_mouse`.
     pub(crate) hover_cell: Option<(usize, usize)>,
-    /// Cached URL spans for the visible grid, rebuilt on dirty.
-    pub(crate) url_spans: Vec<UrlSpan>,
+    /// Cached detected hyperlinks for the visible grid, rebuilt on dirty.
+    pub(crate) detected_links: Vec<DetectedLink>,
     /// Guards against processing the same Ctrl+Click across multiple frames.
     ///
     /// # Workaround
@@ -205,8 +233,8 @@ pub struct TerminalSession {
     /// consecutive frames (root cause not yet identified).  Without this
     /// guard a single Ctrl+Click would open the URL twice.
     ///
-    /// Set to `true` after opening a URL; cleared on the next click that
-    /// does not open a URL.
+    /// Set to `true` after handling a click; cleared on the next frame
+    /// without a click so a later click is never swallowed.
     pub(crate) url_click_handled: bool,
 
     // ── Scrollbar state ────────────────────────────────────────────────

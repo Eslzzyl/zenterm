@@ -44,6 +44,13 @@ impl TerminalSession {
             self.hover_cell = None;
             return;
         }
+        let cell_area = egui::Rect::from_min_max(
+            cell_rect.min,
+            egui::pos2(
+                cell_rect.right() - SCROLLBAR_WIDTH.min(cell_rect.width()),
+                cell_rect.bottom(),
+            ),
+        );
         let ppp = ui.ctx().pixels_per_point();
         let pos = ui.ctx().input(|i| i.pointer.hover_pos());
         log::trace!(
@@ -53,10 +60,11 @@ impl TerminalSession {
             self.cell_width,
             self.cell_height,
         );
-        let mut new_hover = pos.filter(|pos| cell_rect.contains(*pos)).and_then(|pos| {
-            let col_f = (pos.x - cell_rect.left()) * ppp / self.cell_width;
-            let col = (col_f + (1.0 - SELECTION_THRESHOLD)) as usize;
-            let row = ((pos.y - cell_rect.top()) * ppp / self.cell_height) as usize;
+        let mut new_hover = pos.filter(|pos| cell_area.contains(*pos)).and_then(|pos| {
+            // URL hover tracks the cell actually under the pointer.  The
+            // forward-lean threshold is reserved for text selection.
+            let col = ((pos.x - cell_area.left()) * ppp / self.cell_width).floor() as usize;
+            let row = ((pos.y - cell_area.top()) * ppp / self.cell_height).floor() as usize;
             let cols = self.terminal.size().cols as usize;
             let rows = self.terminal.size().rows as usize;
             log::trace!(
@@ -141,12 +149,15 @@ impl TerminalSession {
 
         // ── Scrollbar geometry ───────────────────────────────────────────
         let sb_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.right() - SCROLLBAR_WIDTH, rect.top()),
+            egui::pos2(rect.right() - SCROLLBAR_WIDTH.min(rect.width()), rect.top()),
             egui::pos2(rect.right(), rect.bottom()),
         );
         let cell_area = egui::Rect::from_min_max(
             rect.min,
-            egui::pos2(rect.right() - SCROLLBAR_WIDTH, rect.bottom()),
+            egui::pos2(
+                rect.right() - SCROLLBAR_WIDTH.min(rect.width()),
+                rect.bottom(),
+            ),
         );
 
         // ── Scrollbar: click / drag / track-click ──────────────────────
@@ -232,11 +243,27 @@ impl TerminalSession {
             )
         };
 
+        // URL hit-testing uses the physical cell under the pointer.  Text
+        // selection keeps the forward-lean threshold above for its own UX.
+        let pixel_to_link_cell = |pos: egui::Pos2| -> Option<(usize, usize)> {
+            if !cell_area.contains(pos) {
+                return None;
+            }
+            let col = ((pos.x - cell_area.left()) * ppp / cw).floor() as usize;
+            let row = ((pos.y - cell_area.top()) * ppp / ch).floor() as usize;
+            if col < cols && row < rows {
+                Some((row, col))
+            } else {
+                None
+            }
+        };
+
         // ── Hover tracking (for URL underline) ──────────────────────────
         let new_hover = if self.url_hover_underline {
             let pos = response.hover_pos();
             log::debug!("mouse: response.hover_pos()={:?}", pos);
-            pos.and_then(&pixel_to_cell)
+            pos.and_then(&pixel_to_link_cell)
+                .map(|(row, col)| (row, snap_col(&mut self.terminal, row, col)))
         } else {
             None
         };
@@ -588,27 +615,37 @@ impl TerminalSession {
             return;
         }
 
+        // A duplicated `clicked()` frame must be suppressed, but a later
+        // real click after an idle frame must be accepted.
+        if !response.clicked() {
+            self.url_click_handled = false;
+        }
+
         // ── Single click: URL open (Ctrl+Click) or clear selection ───
         if response.clicked() && !self.selecting && !mouse_reporting {
             if self.url_open && !self.url_click_handled {
                 let ctrl = ui.ctx().input(|i| i.modifiers.ctrl || i.modifiers.mac_cmd);
                 if ctrl
                     && let Some(pos) = response.interact_pointer_pos()
-                    && let Some((row, col)) = pixel_to_cell(pos)
+                    && let Some((row, col)) = pixel_to_link_cell(pos)
                 {
                     let col = snap_col(&mut self.terminal, row, col);
-                    let line = self.terminal.line_text(row);
-                    let finder = linkify::LinkFinder::new();
-                    for link in finder.links(&line) {
-                        let start_col = line[..link.start()].chars().count();
-                        let end_col = line[..link.end()].chars().count();
-                        if col >= start_col && col < end_col {
-                            let url = link.as_str().to_string();
-                            log::info!("url click: opening {url}");
-                            let _ = open::that(&url);
-                            self.url_click_handled = true;
-                            return;
+                    if let Some(link) = self
+                        .detected_links
+                        .iter()
+                        .find(|link| link.contains_cell(row, col))
+                    {
+                        log::info!(
+                            "link click: opening kind={:?} original={} target={}",
+                            link.kind,
+                            link.original,
+                            link.target
+                        );
+                        if let Err(error) = open::that(&link.target) {
+                            log::warn!("link click: failed to open {}: {error}", link.target);
                         }
+                        self.url_click_handled = true;
+                        return;
                     }
                 }
             }

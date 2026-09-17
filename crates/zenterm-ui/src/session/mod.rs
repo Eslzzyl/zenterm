@@ -47,6 +47,7 @@
 
 mod badge;
 mod effects;
+mod links;
 mod mouse;
 mod new;
 mod osc7;

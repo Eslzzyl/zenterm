@@ -77,6 +77,13 @@ pub struct Cell {
     /// should be skipped during rendering.
     pub is_spacer: bool,
 
+    /// True if the terminal wrapped this cell's row into the following row.
+    /// This is metadata from the VT grid, not a visible character attribute.
+    pub is_wrapline: bool,
+
+    /// OSC 8 hyperlink target attached to this cell, if any.
+    pub hyperlink: Option<String>,
+
     /// Optional image overlay placed in this cell.
     ///
     /// When set, the renderer will emit an image quad instead of (or in
@@ -101,6 +108,8 @@ impl Cell {
             dim: false,
             hidden: false,
             is_spacer: false,
+            is_wrapline: false,
+            hyperlink: None,
             image: None,
         }
     }

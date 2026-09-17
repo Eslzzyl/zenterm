@@ -23,7 +23,7 @@ use self::image::{ImageEntryCache, emit_image_quad, image_source_id};
 use self::pass1::emit_background_quad;
 use self::pass3::emit_deco_for_cell;
 use super::shaping;
-use super::types::{TerminalSession, UrlSpan};
+use super::types::TerminalSession;
 use ligature::process_ligature_run;
 
 const GLYPH_HIGH_WATER_CAPACITY: usize = 16 * 1024;
@@ -146,10 +146,6 @@ impl TerminalSession {
             return has_instances;
         }
 
-        let mut atlas = self.atlas.lock();
-        let cw = self.cell_width;
-        let ch = self.cell_height;
-
         let evicted_hashes = self.terminal.take_evicted_image_hashes();
         self.terminal
             .pending_image_deallocations
@@ -203,6 +199,20 @@ impl TerminalSession {
         let default_bg = self.terminal.default_bg();
         let display_offset = self.terminal.display_offset();
 
+        if self.url_open || self.url_hover_underline {
+            self.refresh_detected_links();
+        } else {
+            self.detected_links.clear();
+        }
+
+        let hovered_link = if self.url_hover_underline {
+            self.hovered_link_index()
+        } else {
+            None
+        };
+        let mut atlas = self.atlas.lock();
+        let cw = self.cell_width;
+        let ch = self.cell_height;
         let grid = self.terminal.visible_cells();
         let rows = grid.row_count();
         let cols = grid.col_count();
@@ -276,60 +286,6 @@ impl TerminalSession {
         let mut image_entries = ImageEntryCache::new();
         let mut img_below_count: usize = 0;
         let mut img_above_count: usize = 0;
-
-        // ── URL span detection (for hover underline) ──────────────────
-        self.url_spans.clear();
-        let hovered_url: Option<(usize, usize)> = if self.url_hover_underline {
-            // Re-scan visible rows with linkify.
-            let finder = linkify::LinkFinder::new();
-            for r in 0..rows {
-                let mut line = String::with_capacity(cols);
-                for c in 0..cols {
-                    if let Some(cell) = grid.cell(r, c) {
-                        line.push(cell.c);
-                    }
-                }
-                for link in finder.links(&line) {
-                    let start_col = line[..link.start()].chars().count();
-                    let end_col = line[..link.end()].chars().count();
-                    log::debug!(
-                        "url scan: row={} col={}-{} url={} line={:?}",
-                        r,
-                        start_col,
-                        end_col,
-                        link.as_str(),
-                        line,
-                    );
-                    self.url_spans.push(UrlSpan {
-                        row: r,
-                        col_start: start_col,
-                        col_end: end_col,
-                        url: link.as_str().to_string(),
-                    });
-                }
-            }
-            log::debug!(
-                "url scan: {} spans, hover_cell={:?}",
-                self.url_spans.len(),
-                self.hover_cell
-            );
-            // Find which URL (if any) the cursor is hovering over.
-            self.hover_cell.and_then(|(hr, hc)| {
-                let matched = self
-                    .url_spans
-                    .iter()
-                    .find(|span| span.row == hr && hc >= span.col_start && hc < span.col_end);
-                log::debug!(
-                    "hover match: row={} col={} matched={:?}",
-                    hr,
-                    hc,
-                    matched.as_ref().map(|s| (s.row, s.col_start, s.col_end))
-                );
-                matched.map(|span| (span.row, span.col_end))
-            })
-        } else {
-            None
-        };
 
         // ── Cursor line highlight (OSC 1337 HighlightCursorLine) ─────
         // Emit a full-width background quad at the cursor row.
@@ -437,22 +393,16 @@ impl TerminalSession {
                 // Must be BEFORE the ligature branch, which can skip over
                 // multiple cells via `col = run_end; continue`.
                 log::debug!(
-                    "url_check: hovered_url={:?} row={} col={} terminal_dirty={}",
-                    hovered_url,
+                    "url_check: hovered_link={:?} row={} col={} terminal_dirty={}",
+                    hovered_link,
                     row,
                     col,
                     self.terminal_dirty
                 );
-                if let Some((url_row, url_col_end)) = hovered_url
-                    && row == url_row
-                    && col < url_col_end
+                if hovered_link
+                    .is_some_and(|link| self.detected_links[link].contains_cell(row, col))
                 {
-                    log::debug!(
-                        "url_underline: emit row={} col={} end={}",
-                        row,
-                        col,
-                        url_col_end
-                    );
+                    log::debug!("url_underline: emit row={} col={}", row, col);
                     let thickness = 1.0_f32.max((ch * 0.06).round());
                     let deco_y = y_off + row as f32 * ch + baseline + 0.5;
                     let deco_x = x_off + col as f32 * cw;
@@ -518,18 +468,12 @@ impl TerminalSession {
                         // The ligature branch jumps to run_end, skipping
                         // all cells in (run_start .. run_end).  Any URL
                         // underline for those cells must be emitted here.
-                        if let Some((url_row, url_col_end)) = hovered_url
-                            && row == url_row
-                        {
-                            let emit_start = run_start;
-                            let emit_end = outcome.run_end.min(url_col_end);
-                            for c in emit_start..emit_end {
-                                log::debug!(
-                                    "url_underline: ligature-bypass row={} col={} end={}",
-                                    row,
-                                    c,
-                                    url_col_end
-                                );
+                        if let Some(link) = hovered_link {
+                            for c in run_start..outcome.run_end {
+                                if !self.detected_links[link].contains_cell(row, c) {
+                                    continue;
+                                }
+                                log::debug!("url_underline: ligature-bypass row={} col={}", row, c);
                                 let thickness = 1.0_f32.max((ch * 0.06).round());
                                 let deco_y = y_off + row as f32 * ch + baseline + 0.5;
                                 let deco_x = x_off + c as f32 * cw;

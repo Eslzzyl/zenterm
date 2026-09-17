@@ -353,6 +353,29 @@ impl Terminal {
                     .advance(&mut self.term, &bytes[prev_vt_off..vt_osc_start]);
             }
 
+            // OSC 8 is implemented by alacritty_terminal itself.  Forward its
+            // bytes to the parser so it can attach hyperlink metadata to the
+            // cells written between the opening and closing sequences.  The
+            // custom OSC scanner still sees it, but must not consume it.
+            if osc.number == 8 {
+                if crosses_feed_boundary {
+                    // The prefix was already consumed by vte in the previous
+                    // feed; only forward the newly arrived continuation.
+                    let current_end = osc.byte_end.saturating_sub(osc_prefix_len);
+                    if current_end > 0 {
+                        self.processor
+                            .advance(&mut self.term, &bytes[..current_end]);
+                        prev_vt_off = current_end;
+                    }
+                } else {
+                    let current_end = osc.byte_end - osc_prefix_len;
+                    self.processor
+                        .advance(&mut self.term, &bytes[vt_osc_start..current_end]);
+                    prev_vt_off = current_end;
+                }
+                continue;
+            }
+
             self.dispatch_osc(osc, &mut replies);
 
             // Skip the OSC bytes — the VT parser never sees them.  This is
@@ -536,6 +559,8 @@ impl Terminal {
             dim: flags.contains(Flags::DIM),
             hidden: flags.contains(Flags::HIDDEN),
             is_spacer: flags.contains(Flags::WIDE_CHAR_SPACER),
+            is_wrapline: flags.contains(Flags::WRAPLINE),
+            hyperlink: alacell.hyperlink().map(|link| link.uri().to_owned()),
             image: None,
         }
     }
@@ -659,5 +684,26 @@ mod tests {
 
         assert_eq!(&terminal.line_text(0)[..7], "promptx");
         assert!(terminal.line_text(1).trim().is_empty());
+    }
+
+    #[test]
+    fn osc8_hyperlinks_are_preserved_across_feed_boundaries() {
+        let size = TermSize::new(24, 80, 0, 0);
+        let mut terminal = Terminal::new(size, ColorScheme::default(), CursorPrefs::default());
+
+        terminal.feed(b"\x1b]8;;https://example.com\x07lin");
+        terminal.feed(b"k\x1b]8;;\x07plain");
+
+        let grid = terminal.visible_cells();
+        for col in 0..4 {
+            assert_eq!(
+                grid.cell(0, col).and_then(|cell| cell.hyperlink.as_deref()),
+                Some("https://example.com")
+            );
+        }
+        assert_eq!(
+            grid.cell(0, 4).and_then(|cell| cell.hyperlink.as_deref()),
+            None
+        );
     }
 }
