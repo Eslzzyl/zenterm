@@ -105,6 +105,17 @@ impl ZentermApp {
             }
         }
 
+        // Apply the scrollback limit to every existing session.  The
+        // underlying terminal trims history immediately when it shrinks.
+        if changes.terminal {
+            for session in self.sessions.values_mut() {
+                session
+                    .terminal
+                    .set_scrollback_lines(self.config.terminal.scrollback_lines);
+                session.terminal_dirty = true;
+            }
+        }
+
         // Apply per-session config changes.
         if changes.font || changes.cursor || changes.colors {
             for session in self.sessions.values_mut() {

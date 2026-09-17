@@ -15,6 +15,7 @@ use crate::colors::ColorsConfig;
 use crate::cursor::CursorConfig;
 use crate::font::FontConfig;
 use crate::selection::SelectionConfig;
+use crate::terminal::TerminalConfig;
 use crate::ui::UiConfig;
 use crate::window::WindowConfig;
 
@@ -41,6 +42,10 @@ pub struct Config {
     #[serde(default)]
     pub selection: SelectionConfig,
 
+    /// Terminal buffer and scrollback history.
+    #[serde(default)]
+    pub terminal: TerminalConfig,
+
     /// UI chrome (tabs + sidebar).  Defaults to all-off.
     #[serde(default)]
     pub ui: UiConfig,
@@ -63,6 +68,7 @@ pub struct ConfigChanges {
     pub colors: bool,
     pub cursor: bool,
     pub selection: bool,
+    pub terminal: bool,
     pub ui: bool,
 
     /// Background image or image rendering options changed.
@@ -208,6 +214,7 @@ impl Config {
             colors: self.colors != other.colors,
             cursor: self.cursor != other.cursor,
             selection: self.selection != other.selection,
+            terminal: self.terminal != other.terminal,
             ui: self.ui != other.ui,
             background: self.background != other.background,
             needs_restart: self.window.needs_restart() || other.window.needs_restart(),
@@ -217,6 +224,26 @@ impl Config {
     /// Returns `true` if any section differs from `other`.
     pub fn differs_from(&self, other: &Self) -> bool {
         self != other
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_defaults_match_the_existing_terminal_limit() {
+        assert_eq!(Config::default().terminal.scrollback_lines, 10_000);
+    }
+
+    #[test]
+    fn terminal_section_is_optional_and_participates_in_diff() {
+        let parsed: Config = toml::from_str("[window]\n").expect("default config parses");
+        assert_eq!(parsed.terminal, TerminalConfig::default());
+
+        let mut changed = Config::default();
+        changed.terminal.scrollback_lines = 500;
+        assert!(Config::default().diff_to(&changed).terminal);
     }
 }
 

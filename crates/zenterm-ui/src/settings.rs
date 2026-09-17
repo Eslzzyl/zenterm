@@ -19,6 +19,7 @@ use zenterm_config::colors::{
 use zenterm_config::cursor::{Blinking, CursorConfig, CursorShape};
 use zenterm_config::font::{FontConfig, FontDescription};
 use zenterm_config::selection::SelectionConfig;
+use zenterm_config::terminal::TerminalConfig;
 use zenterm_config::ui::{SidebarPosition, UiConfig};
 use zenterm_config::window::WindowConfig;
 use zenterm_core::color::Rgba;
@@ -32,6 +33,7 @@ use crate::settings_widgets;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
     Window,
+    Terminal,
     Font,
     Colors,
     Cursor,
@@ -44,6 +46,7 @@ impl SettingsSection {
     /// All sections, in display order.
     pub const ALL: &'static [Self] = &[
         Self::Window,
+        Self::Terminal,
         Self::Font,
         Self::Colors,
         Self::Cursor,
@@ -55,6 +58,7 @@ impl SettingsSection {
     pub fn label(self) -> &'static str {
         match self {
             Self::Window => "Window",
+            Self::Terminal => "Terminal",
             Self::Font => "Font",
             Self::Colors => "Colors",
             Self::Cursor => "Cursor",
@@ -67,6 +71,7 @@ impl SettingsSection {
     pub fn icon(self) -> &'static str {
         match self {
             Self::Window => crate::icons::APP_WINDOW,
+            Self::Terminal => crate::icons::TERMINAL_WINDOW,
             Self::Font => crate::icons::TEXT_T,
             Self::Colors => crate::icons::PALETTE,
             Self::Cursor => crate::icons::CURSOR,
@@ -368,6 +373,7 @@ fn render_section(
 ) {
     match section {
         SettingsSection::Window => render_window_section(ui, &mut cfg.window),
+        SettingsSection::Terminal => render_terminal_section(ui, &mut cfg.terminal),
         SettingsSection::Font => {
             render_font_section(ui, &mut cfg.font, font_families, registered_fonts)
         }
@@ -403,6 +409,19 @@ fn render_window_section(ui: &mut egui::Ui, w: &mut WindowConfig) {
         "Decorations",
         &mut w.decorations,
         "Show window title bar and borders (requires restart)",
+    );
+}
+
+// ── Terminal section ─────────────────────────────────────────────────────
+
+fn render_terminal_section(ui: &mut egui::Ui, terminal: &mut TerminalConfig) {
+    settings_widgets::section_header(ui, "Terminal", "Terminal buffer and scrollback history.");
+    settings_widgets::drag_usize(
+        ui,
+        "Scrollback Lines",
+        &mut terminal.scrollback_lines,
+        100.0,
+        "Maximum retained history lines (0 = disabled)",
     );
 }
 

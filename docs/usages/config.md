@@ -32,6 +32,24 @@ decorations = true
 
 ---
 
+## `[terminal]` — Terminal buffer
+
+Controls how many lines of terminal output remain available when scrolling
+back through the main screen.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `scrollback_lines` | `integer` | `10000` | Maximum retained history lines. `0` disables scrollback history. Changes apply immediately to existing sessions. |
+
+### Example
+
+```toml
+[terminal]
+scrollback_lines = 5000
+```
+
+---
+
 ## `[background]` — Background image
 
 Show an image behind the terminal content.  The image is rendered through the
@@ -347,6 +365,9 @@ dimensions = { columns = 120, lines = 40 }
 padding = { x = 4, y = 4 }
 title = "Zenterm"
 decorations = true
+
+[terminal]
+scrollback_lines = 10000
 
 [font]
 size = 14.0

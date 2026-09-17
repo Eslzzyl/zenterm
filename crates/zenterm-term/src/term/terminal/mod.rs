@@ -77,6 +77,10 @@ impl Default for CursorPrefs {
 /// for byte processing.
 pub struct Terminal {
     term: Term<Listener>,
+    /// Options last supplied to the underlying terminal.  Keeping this
+    /// copy lets individual runtime settings change without resetting
+    /// unrelated terminal behaviour.
+    term_config: TermConfig,
     rx: mpsc::Receiver<Event>,
     processor: Processor,
     damage: DamageSet,
@@ -180,7 +184,23 @@ impl Terminal {
 
     /// Create a new terminal with the given dimensions.
     pub fn new(size: TermSize, scheme: ColorScheme, cursor: CursorPrefs) -> Self {
+        Self::new_with_scrollback(
+            size,
+            scheme,
+            cursor,
+            TermConfig::default().scrolling_history,
+        )
+    }
+
+    /// Create a new terminal with an explicit scrollback limit.
+    pub fn new_with_scrollback(
+        size: TermSize,
+        scheme: ColorScheme,
+        cursor: CursorPrefs,
+        scrollback_lines: usize,
+    ) -> Self {
         let config = TermConfig {
+            scrolling_history: scrollback_lines,
             kitty_keyboard: true,
             default_cursor_style: vte::ansi::CursorStyle {
                 shape: cursor.shape,
@@ -197,13 +217,14 @@ impl Terminal {
         // colour queries, …) are properly answered.
         let (tx, rx) = mpsc::channel();
         let listener = Listener { tx };
-        let term = Term::new(config, &dim, listener);
+        let term = Term::new(config.clone(), &dim, listener);
 
         let cols = dim.columns();
         let rows = dim.screen_lines();
 
         Self {
             term,
+            term_config: config,
             rx,
             processor: Processor::new(),
             damage: DamageSet::new(rows),
@@ -608,6 +629,22 @@ mod tests {
         on.feed(b"\x1b[?12l"); // ATTRIBUTE_BLINK: unset blinking
         on.feed(b"\x1b[0 q"); // DECSCUSR: steady block
         assert!(on.cursor().style.blinking);
+    }
+
+    #[test]
+    fn scrollback_limit_is_applied_to_existing_history() {
+        let size = TermSize::new(2, 10, 0, 0);
+        let mut terminal =
+            Terminal::new_with_scrollback(size, ColorScheme::default(), CursorPrefs::default(), 10);
+
+        terminal.feed(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n");
+        assert!(terminal.history_size() > 0);
+
+        terminal.set_scrollback_lines(1);
+        assert!(terminal.history_size() <= 1);
+
+        terminal.set_scrollback_lines(0);
+        assert_eq!(terminal.history_size(), 0);
     }
 
     #[test]

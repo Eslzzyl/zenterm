@@ -112,6 +112,19 @@ pub fn drag_u64(ui: &mut egui::Ui, label: &str, value: &mut u64, speed: f32, des
     });
 }
 
+/// A labelled drag-value for `usize`.
+pub fn drag_usize(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut usize,
+    speed: f32,
+    description: &str,
+) {
+    row(ui, label, description, |ui| {
+        ui.add(egui::DragValue::new(value).speed(speed).max_decimals(0));
+    });
+}
+
 // ── Text ───────────────────────────────────────────────────────────────
 
 /// A labelled single-line text input.

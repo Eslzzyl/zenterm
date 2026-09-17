@@ -89,6 +89,13 @@ impl Terminal {
         self.term.grid().history_size()
     }
 
+    /// Update the scrollback limit and immediately release rows above it.
+    pub fn set_scrollback_lines(&mut self, scrollback_lines: usize) {
+        self.term_config.scrolling_history = scrollback_lines;
+        self.term.set_options(self.term_config.clone());
+        self.damage.mark_all();
+    }
+
     /// Current scroll position. 0 = at bottom, larger = scrolled into history.
     pub fn display_offset(&self) -> usize {
         self.term.grid().display_offset()

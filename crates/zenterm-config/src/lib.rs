@@ -39,6 +39,7 @@ pub mod colors;
 pub mod cursor;
 pub mod font;
 pub mod selection;
+pub mod terminal;
 pub mod ui;
 pub mod window;
 

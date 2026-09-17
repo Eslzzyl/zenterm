@@ -73,6 +73,7 @@ impl TerminalSession {
         id: SessionId,
         size: TermSize,
         scheme: ColorScheme,
+        scrollback_lines: usize,
         cursor: &CursorConfig,
         save_to_clipboard: bool,
         default_bg: egui::Color32,
@@ -91,13 +92,14 @@ impl TerminalSession {
         };
         let mut pty = zenterm_pty::PtySession::spawn_with_wakeup(size, Some(wakeup))
             .expect("failed to spawn PTY");
-        let mut terminal = Terminal::new(
+        let mut terminal = Terminal::new_with_scrollback(
             size,
             scheme,
             CursorPrefs {
                 shape: Self::map_cursor_shape(cursor.style.shape),
                 blink: Self::map_blink_policy(cursor.style.blinking),
             },
+            scrollback_lines,
         );
 
         let (cell_width, cell_height) = atlas.cell_size();

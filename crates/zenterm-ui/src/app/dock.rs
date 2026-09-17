@@ -143,6 +143,7 @@ impl ZentermApp {
                             id,
                             size,
                             scheme,
+                            self.config.terminal.scrollback_lines,
                             &self.config.cursor,
                             self.config.selection.save_to_clipboard,
                             self.default_bg,
