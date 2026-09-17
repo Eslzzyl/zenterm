@@ -203,7 +203,7 @@ jobs:
             --binaries-dir "target/$TARGET/release"
           )
 
-          if [[ "$PLATFORM" == "macos" && "$ARCH" == "aarch64" ]]; then
+          if [[ "$PLATFORM" == "macos" ]]; then
             packager_log="$(mktemp)"
             trap 'rm -f "$packager_log"' EXIT
             for attempt in 1 2 3; do
@@ -211,7 +211,7 @@ jobs:
               if cargo packager "${packager_args[@]}" 2>&1 | tee "$packager_log"; then
                 break
               fi
-              if ! grep -Fq 'hdiutil: create failed - Resource busy' "$packager_log"; then
+              if ! grep -Eq 'hdiutil: .*Resource busy' "$packager_log"; then
                 echo "cargo packager failed with a non-retryable error" >&2
                 exit 1
               fi
