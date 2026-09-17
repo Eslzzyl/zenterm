@@ -92,13 +92,13 @@ jobs:
       - uses: ./.github/actions/install-linux-deps
 
       - name: Check formatting
-        run: cargo fmt --check
+        run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --package zenterm --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --package zenterm
+        run: cargo test --workspace
 
   build:
     name: Build ${{ matrix.platform }} ${{ matrix.arch }}

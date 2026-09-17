@@ -46,12 +46,6 @@ Dock 渲染前后都会对完整 `DockState` 执行 `serde_json::to_vec`，仅�
 
 ## 结构与验证缺口
 
-### ZT-14：发布检查未覆盖工作区单测，普通推送没有该 CI 检查（代码已确认）
-
-唯一工作流只在 `v*` 标签推送或手动派发时启动；其中 Clippy 与测试都仅指定 `zenterm` 包。其他库 crate 的单元测试不会由这条 `cargo test --package zenterm` 命令执行；项目虽另有终端视觉测试工具，它也没有接入该工作流。不能据此推断库测试当前是否通过。
-
-依据：[触发器](.github/workflows/release.yml#L1-L8)、[检查命令](.github/workflows/release.yml#L71-L105)、[视觉测试说明](terminal-render-test/README.md#L1-L21)。建议增加日常推送/PR 检查，并覆盖工作区测试。
-
 ### ZT-15：架构文档和配置文档存在明显漂移（代码已确认）
 
 `docs/architecture.md` 和 `docs/components.md` 的目录图仍展示根目录 `src/` 与 `alacritty/`、`wezterm/`，依赖表还保留 `copypasta` 等已不符合当前 manifest 的内容，而当前实现为 `crates/` 工作区。配置文档还把窗口 padding 默认值写成 `8,6`，代码默认值为 `12,10`。这些差异会误导模块定位、配置排查和维护。
