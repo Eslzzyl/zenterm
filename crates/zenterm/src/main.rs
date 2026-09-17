@@ -73,6 +73,10 @@ fn main() -> eframe::Result<()> {
         // driver; MemoryUsage starts at 8 MB and grows as needed.
         // See https://github.com/gfx-rs/wgpu/pull/5875
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            // Keep at most one frame queued so resize/focus transitions do
+            // not expose an older clear-only frame while the terminal grid
+            // is being rebuilt.
+            desired_maximum_frame_latency: Some(1),
             wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(
                 eframe::egui_wgpu::WgpuSetupCreateNew {
                     instance_descriptor: wgpu::InstanceDescriptor::new_without_display_handle(),

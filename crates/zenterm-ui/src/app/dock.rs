@@ -201,7 +201,9 @@ impl ZentermApp {
 
         // ── Central dock area ──────────────────────────────────────
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE)
+            // Cover newly exposed resize pixels with the terminal canvas
+            // colour instead of leaving them to the surface clear colour.
+            .frame(egui::Frame::NONE.fill(self.default_bg))
             .show_inside(ui, |ui| {
                 // Compute the dock-area rect (union of all session
                 // viewports) for the single wgpu callback.

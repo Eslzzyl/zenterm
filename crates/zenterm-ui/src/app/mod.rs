@@ -387,7 +387,20 @@ impl eframe::App for ZentermApp {
         //
         // Window focus is propagated to every session here so the render
         // pass can draw the hollow cursor when the window is unfocused.
-        let window_focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
+        let main_viewport_focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
+        // The settings window is part of the application.  Treating a focus
+        // transfer between the root and settings viewports as an application
+        // focus loss invalidates every session's cached instances twice: once
+        // when settings gains focus and again when it closes.  Keep terminal
+        // focus logical while the settings viewport owns OS focus, while
+        // still reporting the app as unfocused when both viewports lose focus.
+        let settings_viewport_focused = ctx
+            .input_for(
+                egui::ViewportId::from_hash_of("zenterm_settings_viewport"),
+                |i| i.viewport().focused,
+            )
+            .unwrap_or(false);
+        let window_focused = main_viewport_focused || settings_viewport_focused;
         for session in self.sessions.values_mut() {
             if session.window_focused != window_focused {
                 // Focus changes must invalidate the cached instances so
@@ -535,7 +548,11 @@ impl eframe::App for ZentermApp {
         } else {
             // Legacy single-terminal path (no dock, no sidebar).
             egui::CentralPanel::default()
-                .frame(egui::Frame::NONE)
+                // Paint the full terminal area, including pixels newly
+                // exposed during a resize, with the terminal background.
+                // This prevents the surface clear colour from showing
+                // through outside the cell rectangle for one frame.
+                .frame(egui::Frame::NONE.fill(self.default_bg))
                 .show_inside(ui, |ui| {
                     render_legacy_single(ui, &mut self.sessions, self.background_image_loaded);
                 });
