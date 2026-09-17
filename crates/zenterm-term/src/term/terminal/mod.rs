@@ -353,11 +353,13 @@ impl Terminal {
                     .advance(&mut self.term, &bytes[prev_vt_off..vt_osc_start]);
             }
 
-            // OSC 8 is implemented by alacritty_terminal itself.  Forward its
-            // bytes to the parser so it can attach hyperlink metadata to the
-            // cells written between the opening and closing sequences.  The
-            // custom OSC scanner still sees it, but must not consume it.
-            if osc.number == 8 {
+            // These OSCs are implemented by alacritty_terminal itself.
+            // Forward their bytes to the parser so it can produce title and
+            // clipboard events (and attach hyperlink metadata for OSC 8).
+            // The custom OSC scanner still sees them, but must not consume
+            // them.  For a sequence spanning feed boundaries, the prefix was
+            // already consumed by vte; only forward the newly arrived bytes.
+            if matches!(osc.number, 0 | 2 | 8 | 52) {
                 if crosses_feed_boundary {
                     // The prefix was already consumed by vte in the previous
                     // feed; only forward the newly arrived continuation.
@@ -705,5 +707,18 @@ mod tests {
             grid.cell(0, 4).and_then(|cell| cell.hyperlink.as_deref()),
             None
         );
+    }
+
+    #[test]
+    fn standard_osc_title_and_clipboard_survive_feed_boundaries() {
+        let size = TermSize::new(24, 80, 0, 0);
+        let mut terminal = Terminal::new(size, ColorScheme::default(), CursorPrefs::default());
+
+        terminal.feed(b"\x1b]2;split title");
+        terminal.feed(b"\x07\x1b]52;c;aGVsbG8=");
+        terminal.feed(b"\x07");
+
+        assert_eq!(terminal.take_title().as_deref(), Some("split title"));
+        assert_eq!(terminal.take_clipboard_store().as_deref(), Some("hello"));
     }
 }
