@@ -742,15 +742,14 @@ impl ZentermApp {
         // Clear flags immediately — show theme bg while async load runs.
         self.background_image_loaded = false;
         self.loaded_bg_image_size = None;
-        *self
-            .gpu
-            .shared
-            .background_data
-            .lock()
-            .expect("background_data lock") = None;
+        let shared = self.gpu.shared.clone();
+        let request_gen = shared
+            .background_request_gen
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1;
+        *shared.background_data.lock().expect("background_data lock") = None;
 
         let path = path.to_owned();
-        let shared = self.gpu.shared.clone();
         let egui_ctx = self.egui_ctx.clone();
 
         std::thread::spawn(move || {
@@ -771,8 +770,19 @@ impl ZentermApp {
 
             match result {
                 Some(bg) => {
-                    *shared.background_data.lock().expect("background_data lock") = Some(bg);
-                    log::debug!("bg: total async load took {:?}", _t0.elapsed());
+                    let mut data = shared.background_data.lock().expect("background_data lock");
+                    if shared
+                        .background_request_gen
+                        .load(std::sync::atomic::Ordering::Acquire)
+                        == request_gen
+                    {
+                        *data = Some(bg);
+                        log::debug!("bg: total async load took {:?}", _t0.elapsed());
+                    } else {
+                        log::debug!(
+                            "bg: discarding stale async load for {path} (request gen {request_gen})"
+                        );
+                    }
                 }
                 None => log::warn!("Failed to load background image: {path}"),
             }

@@ -47,6 +47,8 @@ pub struct SharedRenderState {
     /// Pending background image upload.  Written by the UI thread when the
     /// user sets/changes the background image; consumed by `prepare()`.
     pub background_data: Mutex<Option<BackgroundImageData>>,
+    /// Monotonic request generation used to discard stale async decodes.
+    pub background_request_gen: AtomicU64,
     /// Monotonically increasing generation counter for background texture
     /// changes.  `prepare()` checks this to decide whether to upload.
     pub background_gen: AtomicU64,
@@ -165,6 +167,7 @@ impl SharedRenderState {
             atlas_update: Mutex::new(None),
             image_update: Mutex::new(None),
             background_data: Mutex::new(None),
+            background_request_gen: AtomicU64::new(0),
             background_gen: AtomicU64::new(0),
         }
     }

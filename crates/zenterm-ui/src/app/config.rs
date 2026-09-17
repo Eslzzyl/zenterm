@@ -180,6 +180,10 @@ impl ZentermApp {
                         // Clear the background image.
                         self.background_image_loaded = false;
                         self.loaded_bg_image_size = None;
+                        self.gpu
+                            .shared
+                            .background_request_gen
+                            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                         *self
                             .gpu
                             .shared
