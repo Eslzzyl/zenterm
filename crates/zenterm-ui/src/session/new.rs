@@ -181,6 +181,7 @@ impl TerminalSession {
             notification_resp_tx,
             notification_resp_rx,
             batch_buf: Vec::new(),
+            pending_pty_data: std::collections::VecDeque::new(),
             tab_active: false,
         }
     }

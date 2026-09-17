@@ -10,6 +10,7 @@ use super::types::{TITLE_DEBOUNCE_MS, TerminalSession};
 
 const PTY_BATCH_MIN_CAPACITY: usize = 64 * 1024;
 const PTY_BATCH_HIGH_WATER_CAPACITY: usize = PTY_BATCH_MIN_CAPACITY * 4;
+const PTY_MAX_BYTES_PER_PUMP: usize = 256 * 1024;
 
 fn trim_batch_capacity(batch: &mut Vec<u8>) {
     let recent_len = batch.len().max(PTY_BATCH_MIN_CAPACITY);
@@ -20,15 +21,36 @@ fn trim_batch_capacity(batch: &mut Vec<u8>) {
     }
 }
 
+/// Move at most `budget` bytes from pending PTY chunks into the current
+/// frame's batch, retaining any suffix for the next frame.
+fn append_pending_pty_data(
+    pending: &mut std::collections::VecDeque<Vec<u8>>,
+    batch: &mut Vec<u8>,
+    budget: usize,
+) {
+    while batch.len() < budget {
+        let Some(data) = pending.pop_front() else {
+            break;
+        };
+        let remaining = budget - batch.len();
+        if data.len() <= remaining {
+            batch.extend_from_slice(&data);
+        } else {
+            let (head, tail) = data.split_at(remaining);
+            batch.extend_from_slice(head);
+            pending.push_front(tail.to_vec());
+        }
+    }
+}
+
 impl TerminalSession {
     /// Drain pending PTY bytes into the terminal state machine, write
     /// terminal-query responses back to the PTY, and detect shell exit
     /// (the latter is required for Windows ConPTY where the output
     /// pipe is not closed on child exit).
     ///
-    /// All pending chunks are **batched** into a single `feed()` call
-    /// to minimise VT parser, lock, and damage-propagation overhead
-    /// under high-throughput output (e.g. `cat` of a large file).
+    /// Pending chunks are batched into one `feed()` call per frame, subject
+    /// to a byte budget so high-throughput output cannot monopolise the UI.
     pub fn pump_pty(&mut self) {
         if self.pty_exited {
             return;
@@ -39,16 +61,42 @@ impl TerminalSession {
         if batch.capacity() < PTY_BATCH_MIN_CAPACITY {
             batch.reserve(PTY_BATCH_MIN_CAPACITY - batch.capacity());
         }
-        while let Some(result) = self.pty.try_read() {
+
+        append_pending_pty_data(&mut self.pending_pty_data, batch, PTY_MAX_BYTES_PER_PUMP);
+        let mut pty_end = false;
+        while batch.len() < PTY_MAX_BYTES_PER_PUMP {
+            let Some(result) = self.pty.try_read() else {
+                break;
+            };
             match result {
-                Ok(data) => batch.extend_from_slice(&data),
+                Ok(data) => {
+                    let remaining = PTY_MAX_BYTES_PER_PUMP - batch.len();
+                    if data.len() <= remaining {
+                        batch.extend_from_slice(&data);
+                    } else {
+                        let (head, tail) = data.split_at(remaining);
+                        batch.extend_from_slice(head);
+                        self.pending_pty_data.push_back(tail.to_vec());
+                        break;
+                    }
+                }
                 Err(e) => {
                     log::info!("PTY session ended ({e}), exiting");
                     self.pty_exited = true;
                     self.pty.close();
+                    pty_end = true;
                     break;
                 }
             }
+        }
+        if batch.len() == PTY_MAX_BYTES_PER_PUMP && !self.pending_pty_data.is_empty() {
+            log::trace!(
+                "pump_pty: frame byte budget reached ({} bytes), deferring remaining PTY data",
+                PTY_MAX_BYTES_PER_PUMP
+            );
+        }
+        if pty_end {
+            log::trace!("pump_pty: PTY end observed while draining output");
         }
         if !batch.is_empty() {
             log::trace!("pump_pty: batching {} bytes from PTY", batch.len());
@@ -483,5 +531,20 @@ mod tests {
 
         assert!(batch.capacity() < old_capacity);
         assert!(batch.capacity() >= PTY_BATCH_MIN_CAPACITY);
+    }
+
+    #[test]
+    fn pending_pty_chunk_is_split_without_losing_order() {
+        let mut pending = std::collections::VecDeque::from([b"abcdef".to_vec()]);
+        let mut batch = Vec::new();
+
+        append_pending_pty_data(&mut pending, &mut batch, 4);
+        assert_eq!(batch, b"abcd");
+        assert_eq!(pending.len(), 1);
+
+        batch.clear();
+        append_pending_pty_data(&mut pending, &mut batch, 4);
+        assert_eq!(batch, b"ef");
+        assert!(pending.is_empty());
     }
 }

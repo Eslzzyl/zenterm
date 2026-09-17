@@ -3,7 +3,7 @@
 //! Defines [`SessionId`], [`NotificationState`], and the
 //! [`TerminalSession`] struct that represents a single terminal tab.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -205,6 +205,9 @@ pub struct TerminalSession {
     /// Avoids allocating a new Vec in `pump_pty()` on every call.
     /// Cleared and repopulated each pump cycle.
     pub(crate) batch_buf: Vec<u8>,
+    /// PTY bytes left over when a frame budget splits an output chunk.
+    /// Kept ahead of newly received chunks to preserve terminal byte order.
+    pub(crate) pending_pty_data: VecDeque<Vec<u8>>,
 
     /// ── Title debounce ──────────────────────────────────────────────────
     ///
