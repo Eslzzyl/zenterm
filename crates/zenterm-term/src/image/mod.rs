@@ -25,6 +25,9 @@ pub struct ImageCache {
     number_to_id: HashMap<u32, u32>,
     id_to_data: HashMap<u32, Arc<ImageData>>,
     used_memory: usize,
+    /// Content hashes whose CPU cache entries were evicted and whose GPU
+    /// atlas allocations can be released by the renderer.
+    evicted_hashes: Vec<[u8; 32]>,
     /// Maximum allowed memory for cached images.
     /// When exceeded, unreferenced images are pruned.
     max_memory: usize,
@@ -37,6 +40,7 @@ impl ImageCache {
             number_to_id: HashMap::new(),
             id_to_data: HashMap::new(),
             used_memory: 0,
+            evicted_hashes: Vec::new(),
             max_memory: 320 * 1024 * 1024, // 320 MB
         }
     }
@@ -62,7 +66,7 @@ impl ImageCache {
 
     /// Store an image under the given id.
     pub fn insert(&mut self, image_id: u32, data: Arc<ImageData>) {
-        if image_id != 0 {
+        if self.id_to_data.contains_key(&image_id) {
             self.remove(image_id);
         }
         self.used_memory += data.len();
@@ -98,6 +102,11 @@ impl ImageCache {
         self.id_to_data.keys().copied().collect()
     }
 
+    /// Take hashes evicted by the memory budget since the last render pass.
+    pub fn take_evicted_hashes(&mut self) -> Vec<[u8; 32]> {
+        std::mem::take(&mut self.evicted_hashes)
+    }
+
     /// Remove all images and placements.
     pub fn clear(&mut self) {
         self.id_to_data.clear();
@@ -110,17 +119,34 @@ impl ImageCache {
         if self.used_memory <= self.max_memory {
             return;
         }
-        let referenced: std::collections::HashSet<u32> = self.id_to_data.keys().copied().collect();
         let target = self.used_memory - self.max_memory;
         let mut freed = 0;
-        self.id_to_data.retain(|id, data| {
-            if referenced.contains(id) || freed >= target {
-                true
-            } else {
-                freed += data.len();
-                false
+
+        // `ImageCell` keeps an Arc to every image that is currently placed
+        // on the terminal grid.  Use that ownership as the reference signal
+        // instead of treating every cached image as referenced.  Images that
+        // are still displayed therefore remain available, while stale cache
+        // entries can be reclaimed when the budget is exceeded.
+        let candidates: Vec<u32> = self
+            .id_to_data
+            .iter()
+            .filter_map(|(&id, data)| (Arc::strong_count(data) == 1).then_some(id))
+            .collect();
+
+        for id in candidates {
+            if freed >= target {
+                break;
             }
-        });
+            if let Some(data) = self.id_to_data.remove(&id) {
+                self.number_to_id.retain(|_, mapped_id| *mapped_id != id);
+                let hash = data.hash();
+                freed += data.len();
+                if !self.id_to_data.values().any(|other| other.hash() == hash) {
+                    self.evicted_hashes.push(hash);
+                }
+            }
+        }
+
         self.used_memory = self.used_memory.saturating_sub(freed);
     }
 }
@@ -128,5 +154,60 @@ impl ImageCache {
 impl Default for ImageCache {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zenterm_core::image::ImageDataType;
+
+    fn image(size: usize) -> Arc<ImageData> {
+        Arc::new(ImageData::new(ImageDataType::new_rgba8(
+            vec![0; size],
+            size as u32,
+            1,
+        )))
+    }
+
+    #[test]
+    fn prune_removes_unreferenced_images() {
+        let mut cache = ImageCache::new();
+        cache.max_memory = 8;
+
+        cache.insert(1, image(8));
+        cache.insert(2, image(8));
+
+        assert_eq!(cache.used_memory, 8);
+        assert_eq!(cache.id_to_data.len(), 1);
+    }
+
+    #[test]
+    fn prune_keeps_images_referenced_by_image_cells() {
+        let mut cache = ImageCache::new();
+        cache.max_memory = 8;
+
+        cache.insert(1, image(8));
+        let referenced = Arc::clone(cache.get(1).expect("inserted image"));
+        cache.insert(2, image(8));
+
+        assert!(cache.get(1).is_some());
+        assert!(cache.used_memory <= 16);
+
+        drop(referenced);
+        cache.insert(3, image(8));
+        assert!(cache.used_memory <= 8);
+        assert!(cache.id_to_data.len() <= 1);
+    }
+
+    #[test]
+    fn replacing_anonymous_image_keeps_memory_accounting_consistent() {
+        let mut cache = ImageCache::new();
+
+        cache.insert(0, image(8));
+        cache.insert(0, image(16));
+
+        assert_eq!(cache.used_memory, 16);
+        assert_eq!(cache.get(0).expect("anonymous image").len(), 16);
     }
 }
