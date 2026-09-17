@@ -8,12 +8,6 @@
 
 ## 其他功能与可靠性问题
 
-### ZT-18：终端图像的 GPU source 引用在清空 placement 后可能滞留（风险，待压测）
-
-`Terminal::resize` 会清空 image placement，但 `TerminalSession.image_sources` 只在 session `Drop` 或 CPU 图像缓存驱逐时释放。反复 resize、覆盖或重建图像时，GPU 图像 source 引用可能长期保留，直到会话关闭或缓存驱逐。
-
-依据：[resize 清空 placement](crates/zenterm-term/src/term/terminal/grid.rs#L23-L34)、[source 释放路径](crates/zenterm-ui/src/glyph_cache.rs#L258-L304)、[仅在 Drop 全量释放](crates/zenterm-ui/src/session/types.rs#L275-L280)。建议让 placement 生命周期和 source 引用生命周期显式关联，并增加重复 resize/图像覆盖测试。
-
 ### ZT-19：会话构造逻辑重复，`TerminalSession` 职责过重（架构债务）
 
 `TerminalSession` 同时管理 PTY、终端核心、输入状态、鼠标选择、通知、剪贴板、字体/图像缓存和 GPU 实例缓存；创建逻辑还分别出现在应用初始化、普通新建标签和新建工作区路径中。未来修改启动参数、配置同步或资源初始化时容易产生分叉行为。

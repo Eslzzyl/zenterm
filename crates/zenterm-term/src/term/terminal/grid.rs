@@ -1,5 +1,7 @@
 //! Grid sizing, scrollback, and resolved cell projection.
 
+use std::collections::HashSet;
+
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::vte::ansi::Color;
@@ -15,6 +17,28 @@ use super::Terminal;
 use super::unicode::{PLACEHOLDER_CHAR, diacritic_value};
 
 impl Terminal {
+    fn placement_image_hashes(&self) -> HashSet<[u8; 32]> {
+        let mut hashes = self
+            .image_placements
+            .values()
+            .map(|cell| cell.data.hash())
+            .collect::<HashSet<_>>();
+        for placement in self.virtual_placements.values() {
+            if let Some(data) = self.image_cache.get(placement.image_id) {
+                hashes.insert(data.hash());
+            }
+        }
+        hashes
+    }
+
+    fn queue_released_placement_hashes(&mut self, hashes: HashSet<[u8; 32]>) {
+        for hash in hashes {
+            if !self.pending_image_deallocations.contains(&hash) {
+                self.pending_image_deallocations.push(hash);
+            }
+        }
+    }
+
     /// Update the physical cell metrics without changing the terminal grid.
     ///
     /// Font and DPI changes can leave the row/column count unchanged, so a
@@ -30,6 +54,7 @@ impl Terminal {
     }
 
     pub fn resize(&mut self, size: TermSize) {
+        let released_image_hashes = self.placement_image_hashes();
         let dim = TermDimensions(size);
         let cols = dim.columns();
         let rows = dim.screen_lines();
@@ -42,6 +67,7 @@ impl Terminal {
         }
         self.image_placements.clear();
         self.virtual_placements.clear();
+        self.queue_released_placement_hashes(released_image_hashes);
         self.damage.mark_all();
         self.pixel_width = size.pixel_width as u32;
         self.pixel_height = size.pixel_height as u32;

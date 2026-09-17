@@ -89,8 +89,9 @@ pub struct Terminal {
 
     // ── Image protocol state ────────────────────────────────────────────
     pub(crate) image_cache: ImageCache,
-    /// Hashes of images that were removed and whose GPU atlas slots need
-    /// to be freed.  Drained by the UI layer each frame.
+    /// Hashes whose GPU atlas source references need to be freed.  This
+    /// includes images removed from the CPU cache and images whose terminal
+    /// placements were cleared.  Drained by the UI layer each frame.
     pub pending_image_deallocations: Vec<[u8; 32]>,
     /// Image placements keyed by grid (line, col) so they follow content
     /// during scroll.  `line` is a grid-relative `Line.0` (may be negative
@@ -745,5 +746,37 @@ mod tests {
         let view = terminal.visible_cells();
         assert_eq!(view.col_count(), 4);
         assert_eq!(view.row_count(), 3);
+    }
+
+    #[test]
+    fn resize_queues_gpu_release_for_cleared_image_placements() {
+        use std::sync::Arc;
+
+        use zenterm_core::image::{ImageCell, ImageData, ImageDataType, TextureCoordinate};
+
+        let mut terminal = Terminal::new(
+            TermSize::new(3, 4, 0, 0),
+            ColorScheme::default(),
+            CursorPrefs::default(),
+        );
+        let data = Arc::new(ImageData::new(ImageDataType::new_rgba8(
+            vec![255, 0, 0, 255],
+            1,
+            1,
+        )));
+        let hash = data.hash();
+        terminal.image_placements.insert(
+            (0, 0),
+            ImageCell::new(
+                TextureCoordinate::new(0.0, 0.0),
+                TextureCoordinate::new(1.0, 1.0),
+                data,
+            ),
+        );
+
+        terminal.resize(TermSize::new(3, 4, 0, 0));
+
+        assert!(terminal.image_placements.is_empty());
+        assert_eq!(terminal.pending_image_deallocations, vec![hash]);
     }
 }
