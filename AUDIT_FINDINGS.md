@@ -14,12 +14,6 @@
 
 依据：[会话聚合状态](crates/zenterm-ui/src/session/types.rs#L94-L207)、[普通创建路径](crates/zenterm-ui/src/app/session_lifecycle.rs#L15-L39)、[新工作区创建路径](crates/zenterm-ui/src/app/dock.rs#L132-L158)。建议引入统一的 session factory，并逐步拆分运行时、视图缓存和通知状态。
 
-### ZT-21：Dock 每帧通过 JSON 序列化检测布局变化（风险，待压测）
-
-Dock 渲染前后都会对完整 `DockState` 执行 `serde_json::to_vec`，仅为判断本帧是否发生布局变化。工作区、分屏和标签数量增加后，这个操作会进入 UI 热路径，并且序列化失败会 panic。
-
-依据：[布局变化检测](crates/zenterm-ui/src/app/dock.rs#L314-L347)。建议使用 egui_dock 的变更信号或在明确的交互回调中标记 dirty，避免每帧序列化完整状态。
-
 ## 结构与验证缺口
 
 ## 已确定的行为与跨平台约束

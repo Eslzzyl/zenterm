@@ -42,6 +42,9 @@ pub struct TabViewerContext<'a> {
     pub background_active: bool,
     /// Inner spacing between the tab body and terminal cell grid.
     pub terminal_padding: egui::Vec2,
+    /// Set when egui_dock changes a persisted layout property during
+    /// rendering, such as tab focus, tab dragging, or a leaf rectangle.
+    pub layout_changed: &'a mut bool,
 }
 
 impl<'a> TabViewer for TabViewerContext<'a> {
@@ -131,6 +134,9 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         // Allocate the terminal area and run mouse / SGR / context-menu.
         let sense = egui::Sense::click_and_drag();
         let response = ui.allocate_rect(content_rect, sense);
+        if response.clicked() || response.drag_started() || response.secondary_clicked() {
+            *self.layout_changed = true;
+        }
         let cell_rect = content_rect;
         log::trace!(
             "[dbg] tab_viewer: calling handle_mouse for tab={:?}, active={:?}, rect={:?}, event_count={}",
@@ -197,6 +203,13 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         if response.clicked() {
             *self.active_session_id = Some(*tab);
         }
+        if response.drag_started() || response.dragged() || response.drag_stopped() {
+            *self.layout_changed = true;
+        }
+    }
+
+    fn on_rect_changed(&mut self, _tab: &mut Self::Tab) {
+        *self.layout_changed = true;
     }
 
     fn on_add(&mut self, _path: NodePath) {

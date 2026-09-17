@@ -292,34 +292,34 @@ impl ZentermApp {
 
                 // ── Render tabs (nested scope to drop viewer early) ──
                 let dock_changed = {
-                    let ws = self.workspaces.active_workspace_mut();
-                    let before = serde_json::to_vec(&ws.dock)
-                        .expect("DockState<SessionId> should serialize");
-                    let mut area = DockArea::new(&mut ws.dock)
-                        .style(style)
-                        .show_close_buttons(self.config.ui.show_close_tab_button)
-                        .show_add_buttons(self.config.ui.show_add_tab_button)
-                        .show_leaf_collapse_buttons(false)
-                        .show_leaf_close_all_buttons(false);
-                    area = area.id(Id::new("zenterm_dock"));
+                    let mut layout_changed = false;
+                    {
+                        let ws = self.workspaces.active_workspace_mut();
+                        let mut area = DockArea::new(&mut ws.dock)
+                            .style(style)
+                            .show_close_buttons(self.config.ui.show_close_tab_button)
+                            .show_add_buttons(self.config.ui.show_add_tab_button)
+                            .show_leaf_collapse_buttons(false)
+                            .show_leaf_close_all_buttons(false);
+                        area = area.id(Id::new("zenterm_dock"));
 
-                    let mut viewer = TabViewerContext {
-                        sessions: &mut self.sessions,
-                        active_session_id: &mut self.active_session_id,
-                        pending_close: &mut self.pending_close,
-                        pending_adds: &mut self.pending_adds,
-                        pending_rename: &mut self.pending_rename,
-                        show_active_indicator,
-                        background_active: self.background_image_loaded,
-                        terminal_padding: egui::vec2(
-                            self.config.window.padding.x,
-                            self.config.window.padding.y,
-                        ),
-                    };
-                    area.show_inside(ui, &mut viewer);
-                    let after = serde_json::to_vec(&ws.dock)
-                        .expect("DockState<SessionId> should serialize");
-                    before != after
+                        let mut viewer = TabViewerContext {
+                            sessions: &mut self.sessions,
+                            active_session_id: &mut self.active_session_id,
+                            pending_close: &mut self.pending_close,
+                            pending_adds: &mut self.pending_adds,
+                            pending_rename: &mut self.pending_rename,
+                            show_active_indicator,
+                            background_active: self.background_image_loaded,
+                            terminal_padding: egui::vec2(
+                                self.config.window.padding.x,
+                                self.config.window.padding.y,
+                            ),
+                            layout_changed: &mut layout_changed,
+                        };
+                        area.show_inside(ui, &mut viewer);
+                    }
+                    layout_changed
                 }; // viewer dropped → self.sessions borrow released
                 if dock_changed {
                     self.workspaces.active_workspace_mut().mark_changed();
