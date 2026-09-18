@@ -420,8 +420,11 @@ fn is_network_path(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_name, normalize_extended_path_text, path_key, simplified_path};
+    use super::{display_name, normalize_extended_path_text, path_key};
     use std::path::Path;
+
+    #[cfg(windows)]
+    use super::simplified_path;
 
     #[test]
     fn display_names_classify_common_shells() {
