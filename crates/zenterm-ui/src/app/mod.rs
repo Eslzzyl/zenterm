@@ -148,11 +148,20 @@ impl ZentermApp {
         let mut shell_initialized = false;
         match config.terminal.shell.clone() {
             Some(shell) => {
-                if let Some(candidate) =
-                    zenterm_pty::candidate_for_path(&shell, zenterm_pty::ShellSource::Configured)
-                    && candidate.program != shell
-                {
-                    config.terminal.shell = Some(candidate.program);
+                let normalized = zenterm_pty::simplified_path(&shell);
+                if let Some(candidate) = zenterm_pty::candidate_for_path(
+                    &normalized,
+                    zenterm_pty::ShellSource::Configured,
+                ) {
+                    if candidate.program != normalized {
+                        config.terminal.shell = Some(candidate.program);
+                        shell_initialized = true;
+                    } else if normalized != shell {
+                        config.terminal.shell = Some(normalized);
+                        shell_initialized = true;
+                    }
+                } else if normalized != shell {
+                    config.terminal.shell = Some(normalized);
                     shell_initialized = true;
                 }
             }
@@ -172,9 +181,7 @@ impl ZentermApp {
 
         // Install Phosphor icon font definitions so all UI chrome
         // has access to crisp, resolution-independent vector icons.
-        let mut fonts = egui::FontDefinitions::default();
-        crate::icons::init_fonts(&mut fonts);
-        egui_ctx.set_fonts(fonts);
+        crate::ui_font::install_ui_fonts(&egui_ctx);
 
         let shared = std::sync::Arc::new(SharedRenderState::new(80 * 24));
         let gpu = SharedGpuContext::new(device, queue, shared.clone());
@@ -220,6 +227,16 @@ impl ZentermApp {
         let config_path = Config::path();
         let layout_io = LayoutIo::from_config_path(&config_path);
         let saved_meta = layout_io.load_sessions();
+        let sessions_need_migration = saved_meta.values().any(|meta| {
+            meta.shell
+                .as_deref()
+                .is_some_and(|path| zenterm_pty::simplified_path(path).as_path() != path)
+                || meta
+                    .cwd
+                    .as_deref()
+                    .is_some_and(|path| zenterm_pty::simplified_path(path).as_path() != path)
+                || zenterm_pty::normalize_extended_path_text(&meta.title) != meta.title
+        });
 
         // ── Session/workspace restoration ─────────────────────────
         // Single-session mode deliberately ignores persisted dock state so
@@ -349,7 +366,7 @@ impl ZentermApp {
             workspaces,
             active_session_id,
             layout_io,
-            layout_dirty: false,
+            layout_dirty: sessions_need_migration,
             last_persist_at: None,
             settings_state: SettingsState::new(&config),
             config,

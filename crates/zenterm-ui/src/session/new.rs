@@ -58,8 +58,9 @@ pub(crate) fn default_working_directory() -> PathBuf {
 /// Otherwise fall back to the platform default before the shell is spawned.
 pub(crate) fn session_working_directory(saved: Option<&Path>) -> PathBuf {
     if let Some(path) = saved {
-        if is_directory(path) {
-            return path.to_path_buf();
+        let normalized = zenterm_pty::simplified_path(path);
+        if is_directory(&normalized) {
+            return normalized;
         }
         log::warn!(
             "session cwd {:?} is unavailable; using platform default",

@@ -146,6 +146,7 @@ impl TerminalSession {
 
         // Buffer incoming title event (don't apply yet — wait for stability).
         if let Some(title) = self.runtime.terminal.take_title() {
+            let title = zenterm_pty::normalize_extended_path_text(&title);
             log::trace!("session: title event '{:?}' (debouncing)", title);
             self.runtime.pending_title = Some((title, Instant::now()));
         }
@@ -437,7 +438,7 @@ impl TerminalSession {
         if let Some(url) = self.runtime.terminal.take_current_directory()
             && let Some(path) = osc7_url_to_path(&url)
         {
-            self.runtime.cwd = Some(path);
+            self.runtime.cwd = Some(zenterm_pty::simplified_path(&path));
         }
 
         // ── OSC 1337 (iTerm2 proprietary) actions ───────────────────

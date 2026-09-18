@@ -1241,6 +1241,7 @@ pub fn register_preview_fonts(ctx: &egui::Context, families: &[String]) -> HashS
 
     let mut fonts = egui::FontDefinitions::default();
     crate::icons::init_fonts(&mut fonts);
+    crate::ui_font::append_cjk_fallback(&mut fonts);
     let mut ok: HashSet<String> = HashSet::with_capacity(families.len());
 
     for family in families {

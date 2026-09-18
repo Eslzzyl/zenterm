@@ -91,7 +91,9 @@ impl SessionRequest {
             scheme: ColorScheme::from_theme(theme),
             scrollback_lines: config.terminal.scrollback_lines,
             cursor: config.cursor.clone(),
-            shell: shell_override.or_else(|| config.terminal.shell.clone()),
+            shell: shell_override
+                .or_else(|| config.terminal.shell.clone())
+                .map(|path| zenterm_pty::simplified_path(&path)),
             cwd,
             save_to_clipboard: config.selection.save_to_clipboard,
             default_bg,

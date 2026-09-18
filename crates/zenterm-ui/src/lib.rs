@@ -25,6 +25,7 @@ mod settings;
 mod settings_widgets;
 mod sidebar;
 mod tab_viewer;
+mod ui_font;
 mod workspace;
 
 pub use app::ZentermApp;

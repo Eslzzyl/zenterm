@@ -334,7 +334,7 @@ fn is_non_interactive_name(path: &Path) -> bool {
 }
 
 fn canonical_path(path: &Path) -> PathBuf {
-    if let Ok(canonical) = fs::canonicalize(path) {
+    if let Ok(canonical) = dunce::canonicalize(path) {
         return canonical;
     }
     if path.is_absolute() {
@@ -343,6 +343,26 @@ fn canonical_path(path: &Path) -> PathBuf {
         std::env::current_dir()
             .map(|directory| directory.join(path))
             .unwrap_or_else(|_| path.to_path_buf())
+    }
+}
+
+/// Return a user-facing filesystem path without Windows' extended-length
+/// prefix when it is safe to do so.
+pub fn simplified_path(path: &Path) -> PathBuf {
+    dunce::simplified(path).to_path_buf()
+}
+
+/// Normalize a path accidentally exposed as a terminal/OSC title.
+///
+/// Shell titles are otherwise opaque user text, so only the extended Windows
+/// path prefix is normalized here.
+pub fn normalize_extended_path_text(text: &str) -> String {
+    if text.starts_with("\\\\?\\") {
+        simplified_path(Path::new(text))
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        text.to_owned()
     }
 }
 
@@ -400,7 +420,7 @@ fn is_network_path(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_name, path_key};
+    use super::{display_name, normalize_extended_path_text, path_key, simplified_path};
     use std::path::Path;
 
     #[test]
@@ -413,5 +433,27 @@ mod tests {
     #[test]
     fn path_keys_normalize_separators() {
         assert_eq!(path_key(Path::new("/tmp/shell")), "/tmp/shell");
+    }
+
+    #[test]
+    fn leaves_non_extended_title_text_unchanged() {
+        assert_eq!(
+            normalize_extended_path_text("project - zenterm"),
+            "project - zenterm"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn simplifies_extended_windows_paths() {
+        let path = Path::new(r"\\?\C:\Windows\System32\cmd.exe");
+        assert_eq!(
+            simplified_path(path),
+            Path::new(r"C:\Windows\System32\cmd.exe")
+        );
+        assert_eq!(
+            normalize_extended_path_text(path.to_str().unwrap()),
+            r"C:\Windows\System32\cmd.exe"
+        );
     }
 }

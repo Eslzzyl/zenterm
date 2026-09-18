@@ -78,10 +78,13 @@ impl ZentermApp {
         egui_ctx: &Context,
     ) -> zenterm_config::ConfigChanges {
         if let Some(shell) = new_config.terminal.shell.clone() {
+            let normalized = zenterm_pty::simplified_path(&shell);
             if let Some(candidate) =
-                zenterm_pty::candidate_for_path(&shell, zenterm_pty::ShellSource::Configured)
+                zenterm_pty::candidate_for_path(&normalized, zenterm_pty::ShellSource::Configured)
             {
                 new_config.terminal.shell = Some(candidate.program);
+            } else {
+                new_config.terminal.shell = Some(normalized);
             }
         } else if let Some(shell) = zenterm_pty::default_shell() {
             new_config.terminal.shell = Some(shell);

@@ -67,10 +67,10 @@ impl ZentermApp {
                     .map(|ws| ws.id.raw());
                 SessionMeta {
                     id: id.0,
-                    title: s.title().to_owned(),
+                    title: zenterm_pty::normalize_extended_path_text(s.title()),
                     title_override: s.title_override().map(str::to_owned),
-                    cwd: s.working_directory().map(std::path::Path::to_path_buf),
-                    shell: s.shell_path().map(std::path::Path::to_path_buf),
+                    cwd: s.working_directory().map(zenterm_pty::simplified_path),
+                    shell: s.shell_path().map(zenterm_pty::simplified_path),
                     workspace_id: ws_id,
                 }
             })

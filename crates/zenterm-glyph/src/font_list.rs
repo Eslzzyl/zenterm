@@ -199,6 +199,91 @@ pub fn validate_font_data(data: &[u8], index: u32) -> bool {
         Err(_) => false,
     }
 }
+
+/// Find a file-backed system font that contains representative CJK glyphs.
+///
+/// The UI keeps egui's default Latin font as its primary face and appends the
+/// result of this lookup as a fallback.  The coverage check is deliberately
+/// done against the selected face, which also handles TrueType collections.
+pub fn find_cjk_font_source(db: &fontdb::Database) -> Option<FontSource> {
+    const PREFERRED_FAMILIES: &[&str] = &[
+        "Microsoft YaHei UI",
+        "Microsoft YaHei",
+        "DengXian",
+        "SimSun",
+        "SimHei",
+        "PingFang SC",
+        "Heiti SC",
+        "Yu Gothic UI",
+        "Yu Gothic",
+        "Noto Sans CJK SC",
+        "Noto Sans SC",
+        "Source Han Sans SC",
+        "WenQuanYi Zen Hei",
+        "Droid Sans Fallback",
+        "Arial Unicode MS",
+    ];
+    const PROBE_GLYPHS: &[char] = &['中', '文', '界'];
+
+    for family in PREFERRED_FAMILIES {
+        if let Some(source) = find_font_source(db, family)
+            && font_source_has_glyphs(&source, PROBE_GLYPHS)
+        {
+            return Some(source);
+        }
+    }
+
+    // Keep a bounded, name-based fallback for distributions whose CJK font
+    // family is localized or uses a vendor-specific family name.
+    let mut seen = std::collections::HashSet::new();
+    for face in db.faces() {
+        let family_matches = face.families.iter().any(|(family, _)| {
+            let family = family.to_ascii_lowercase();
+            [
+                "cjk",
+                "han",
+                "yahei",
+                "simsun",
+                "simhei",
+                "pingfang",
+                "noto sans",
+                "source han",
+            ]
+            .iter()
+            .any(|marker| family.contains(marker))
+        });
+        if !family_matches {
+            continue;
+        }
+        let source = match &face.source {
+            fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => FontSource {
+                path: path.clone(),
+                index: face.index,
+            },
+            fontdb::Source::Binary(_) => continue,
+        };
+        if seen.insert((source.path.clone(), source.index))
+            && font_source_has_glyphs(&source, PROBE_GLYPHS)
+        {
+            return Some(source);
+        }
+    }
+
+    None
+}
+
+fn font_source_has_glyphs(source: &FontSource, glyphs: &[char]) -> bool {
+    let Ok(data) = std::fs::read(&source.path) else {
+        return false;
+    };
+    let Ok(face) = ttf_parser::Face::parse(&data, source.index) else {
+        return false;
+    };
+    glyphs
+        .iter()
+        .all(|character| face.glyph_index(*character).is_some())
+}
+
 pub fn find_font_path(db: &fontdb::Database, family_name: &str) -> Option<std::path::PathBuf> {
     let src = find_font_source(db, family_name)?;
     Some(src.path)

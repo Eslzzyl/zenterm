@@ -16,7 +16,10 @@ use zenterm_core::{Error, Result, TermSize};
 
 mod shell;
 
-pub use shell::{ShellCandidate, ShellSource, candidate_for_path, default_shell, detect_shells};
+pub use shell::{
+    ShellCandidate, ShellSource, candidate_for_path, default_shell, detect_shells,
+    normalize_extended_path_text, simplified_path,
+};
 
 type DataHandler = Box<dyn Fn(&[u8]) + Send + Sync>;
 
