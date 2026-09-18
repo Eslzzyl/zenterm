@@ -19,11 +19,16 @@ uv run --project tools/icons python tools/icons/verify_icons.py
 
 | Asset | Use | Rule |
 | --- | --- | --- |
-| `assets/runtime/zenterm.png` | eframe runtime icon on Windows and X11 | Square, RGBA, 1024x1024. The current artwork intentionally has an opaque blue background. |
-| `assets/windows/zenterm.ico` | Windows package, installer, shortcut, and native icon layers | Contains 16, 24, 32, 48, 64, 128, and 256 pixel layers. |
+| `assets/runtime/zenterm.png` | eframe runtime icon on Windows and X11 | RGBA, 1024x1024. Windows/Linux exports use a transparent outer corner mask. |
+| `assets/windows/zenterm.ico` | Windows package, installer, shortcut, and native icon layers | Contains 16, 24, 32, 48, 64, 128, and 256 pixel layers with the same mask. |
 | `assets/macos/zenterm.icns` | macOS application bundle | AppKit receives the bundle ICNS and applies the macOS Dock/Finder mask. |
 | `assets/linux/hicolor/` | Linux package icon inputs | PNGs in hicolor size directories, using the independent reverse-domain icon name. |
 | `assets/linux/org.eu.eslzzyl.zenterm.desktop` | Standalone FreeDesktop resource | Uses `Icon=org.eu.eslzzyl.zenterm` and is kept separate from cargo-packager's generated entry. |
+
+On Windows, `crates/zenterm/build.rs` embeds `assets/windows/zenterm.ico` into
+the development PE executable. This is required for `cargo run`: the Windows
+taskbar and Explorer can resolve the executable's native icon resource without
+depending on eframe's runtime viewport icon.
 
 ## Why the PNG is platform-correct
 
@@ -43,12 +48,16 @@ The [FreeDesktop icon theme specification](https://specifications.freedesktop.or
 defines hicolor directories such as `48x48/apps` and accepts PNG icon files.
 The project's Linux resources follow that layout. The [Tauri icon guide](https://v2.tauri.app/develop/icons/)
 also documents the common desktop mapping `icns = macOS`, `ico = Windows`,
-and `png = Linux`, including square RGBA PNG requirements.
+and `png = Linux`, including square-dimension RGBA PNG requirements.
 
-The PNG's opaque square background is intentional artwork, not a platform
-format error. Windows and Linux do not universally apply Apple's Dock mask;
-their desktop shells render the supplied square image according to their own
-icon presentation rules.
+Windows product icons use a 48x48 design grid. The generator applies a fixed
+`2 / 48` transparent inset and `10 / 48` outer radius to the Windows/Linux
+exports. This keeps the colored plate visibly rounded after 16px-to-40px
+system scaling and preserves transparent corners on light and dark surfaces.
+
+Freedesktop does not prescribe an application-icon corner radius. Linux uses
+the same conservative geometry for visual consistency, while the hicolor
+PNG format and lookup rules remain platform-standard.
 
 ## Linux naming contexts
 

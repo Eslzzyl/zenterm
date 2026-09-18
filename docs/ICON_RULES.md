@@ -7,11 +7,13 @@ integration bug.
 
 ## Short conclusion
 
-The original square PNG is the correct runtime input for Windows and Linux
-X11. It is also a valid source for Linux hicolor PNGs. macOS must use the
-bundle ICNS at runtime so AppKit can apply the system Dock/Finder mask. Linux
-Wayland does not consume the winit window-icon API; it relies on the matching
-desktop entry, hicolor icon name, and application ID.
+The runtime PNG is the correct input for Windows and Linux X11. Windows and
+Linux exports use a transparent 2px safety inset and a 10px outer radius at
+the 48x48 icon grid, keeping the colored plate visibly separated from the
+desktop surface. macOS must use the unmasked bundle ICNS at
+runtime so AppKit can apply the system Dock/Finder mask. Linux Wayland does
+not consume the winit window-icon API; it relies on the matching desktop
+entry, hicolor icon name, and application ID.
 
 ## Evidence
 
@@ -42,9 +44,21 @@ same native format split (`ico` for Windows, `icns` for macOS, and PNG for
 Linux) and requires common Windows ICO layers including 16, 24, 32, 48, 64,
 and 256 pixels.
 
-Windows does not apply macOS's Dock mask to arbitrary application artwork. The
-current PNG/ICO has an opaque square blue background by design, so a square
-appearance in a Windows taskbar or shortcut is expected.
+The development Windows executable follows a separate native-resource path:
+`crates/zenterm/build.rs` embeds the same ICO into the PE executable through
+`winresource`. This covers `cargo run`, whose taskbar and Explorer identity is
+read from the executable resource rather than from eframe's viewport PNG.
+
+The process also sets the fixed AppUserModelID
+`org.eu.eslzzyl.zenterm`, matching the installed package identifier. This
+keeps Windows taskbar grouping and icon fallback on the same application
+identity for both `cargo run` and packaged builds.
+
+Windows does not apply macOS's Dock mask to arbitrary application artwork.
+The Windows/Linux PNG and ICO exports therefore carry their own transparent
+rounded corners. The generator uses a fixed `2 / 48` transparent inset and
+`10 / 48` outer radius so the rounding remains visible in the 16px, 24px,
+32px, and 40px runtime representations.
 
 ### Linux X11 and Wayland
 
@@ -75,6 +89,7 @@ assets/brand/zenterm.svg
         |
         +--> assets/runtime/zenterm.png       eframe runtime (Windows, X11)
         +--> assets/windows/zenterm.ico       Windows package/installer
+        +--> crates/zenterm/build.rs           cargo run PE icon resource
         +--> assets/macos/zenterm.icns        macOS bundle/AppKit
         +--> assets/linux/hicolor/*/*.png     Linux package/icon theme
         +--> assets/linux/*.desktop            standalone FreeDesktop input
@@ -82,7 +97,7 @@ assets/brand/zenterm.svg
 
 `tools/icons/generate_icons.py` creates the derived resources. It is the only
 generator; `tools/icons/verify_icons.py` is read-only and checks the committed
-outputs.
+outputs, including the transparent corner mask.
 
 ## cargo-packager detail
 

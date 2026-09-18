@@ -29,7 +29,30 @@ def require_file(path: Path) -> None:
         raise VerificationError(f"missing file: {path.relative_to(ROOT)}")
 
 
-def verify_png(path: Path, expected_size: tuple[int, int]) -> None:
+def verify_rounded_alpha(image: Image.Image, label: str) -> None:
+    rgba = image.convert("RGBA")
+    alpha = rgba.getchannel("A")
+    minimum, maximum = alpha.getextrema()
+    if minimum == 255:
+        raise VerificationError(f"icon has no transparent corners: {label}")
+    if maximum != 255:
+        raise VerificationError(f"icon center is not opaque: {label}")
+
+    corner_alpha = [
+        alpha.getpixel((0, 0)),
+        alpha.getpixel((rgba.width - 1, 0)),
+        alpha.getpixel((0, rgba.height - 1)),
+        alpha.getpixel((rgba.width - 1, rgba.height - 1)),
+    ]
+    if max(corner_alpha) == 255:
+        raise VerificationError(
+            f"icon corners are fully opaque: {label}: {corner_alpha}"
+        )
+
+
+def verify_png(
+    path: Path, expected_size: tuple[int, int], *, rounded: bool = False
+) -> None:
     require_file(path)
     try:
         with Image.open(path) as image:
@@ -51,6 +74,9 @@ def verify_png(path: Path, expected_size: tuple[int, int]) -> None:
             f"wrong PNG mode for {path.relative_to(ROOT)}: "
             f"expected RGBA, got {actual_mode}"
         )
+    if rounded:
+        with Image.open(path) as image:
+            verify_rounded_alpha(image, str(path.relative_to(ROOT)))
 
 
 def verify_ico() -> None:
@@ -66,6 +92,13 @@ def verify_ico() -> None:
     if missing:
         formatted = ", ".join(f"{width}x{height}" for width, height in missing)
         raise VerificationError(f"ICO is missing layers: {formatted}")
+
+    with Image.open(WINDOWS) as image:
+        for size in ICO_SIZES:
+            verify_rounded_alpha(
+                image.ico.getimage(size=size),
+                f"{WINDOWS.relative_to(ROOT)}:{size}x{size}",
+            )
 
 
 def verify_icns() -> None:
@@ -104,13 +137,13 @@ def verify_desktop_entry() -> None:
 
 def main() -> None:
     require_file(SOURCE)
-    verify_png(RUNTIME, (1024, 1024))
+    verify_png(RUNTIME, (1024, 1024), rounded=True)
     verify_ico()
     verify_icns()
 
     for size in LINUX_SIZES:
         path = LINUX / "hicolor" / f"{size}x{size}" / "apps" / f"{ICON_NAME}.png"
-        verify_png(path, (size, size))
+        verify_png(path, (size, size), rounded=True)
 
     verify_desktop_entry()
     print("Icon assets verified:")

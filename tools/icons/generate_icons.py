@@ -6,7 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from PIL import Image
+from PIL import Image, ImageChops, ImageDraw
 from icnsutil import IcnsFile
 from resvg_py import svg_to_bytes
 
@@ -21,6 +21,14 @@ ICON_NAME = "org.eu.eslzzyl.zenterm"
 
 LINUX_SIZES = (16, 24, 32, 48, 64, 96, 128, 256, 512, 1024)
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
+
+# Separate the colored plate from the transparent canvas, following the same
+# silhouette treatment used by WezTerm's Windows icon. The former 2px/6px
+# masks left the full-bleed plate looking square and mechanically clipped.
+# macOS remains unmasked so AppKit can apply its own Dock/Finder shape.
+ICON_CORNER_RADIUS_AT_48 = 10.0
+ICON_INSET_AT_48 = 2.0
+MASK_SUPERSAMPLE = 8
 
 # Use explicit ICNS keys so 16/32/48 px images are not ambiguous between
 # legacy and modern representations.
@@ -43,24 +51,45 @@ ICNS_MEDIA = (
 )
 
 
-def render(size: int) -> Image.Image:
+def render(size: int, *, rounded: bool = False) -> Image.Image:
     png = svg_to_bytes(
         svg_path=str(SOURCE),
         width=size,
         height=size,
         shape_rendering="geometric_precision",
     )
-    return Image.open(BytesIO(png)).convert("RGBA")
+    image = Image.open(BytesIO(png)).convert("RGBA")
+
+    if rounded:
+        # Build the mask at a higher resolution so the small 16px and 24px
+        # exports retain a clean, platform-consistent antialiased corner.
+        mask_size = size * MASK_SUPERSAMPLE
+        mask = Image.new("L", (mask_size, mask_size), 0)
+        inset = round(ICON_INSET_AT_48 * size / 48 * MASK_SUPERSAMPLE)
+        ImageDraw.Draw(mask).rounded_rectangle(
+            (inset, inset, mask_size - inset - 1, mask_size - inset - 1),
+            radius=round(
+                (ICON_CORNER_RADIUS_AT_48 + ICON_INSET_AT_48)
+                * size
+                / 48
+                * MASK_SUPERSAMPLE
+            ),
+            fill=255,
+        )
+        mask = mask.resize((size, size), Image.Resampling.LANCZOS)
+        image.putalpha(ImageChops.multiply(image.getchannel("A"), mask))
+
+    return image
 
 
-def write_png(path: Path, size: int) -> None:
+def write_png(path: Path, size: int, *, rounded: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    render(size).save(path, format="PNG", optimize=True)
+    render(size, rounded=rounded).save(path, format="PNG", optimize=True)
 
 
 def write_ico() -> None:
     WINDOWS.parent.mkdir(parents=True, exist_ok=True)
-    render(1024).save(
+    render(1024, rounded=True).save(
         WINDOWS,
         format="ICO",
         sizes=[(size, size) for size in ICO_SIZES],
@@ -88,7 +117,11 @@ def write_icns() -> None:
 
 def write_linux_assets() -> None:
     for size in LINUX_SIZES:
-        write_png(LINUX / "hicolor" / f"{size}x{size}" / "apps" / f"{ICON_NAME}.png", size)
+        write_png(
+            LINUX / "hicolor" / f"{size}x{size}" / "apps" / f"{ICON_NAME}.png",
+            size,
+            rounded=True,
+        )
 
     desktop = f"""[Desktop Entry]
 Type=Application
@@ -107,7 +140,7 @@ def main() -> None:
     if not SOURCE.is_file():
         raise FileNotFoundError(f"Missing canonical SVG: {SOURCE}")
 
-    write_png(RUNTIME, 1024)
+    write_png(RUNTIME, 1024, rounded=True)
     write_ico()
     write_icns()
     write_linux_assets()

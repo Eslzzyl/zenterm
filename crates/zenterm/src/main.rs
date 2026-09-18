@@ -4,9 +4,33 @@ use std::sync::Arc;
 
 use zenterm_config::Config;
 
+#[cfg(target_os = "windows")]
+fn set_windows_app_user_model_id() {
+    use std::os::windows::ffi::OsStrExt;
+
+    let app_user_model_id = std::ffi::OsStr::new("org.eu.eslzzyl.zenterm")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+
+    // Keep taskbar grouping and taskbar/Explorer icon fallback tied to the
+    // same application identity used by the installed package shortcut.
+    let result = unsafe {
+        windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(
+            app_user_model_id.as_ptr(),
+        )
+    };
+    if result < 0 {
+        log::warn!("failed to set Windows AppUserModelID: HRESULT 0x{result:08X}");
+    }
+}
+
 fn main() -> eframe::Result<()> {
     // Initialise logging.
     env_logger::init();
+
+    #[cfg(target_os = "windows")]
+    set_windows_app_user_model_id();
 
     // On macOS, bind the notification system to our bundle identifier early.
     // Without this, mac-notification-sys falls back to a hardcoded "use_default"
