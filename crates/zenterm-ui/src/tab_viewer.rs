@@ -19,7 +19,7 @@ use egui::{Stroke, StrokeKind, WidgetText};
 use egui_dock::tab_viewer::OnCloseResponse;
 use egui_dock::{NodePath, TabViewer};
 
-use crate::session::{SessionId, TerminalSession};
+use crate::session::{SessionId, TerminalSession, terminal_content_rect};
 
 /// Borrowed handles needed to render a tab.
 pub struct TabViewerContext<'a> {
@@ -108,13 +108,13 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         // Cell clip coordinates use the dock-area viewport (set by
         // the app before `DockArea::show_inside`) so a single wgpu
         // callback covering the entire dock area renders every tab.
-        // The terminal owns the entire tab body.  Do not apply window or
-        // widget padding here: any unpainted edge becomes a visible strip
-        // between the terminal and the window/sidebar boundary.
-        let content_rect = ui.max_rect();
+        // Keep the background on the full tab body, while the terminal grid
+        // uses a small left inset and a fixed right scrollbar gutter.
         let ppp = ui.ctx().pixels_per_point();
-        let origin_px = [content_rect.min.x * ppp, content_rect.min.y * ppp];
-        let size_px = [content_rect.size().x * ppp, content_rect.size().y * ppp];
+        let content_rect = ui.max_rect();
+        let terminal_rect = terminal_content_rect(content_rect, ppp);
+        let origin_px = [terminal_rect.min.x * ppp, terminal_rect.min.y * ppp];
+        let size_px = [terminal_rect.size().x * ppp, terminal_rect.size().y * ppp];
         session.set_viewport(origin_px, size_px);
 
         // Resize the terminal to match the new pixel area.
@@ -137,8 +137,7 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         if response.clicked() || response.drag_started() || response.secondary_clicked() {
             *self.layout_changed = true;
         }
-        let cell_rect = content_rect;
-        session.handle_mouse(ui, cell_rect, size_px, &response);
+        session.handle_mouse(ui, content_rect, size_px, &response);
 
         // Paint the terminal background (egui shape, not wgpu callback).
         // The wgpu callback for cell instances is registered once at the
@@ -148,11 +147,11 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         // shader as instance 0 in the wgpu callback.
         if !self.background_active {
             ui.painter()
-                .rect_filled(cell_rect, 0.0, session.background_color());
+                .rect_filled(content_rect, 0.0, session.background_color());
         }
 
         // Scrollbar overlay (on top of the background).
-        session.render_scrollbar(ui, cell_rect);
+        session.render_scrollbar(ui, content_rect);
 
         // Right-click context menu: copy / paste.
         session.render_context_menu(ui, &response);
@@ -180,7 +179,7 @@ impl<'a> TabViewer for TabViewerContext<'a> {
                 (sel.a() * 255.0).round().clamp(0.0, 255.0) as u8,
             );
             ui.painter().rect_stroke(
-                cell_rect,
+                content_rect,
                 0.0,
                 Stroke::new(1.0_f32, accent),
                 StrokeKind::Inside,

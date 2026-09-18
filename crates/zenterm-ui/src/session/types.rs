@@ -198,6 +198,27 @@ impl Drop for SessionViewState {
 /// Pixel width of the overlay scrollbar.
 pub(crate) const SCROLLBAR_WIDTH: f32 = 10.0;
 
+/// Logical-point inset before the first terminal column.
+pub(crate) const TERMINAL_LEFT_INSET: f32 = 8.0;
+
+/// Convert the scrollbar width from physical pixels to egui points.
+pub(crate) fn scrollbar_width_points(pixels_per_point: f32) -> f32 {
+    SCROLLBAR_WIDTH / pixels_per_point.max(f32::EPSILON)
+}
+
+/// Return the terminal grid rectangle inside a full tab-body rectangle.
+///
+/// The left inset is a fixed visual margin.  The right inset is reserved for
+/// the overlay scrollbar, so the terminal grid never renders underneath it.
+pub(crate) fn terminal_content_rect(rect: egui::Rect, pixels_per_point: f32) -> egui::Rect {
+    let left = (rect.left() + TERMINAL_LEFT_INSET).min(rect.right());
+    let right = (rect.right() - scrollbar_width_points(pixels_per_point)).max(left);
+    egui::Rect::from_min_max(
+        egui::pos2(left, rect.top()),
+        egui::pos2(right, rect.bottom()),
+    )
+}
+
 /// Minimum pixel height of the scrollbar thumb.
 pub(crate) const SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 24.0;
 

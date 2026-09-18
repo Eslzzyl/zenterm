@@ -6,7 +6,7 @@ use alacritty_terminal::term::TermMode;
 
 use zenterm_term::Terminal;
 
-use super::types::{SCROLLBAR_MIN_THUMB_HEIGHT, SCROLLBAR_WIDTH, TerminalSession};
+use super::types::{SCROLLBAR_MIN_THUMB_HEIGHT, TerminalSession, terminal_content_rect};
 
 // ── Selection helpers ───────────────────────────────────────────────────
 
@@ -48,13 +48,7 @@ impl TerminalSession {
             self.input.hovered_link = None;
             return;
         }
-        let cell_area = egui::Rect::from_min_max(
-            cell_rect.min,
-            egui::pos2(
-                cell_rect.right() - SCROLLBAR_WIDTH.min(cell_rect.width()),
-                cell_rect.bottom(),
-            ),
-        );
+        let cell_area = terminal_content_rect(cell_rect, ui.ctx().pixels_per_point());
         let ppp = ui.ctx().pixels_per_point();
         let pos = ui.ctx().input(|i| i.pointer.hover_pos());
         let new_hover = pos.filter(|pos| cell_area.contains(*pos)).and_then(|pos| {
@@ -165,16 +159,10 @@ impl TerminalSession {
         let _ = size_px;
 
         // ── Scrollbar geometry ───────────────────────────────────────────
+        let cell_area = terminal_content_rect(rect, ppp);
         let sb_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.right() - SCROLLBAR_WIDTH.min(rect.width()), rect.top()),
+            egui::pos2(cell_area.right(), rect.top()),
             egui::pos2(rect.right(), rect.bottom()),
-        );
-        let cell_area = egui::Rect::from_min_max(
-            rect.min,
-            egui::pos2(
-                rect.right() - SCROLLBAR_WIDTH.min(rect.width()),
-                rect.bottom(),
-            ),
         );
 
         // ── Scrollbar: click / drag / track-click ──────────────────────
@@ -681,13 +669,14 @@ impl TerminalSession {
     pub fn render_scrollbar(&mut self, ui: &egui::Ui, rect: egui::Rect) {
         let history = self.runtime.terminal.history_size();
         let screen = self.runtime.terminal.size().rows as usize;
-        let total = history + screen;
-        if total == 0 {
+        if history == 0 {
             return;
         }
+        let total = history + screen;
 
+        let terminal_rect = terminal_content_rect(rect, ui.ctx().pixels_per_point());
         let track = egui::Rect::from_min_max(
-            egui::pos2(rect.right() - SCROLLBAR_WIDTH, rect.top()),
+            egui::pos2(terminal_rect.right(), rect.top()),
             egui::pos2(rect.right(), rect.bottom()),
         );
 
@@ -702,7 +691,7 @@ impl TerminalSession {
 
         // Track background.
         ui.painter()
-            .rect_filled(track, 0.0, ui.visuals().faint_bg_color);
+            .rect_filled(track, 0.0, self.background_color());
 
         // Thumb – only draw when there is actually something to scroll.
         if screen < total {

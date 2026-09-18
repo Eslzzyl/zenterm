@@ -64,5 +64,5 @@ pub use badge::render_badge;
 pub use effects::SessionEffect;
 pub(crate) use factory::{SessionFactory, SessionRequest};
 pub(crate) use new::{default_working_directory, session_working_directory};
-pub(crate) use types::NotificationState;
+pub(crate) use types::{NotificationState, terminal_content_rect};
 pub use types::{SessionId, TerminalSession};
