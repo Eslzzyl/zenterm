@@ -427,20 +427,6 @@ fn render_about_section(ui: &mut egui::Ui, version: &str) {
 
 fn render_window_section(ui: &mut egui::Ui, w: &mut WindowConfig) {
     settings_widgets::section_header(ui, "Window", "Window appearance, size, and initial state.");
-    settings_widgets::drag_f32(
-        ui,
-        "Padding X",
-        &mut w.padding.x,
-        0.5,
-        "Horizontal padding in logical pixels",
-    );
-    settings_widgets::drag_f32(
-        ui,
-        "Padding Y",
-        &mut w.padding.y,
-        0.5,
-        "Vertical padding in logical pixels",
-    );
     settings_widgets::text_setting(ui, "Title", &mut w.title, "Window title");
     settings_widgets::bool_setting(
         ui,

@@ -40,8 +40,6 @@ pub struct TabViewerContext<'a> {
     /// and the egui `rect_filled` for the terminal background should be
     /// skipped (the background image/texture is handled by the shader).
     pub background_active: bool,
-    /// Inner spacing between the tab body and terminal cell grid.
-    pub terminal_padding: egui::Vec2,
     /// Set when egui_dock changes a persisted layout property during
     /// rendering, such as tab focus, tab dragging, or a leaf rectangle.
     pub layout_changed: &'a mut bool,
@@ -110,12 +108,10 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         // Cell clip coordinates use the dock-area viewport (set by
         // the app before `DockArea::show_inside`) so a single wgpu
         // callback covering the entire dock area renders every tab.
-        let rect = ui.max_rect();
-        let padding = egui::vec2(
-            self.terminal_padding.x.min(rect.width() * 0.45).max(0.0),
-            self.terminal_padding.y.min(rect.height() * 0.45).max(0.0),
-        );
-        let content_rect = rect.shrink2(padding);
+        // The terminal owns the entire tab body.  Do not apply window or
+        // widget padding here: any unpainted edge becomes a visible strip
+        // between the terminal and the window/sidebar boundary.
+        let content_rect = ui.max_rect();
         let ppp = ui.ctx().pixels_per_point();
         let origin_px = [content_rect.min.x * ppp, content_rect.min.y * ppp];
         let size_px = [content_rect.size().x * ppp, content_rect.size().y * ppp];

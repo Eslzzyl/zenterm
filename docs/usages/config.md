@@ -16,7 +16,6 @@ Controls the appearance and initial size of the terminal window.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `dimensions` | `{ columns, lines }` | `{ columns = 80, lines = 24 }` | Initial terminal size in cells (not pixels). The window is sized to fit this grid at the configured font size. |
-| `padding` | `{ x, y }` | `{ x = 12, y = 10 }` | Inner padding between the window edge and the terminal grid, in logical pixels at 1× DPI. |
 | `title` | `string` | `"Zenterm"` | Window title. The terminal can override this via OSC 0 / OSC 2 escape sequences. |
 | `decorations` | `bool` | `true` | Show window decorations (title bar + borders). |
 
@@ -25,7 +24,6 @@ Controls the appearance and initial size of the terminal window.
 ```toml
 [window]
 dimensions = { columns = 120, lines = 40 }
-padding = { x = 4, y = 4 }
 title = "Terminal"
 decorations = true
 ```
@@ -364,7 +362,6 @@ These shortcuts are currently hardcoded and not yet overridable via config:
 ```toml
 [window]
 dimensions = { columns = 120, lines = 40 }
-padding = { x = 4, y = 4 }
 title = "Zenterm"
 decorations = true
 

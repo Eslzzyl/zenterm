@@ -11,10 +11,6 @@ last_window_size = [
 columns = 40
 lines = 9
 
-[window.padding]
-x = 0.0
-y = 0.0
-
 [font]
 size = 16.0
 ligatures = false

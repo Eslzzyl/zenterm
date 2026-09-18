@@ -16,10 +16,6 @@ pub struct WindowConfig {
     #[serde(default)]
     pub dimensions: WindowDimensions,
 
-    /// Inner padding around the terminal grid (logical pixels).
-    #[serde(default)]
-    pub padding: WindowPadding,
-
     /// Window title.
     #[serde(default = "default_title")]
     pub title: String,
@@ -54,7 +50,6 @@ impl Default for WindowConfig {
     fn default() -> Self {
         Self {
             dimensions: WindowDimensions::default(),
-            padding: WindowPadding::default(),
             title: default_title(),
             decorations: default_decorations(),
             macos_option_as_alt: false,
@@ -109,21 +104,4 @@ fn default_columns() -> u16 {
 }
 fn default_lines() -> u16 {
     24
-}
-
-/// Padding between the window edge and the terminal grid.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct WindowPadding {
-    /// Horizontal padding (logical pixels).
-    #[serde(default)]
-    pub x: f32,
-    /// Vertical padding (logical pixels).
-    #[serde(default)]
-    pub y: f32,
-}
-
-impl Default for WindowPadding {
-    fn default() -> Self {
-        Self { x: 12.0, y: 10.0 }
-    }
 }

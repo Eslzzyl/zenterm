@@ -215,6 +215,11 @@ impl ZentermApp {
                 let mut style = Style::from_egui(ui.style().as_ref());
                 let egui_visuals = ui.visuals().clone();
 
+                // The terminal tab body must reach the Dock boundary.  Keep
+                // this explicit so future egui/egui_dock defaults cannot
+                // reintroduce an outer strip around the terminal.
+                style.dock_area_padding = Some(Margin::ZERO);
+
                 // Tab bar — compact, with a clear active surface.
                 style.tab_bar.bg_fill = egui_visuals.extreme_bg_color;
                 style.tab_bar.height = 34.0;
@@ -313,10 +318,6 @@ impl ZentermApp {
                             pending_rename: &mut self.pending_rename,
                             show_active_indicator,
                             background_active: self.background_image_loaded,
-                            terminal_padding: egui::vec2(
-                                self.config.window.padding.x,
-                                self.config.window.padding.y,
-                            ),
                             layout_changed: &mut layout_changed,
                             instances_changed: &mut instances_changed,
                         };
