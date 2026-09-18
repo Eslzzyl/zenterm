@@ -24,7 +24,9 @@ struct MappedChar {
 #[derive(Debug, Default)]
 struct MappedText {
     text: String,
-    chars: Vec<MappedChar>,
+    /// One entry per character in `text`; `None` represents a physical row
+    /// separator so byte/character offsets stay aligned with `text`.
+    chars: Vec<Option<MappedChar>>,
 }
 
 fn scheme(target: &str) -> Option<&str> {
@@ -87,17 +89,18 @@ fn build_mapped_text(rows: &[&[Cell]]) -> MappedText {
                     col + 1
                 };
                 mapped.text.push(cell.c);
-                mapped.chars.push(MappedChar {
+                mapped.chars.push(Some(MappedChar {
                     row,
                     col_start: col,
                     col_end,
-                });
+                }));
             }
         }
 
         let wraps = cells.last().is_some_and(|cell| cell.is_wrapline);
         if row + 1 < rows.len() && !wraps {
             mapped.text.push('\n');
+            mapped.chars.push(None);
         }
     }
 
@@ -108,8 +111,9 @@ fn byte_to_char_index(text: &str, byte_offset: usize) -> usize {
     text[..byte_offset].chars().count()
 }
 
-fn segments_for_chars(chars: &[MappedChar]) -> Vec<LinkSegment> {
-    let Some(first) = chars.first() else {
+fn segments_for_chars(chars: &[Option<MappedChar>]) -> Vec<LinkSegment> {
+    let mut chars = chars.iter().filter_map(|mapped| *mapped);
+    let Some(first) = chars.next() else {
         return Vec::new();
     };
 
@@ -119,7 +123,7 @@ fn segments_for_chars(chars: &[MappedChar]) -> Vec<LinkSegment> {
         col_end: first.col_end,
     }];
 
-    for mapped in chars.iter().skip(1) {
+    for mapped in chars {
         let previous = segments.last_mut().expect("segment is non-empty");
         if previous.row == mapped.row && previous.col_end == mapped.col_start {
             previous.col_end = mapped.col_end;
@@ -361,6 +365,16 @@ mod tests {
     }
 
     #[test]
+    fn maps_a_link_on_a_later_row_to_its_actual_cells() {
+        let found = links(&[row("first"), row("second"), row("see https://example.com")]);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].segments[0].row, 2);
+        assert_eq!(found[0].segments[0].col_start, 4);
+        assert_eq!(found[0].segments[0].col_end, 23);
+    }
+
+    #[test]
     fn maps_wide_character_cells_without_breaking_url_range() {
         let found = links(&[row("前https://example.com")]);
 
@@ -387,6 +401,13 @@ mod tests {
         assert!(found.is_empty());
         assert!(!is_allowed_target("javascript://evil.example"));
         assert!(!is_allowed_target("file://C:/secret.txt"));
+    }
+
+    #[test]
+    fn does_not_detect_a_windows_prompt_as_a_link() {
+        let found = links(&[row(r"PS C:\Users\Eslzzyl>")]);
+
+        assert!(found.is_empty());
     }
 
     #[test]

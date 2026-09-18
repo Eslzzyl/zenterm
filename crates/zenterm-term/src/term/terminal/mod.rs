@@ -105,10 +105,10 @@ pub struct Terminal {
     /// Accumulator for multi-chunk Kitty image transmissions.
     #[allow(dead_code)]
     kitty_accumulator: KittyAccumulator,
-    /// Buffered bytes from an APC sequence that spans across `feed()` calls.
-    /// When the APC scanner finds `ESC _ G` but cannot find the ST (`ESC \`)
-    /// within the current batch, the bytes from `ESC _ G` onward are saved
-    /// here and prepended to the next `feed()` call.
+    /// Buffered bytes from a protocol sequence that spans across `feed()`
+    /// calls. The bytes are retained for the special-protocol scanner only;
+    /// the VT parser has already consumed them and must not receive them a
+    /// second time.
     apc_remainder: Vec<u8>,
     /// Buffered bytes from an OSC sequence that spans across `feed()` calls.
     /// The VT processor already consumed the first chunk, so this remainder
@@ -278,22 +278,26 @@ impl Terminal {
     /// clipboard store) are stored internally and can be retrieved via the
     /// `take_*` methods after this call.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
-        // Prepend any leftover bytes from an APC that spanned the previous feed() call.
-        let mut combined;
-        let bytes: &[u8] = if self.apc_remainder.is_empty() {
-            bytes
-        } else {
-            log::debug!(
-                "[img] prepending {} APC remainder bytes to new batch",
-                self.apc_remainder.len(),
-            );
-            combined = std::mem::take(&mut self.apc_remainder);
-            combined.extend_from_slice(bytes);
-            combined.as_slice()
-        };
         if bytes.is_empty() {
             return Vec::new();
         }
+
+        // Reassemble only for the special-protocol scanner. The VT parser
+        // already consumed the prefix during the previous call and keeps its
+        // state across calls; replaying it here duplicates an OSC terminator
+        // such as the trailing `ESC` of `ESC \`.
+        let mut special_scan_buf;
+        let special_scan_bytes: &[u8] = if self.apc_remainder.is_empty() {
+            bytes
+        } else {
+            log::debug!(
+                "[img] prepending {} protocol remainder bytes to special-protocol scan",
+                self.apc_remainder.len(),
+            );
+            special_scan_buf = std::mem::take(&mut self.apc_remainder);
+            special_scan_buf.extend_from_slice(bytes);
+            special_scan_buf.as_slice()
+        };
         let start = std::time::Instant::now();
         log::debug!("Terminal::feed: {} bytes", bytes.len());
 
@@ -301,7 +305,7 @@ impl Terminal {
         let mut replies = Vec::new();
 
         // ── APC / DCS / special CSI scan ───────────────────────────────
-        let t_apc_elapsed = self.scan_special_sequences(bytes, &mut replies);
+        let t_apc_elapsed = self.scan_special_sequences(special_scan_bytes, &mut replies);
 
         // ── Unified OSC scan ─────────────────────────────────────────
         // Collect all OSC sequences; they are handled below AFTER the
@@ -636,6 +640,20 @@ mod tests {
     }
 
     #[test]
+    fn osc_st_split_after_escape_does_not_duplicate_escape_in_payload() {
+        let size = TermSize::new(24, 80, 0, 0);
+        let mut terminal = Terminal::new(size, ColorScheme::default(), CursorPrefs::default());
+
+        terminal.feed(b"\x1b]7;file://host/tmp\x1b");
+        terminal.feed(b"\\");
+
+        assert_eq!(
+            terminal.take_current_directory().as_deref(),
+            Some("file://host/tmp")
+        );
+    }
+
+    #[test]
     fn blink_policy_overrides_terminal_state() {
         let size = TermSize::new(24, 80, 0, 0);
 
@@ -714,6 +732,79 @@ mod tests {
         assert_eq!(
             grid.cell(0, 4).and_then(|cell| cell.hyperlink.as_deref()),
             None
+        );
+    }
+
+    #[test]
+    fn osc8_st_boundaries_do_not_leak_hyperlinks_into_following_prompt() {
+        for (open, close) in [
+            (
+                b"\x1b]8;;https://example.com\x07".as_slice(),
+                b"\x1b]8;;\x07".as_slice(),
+            ),
+            (
+                b"\x1b]8;;https://example.com\x07".as_slice(),
+                b"\x1b]8;;\x1b\\".as_slice(),
+            ),
+            (
+                b"\x1b]8;;https://example.com\x1b\\".as_slice(),
+                b"\x1b]8;;\x07".as_slice(),
+            ),
+            (
+                b"\x1b]8;;https://example.com\x1b\\".as_slice(),
+                b"\x1b]8;;\x1b\\".as_slice(),
+            ),
+        ] {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(open);
+            bytes.extend_from_slice(b"link");
+            bytes.extend_from_slice(close);
+            bytes.extend_from_slice(b"PS C:\\Users\\Eslzzyl> ");
+
+            for split in 1..bytes.len() {
+                let size = TermSize::new(24, 80, 0, 0);
+                let mut terminal =
+                    Terminal::new(size, ColorScheme::default(), CursorPrefs::default());
+                terminal.feed(&bytes[..split]);
+                terminal.feed(&bytes[split..]);
+
+                let grid = terminal.visible_cells();
+                for col in 0..4 {
+                    assert_eq!(
+                        grid.cell(0, col).and_then(|cell| cell.hyperlink.as_deref()),
+                        Some("https://example.com"),
+                        "split={split}, linked cell={col}"
+                    );
+                }
+                for col in 4..bytes.len() - 1 {
+                    assert_eq!(
+                        grid.cell(0, col).and_then(|cell| cell.hyperlink.as_deref()),
+                        None,
+                        "split={split}, leaked cell={col}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn power_shell_update_line_does_not_soft_wrap_into_prompt() {
+        let size = TermSize::new(10, 49, 0, 0);
+        let mut terminal = Terminal::new(size, ColorScheme::default(), CursorPrefs::default());
+
+        terminal
+            .feed(b"     https://aka.ms/PowerShell-Release?tag=v7.6.6\r\nPS C:\\Users\\Eslzzyl> ");
+
+        assert_eq!(
+            terminal.line_text(0).trim_end(),
+            "     https://aka.ms/PowerShell-Release?tag=v7.6.6"
+        );
+        assert!(terminal.line_text(1).starts_with("PS C:\\Users\\Eslzzyl> "));
+        let grid = terminal.visible_cells();
+        assert!(!grid.cell(0, 48).expect("last URL cell").is_wrapline);
+        assert_eq!(
+            grid.cell(1, 0).map(|cell| cell.underline_style),
+            Some(UnderlineStyle::None)
         );
     }
 
