@@ -41,6 +41,24 @@ fn clear_high_water_buffer<T>(buffer: &mut Vec<T>) {
 }
 
 impl TerminalSession {
+    /// Append the cached instances for a session to the current staging
+    /// frame. The shared GPU callback covers all visible tabs, so a full
+    /// submission must include clean sessions as well.
+    pub fn append_cached_cell_instances(&self) {
+        let mut fd = self
+            .view
+            .gpu
+            .shared
+            .frame_data
+            .lock()
+            .expect("frame_data poisoned");
+        fd.instances.extend(&self.view.cached_bg);
+        append_cached_atlas_instances(&mut fd, &self.view.cached_image_below, true);
+        append_cached_atlas_instances(&mut fd, &self.view.cached_glyph_per_atlas, false);
+        fd.instances.extend(&self.view.cached_deco);
+        append_cached_atlas_instances(&mut fd, &self.view.cached_image_above, true);
+    }
+
     /// Rebuild the cell-instance buffers for this session's visible
     /// terminal grid.
     ///
@@ -80,75 +98,13 @@ impl TerminalSession {
         let x_off = origin_px[0] - dock_ox;
         let y_off = origin_px[1] - dock_oy;
 
-        // Fast path: terminal content hasn't changed — reuse the
-        // cached cell instances from the previous frame.  Cursor
-        // blinking already sets `terminal_dirty = true` every
-        // blink tick (see `app.rs`), so the cursor animation still
-        // works correctly.
+        // Fast path: terminal content hasn't changed.  The cached instances
+        // are already resident in the GPU buffer from the last submitted
+        // generation, so avoid copying the entire terminal grid into the
+        // staging frame on every egui repaint.  Cursor blinking sets
+        // `terminal_dirty = true` when a new frame is required.
         if self.runtime.pty_exited || !self.runtime.terminal_dirty {
-            let has_instances = !self.view.cached_bg.is_empty()
-                || self
-                    .view
-                    .cached_glyph_per_atlas
-                    .iter()
-                    .any(|v| !v.is_empty())
-                || !self.view.cached_deco.is_empty()
-                || self.view.cached_image_below.iter().any(|v| !v.is_empty())
-                || self.view.cached_image_above.iter().any(|v| !v.is_empty());
-            if has_instances {
-                let mut fd = self
-                    .view
-                    .gpu
-                    .shared
-                    .frame_data
-                    .lock()
-                    .expect("frame_data poisoned");
-                fd.instances.extend(&self.view.cached_bg);
-                // Append per-atlas image instances (z < 0).
-                for (slot_idx, instances) in self.view.cached_image_below.iter().enumerate() {
-                    if instances.is_empty() {
-                        continue;
-                    }
-                    let start = fd.instances.len() as u32;
-                    fd.instances.extend(instances);
-                    fd.atlas_ranges.push(AtlasRange {
-                        atlas_index: slot_idx,
-                        image: true,
-                        start,
-                        count: instances.len() as u32,
-                    });
-                }
-                // Append per-atlas glyph instances.
-                for (slot_idx, instances) in self.view.cached_glyph_per_atlas.iter().enumerate() {
-                    if instances.is_empty() {
-                        continue;
-                    }
-                    let start = fd.instances.len() as u32;
-                    fd.instances.extend(instances);
-                    fd.atlas_ranges.push(AtlasRange {
-                        atlas_index: slot_idx,
-                        image: false,
-                        start,
-                        count: instances.len() as u32,
-                    });
-                }
-                fd.instances.extend(&self.view.cached_deco);
-                // Append per-atlas image instances (z >= 0).
-                for (slot_idx, instances) in self.view.cached_image_above.iter().enumerate() {
-                    if instances.is_empty() {
-                        continue;
-                    }
-                    let start = fd.instances.len() as u32;
-                    fd.instances.extend(instances);
-                    fd.atlas_ranges.push(AtlasRange {
-                        atlas_index: slot_idx,
-                        image: true,
-                        start,
-                        count: instances.len() as u32,
-                    });
-                }
-            }
-            return has_instances;
+            return false;
         }
 
         let evicted_hashes = self.runtime.terminal.take_evicted_image_hashes();
@@ -295,8 +251,6 @@ impl TerminalSession {
         }
         let mut has_new_glyphs = false;
         let mut image_entries = ImageEntryCache::new();
-        let mut img_below_count: usize = 0;
-        let mut img_above_count: usize = 0;
 
         // ── Cursor line highlight (OSC 1337 HighlightCursorLine) ─────
         // Emit a full-width background quad at the cursor row.
@@ -403,17 +357,9 @@ impl TerminalSession {
                 // ── URL hover underline ──────────────────────────────────
                 // Must be BEFORE the ligature branch, which can skip over
                 // multiple cells via `col = run_end; continue`.
-                log::debug!(
-                    "url_check: hovered_link={:?} row={} col={} terminal_dirty={}",
-                    hovered_link,
-                    row,
-                    col,
-                    self.runtime.terminal_dirty
-                );
                 if hovered_link
                     .is_some_and(|link| self.input.detected_links[link].contains_cell(row, col))
                 {
-                    log::debug!("url_underline: emit row={} col={}", row, col);
                     let thickness = 1.0_f32.max((ch * 0.06).round());
                     let deco_y = y_off + row as f32 * ch + baseline + 0.5;
                     let deco_x = x_off + col as f32 * cw;
@@ -484,7 +430,6 @@ impl TerminalSession {
                                 if !self.input.detected_links[link].contains_cell(row, c) {
                                     continue;
                                 }
-                                log::debug!("url_underline: ligature-bypass row={} col={}", row, c);
                                 let thickness = 1.0_f32.max((ch * 0.06).round());
                                 let deco_y = y_off + row as f32 * ch + baseline + 0.5;
                                 let deco_x = x_off + c as f32 * cw;
@@ -551,7 +496,6 @@ impl TerminalSession {
                         x_scale,
                         y_scale,
                     );
-                    img_below_count += 1;
                 }
 
                 if is_hidden {
@@ -560,10 +504,6 @@ impl TerminalSession {
                 }
 
                 if !is_blank {
-                    log::debug!(
-                        "per-char glyph: row={row} col={col} ch={ch_char:?} \
-                         run_start={run_start} run_end={run_end}",
-                    );
                     // Extract glyph entry data in a sub-scope so the
                     // mutable borrow on `atlas` is released before we
                     // access `atlas.slots` below.
@@ -739,21 +679,10 @@ impl TerminalSession {
                         x_scale,
                         y_scale,
                     );
-                    img_above_count += 1;
                 }
 
                 col += 1;
             }
-        }
-
-        if img_below_count > 0 || img_above_count > 0 {
-            log::trace!(
-                "[img] render frame: below={}, above={}, total_placements={}, dirty={}",
-                img_below_count,
-                img_above_count,
-                self.runtime.terminal.image_placements_count(),
-                self.runtime.terminal_dirty,
-            );
         }
 
         // Append to the shared instance buffer in draw order.
@@ -818,6 +747,26 @@ impl TerminalSession {
 
         self.runtime.terminal_dirty = false;
         true
+    }
+}
+
+fn append_cached_atlas_instances(
+    fd: &mut zenterm_render::FrameData,
+    instances_by_atlas: &[Vec<CellInstance>],
+    image: bool,
+) {
+    for (slot_idx, instances) in instances_by_atlas.iter().enumerate() {
+        if instances.is_empty() {
+            continue;
+        }
+        let start = fd.instances.len() as u32;
+        fd.instances.extend(instances);
+        fd.atlas_ranges.push(AtlasRange {
+            atlas_index: slot_idx,
+            image,
+            start,
+            count: instances.len() as u32,
+        });
     }
 }
 

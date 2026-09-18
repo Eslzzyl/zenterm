@@ -12,7 +12,9 @@ use crate::tab_viewer::TabViewerContext;
 // ── Dock rendering ─────────────────────────────────────────────────────
 
 impl ZentermApp {
-    pub(crate) fn render_tabs_with_dock(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn render_tabs_with_dock(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut instances_changed = false;
+        let mut dock_changed = false;
         // Clear one-frame action queues collected during the previous frame.
         // `pending_rename` intentionally persists until the dialog closes.
         self.pending_close.clear();
@@ -291,7 +293,7 @@ impl ZentermApp {
                 }
 
                 // ── Render tabs (nested scope to drop viewer early) ──
-                let dock_changed = {
+                dock_changed = {
                     let mut layout_changed = false;
                     {
                         let ws = self.workspaces.active_workspace_mut();
@@ -316,6 +318,7 @@ impl ZentermApp {
                                 self.config.window.padding.y,
                             ),
                             layout_changed: &mut layout_changed,
+                            instances_changed: &mut instances_changed,
                         };
                         area.show_inside(ui, &mut viewer);
                     }
@@ -469,8 +472,11 @@ impl ZentermApp {
         // Drain to a local first to avoid a borrow conflict with
         // `self.close_session` (which mutably borrows `self`).
         let to_close: Vec<SessionId> = std::mem::take(&mut self.pending_close);
+        let had_closes = !to_close.is_empty();
         for id in to_close {
             self.close_session(id);
         }
+
+        instances_changed || dock_changed || added > 0 || had_closes
     }
 }

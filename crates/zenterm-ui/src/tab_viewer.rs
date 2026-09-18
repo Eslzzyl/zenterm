@@ -45,6 +45,8 @@ pub struct TabViewerContext<'a> {
     /// Set when egui_dock changes a persisted layout property during
     /// rendering, such as tab focus, tab dragging, or a leaf rectangle.
     pub layout_changed: &'a mut bool,
+    /// Set when a session rebuilt the shared GPU instance buffer.
+    pub instances_changed: &'a mut bool,
 }
 
 impl<'a> TabViewer for TabViewerContext<'a> {
@@ -129,7 +131,9 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         // Build GPU instance data and append to the shared instance
         // buffer.  Instances are positioned in the dock-area clip
         // space set via `set_dock_viewport`.
-        session.update_cell_instances(origin_px, size_px);
+        if session.update_cell_instances(origin_px, size_px) {
+            *self.instances_changed = true;
+        }
 
         // Allocate the terminal area and run mouse / SGR / context-menu.
         let sense = egui::Sense::click_and_drag();
@@ -138,13 +142,6 @@ impl<'a> TabViewer for TabViewerContext<'a> {
             *self.layout_changed = true;
         }
         let cell_rect = content_rect;
-        log::trace!(
-            "[dbg] tab_viewer: calling handle_mouse for tab={:?}, active={:?}, rect={:?}, event_count={}",
-            tab,
-            self.active_session_id,
-            cell_rect,
-            ui.ctx().input(|i| i.events.len()),
-        );
         session.handle_mouse(ui, cell_rect, size_px, &response);
 
         // Paint the terminal background (egui shape, not wgpu callback).

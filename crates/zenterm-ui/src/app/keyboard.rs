@@ -113,7 +113,6 @@ impl ZentermApp {
             return true;
         }
 
-        log::warn!("[clipboard] handle_shortcuts entered — checking for copy/paste events");
         let (copy, paste, reload, settings, command_palette, ws_switch, ws_cycle) =
             ctx.input(|input| {
                 let mut c = false;
@@ -366,8 +365,6 @@ impl ZentermApp {
                 );
             }
         }
-
-        log::info!("[dbg] keyboard: handle_shortcuts returning false (no shortcut consumed)");
 
         false
     }

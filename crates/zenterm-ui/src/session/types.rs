@@ -148,12 +148,14 @@ pub(super) struct SessionInputState {
     pub(super) unfocused_hollow: bool,
     pub(super) window_focused: bool,
     pub(super) blink_epoch: Instant,
+    pub(super) last_cursor_blink_on: Option<bool>,
     pub(super) save_to_clipboard: bool,
     pub(super) clipboard: Option<arboard::Clipboard>,
     pub(super) preedit_text: Option<String>,
     pub(super) url_open: bool,
     pub(super) url_hover_underline: bool,
     pub(super) hover_cell: Option<(usize, usize)>,
+    pub(super) hovered_link: Option<usize>,
     pub(super) detected_links: Vec<DetectedLink>,
     pub(super) url_click_handled: bool,
     pub(super) scrollbar_dragging: bool,
@@ -320,6 +322,8 @@ impl TerminalSession {
 
     pub(crate) fn note_input_activity(&mut self) {
         self.input.blink_epoch = Instant::now();
+        self.input.last_cursor_blink_on = None;
+        self.runtime.terminal_dirty = true;
     }
 
     pub(crate) fn set_preedit_text(&mut self, text: Option<String>) {
@@ -332,6 +336,7 @@ impl TerminalSession {
     pub(crate) fn update_window_focus(&mut self, focused: bool) -> Option<std::time::Duration> {
         if self.input.window_focused != focused {
             self.input.window_focused = focused;
+            self.input.last_cursor_blink_on = None;
             self.runtime.terminal_dirty = true;
         }
         let cursor = self.runtime.terminal.cursor();
@@ -341,11 +346,29 @@ impl TerminalSession {
                 alacritty_terminal::vte::ansi::CursorShape::Block
             );
         if blinking {
-            self.runtime.terminal_dirty = true;
-            Some(std::time::Duration::from_millis(
-                self.input.blink_interval.max(100),
-            ))
+            let elapsed = self.input.blink_epoch.elapsed().as_millis();
+            let timeout_ms = self.input.blink_timeout.saturating_mul(1000) as u128;
+            let blink_on = if timeout_ms > 0 && elapsed >= timeout_ms {
+                true
+            } else {
+                let period = self.input.blink_interval.max(100) as u128 * 2;
+                (elapsed % period) < period / 2
+            };
+            if self.input.last_cursor_blink_on != Some(blink_on) {
+                self.input.last_cursor_blink_on = Some(blink_on);
+                self.runtime.terminal_dirty = true;
+            }
+            if timeout_ms > 0 && elapsed >= timeout_ms {
+                None
+            } else {
+                Some(std::time::Duration::from_millis(
+                    self.input.blink_interval.max(100),
+                ))
+            }
         } else {
+            if self.input.last_cursor_blink_on.take().is_some() {
+                self.runtime.terminal_dirty = true;
+            }
             None
         }
     }

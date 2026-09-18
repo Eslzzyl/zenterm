@@ -55,6 +55,18 @@ impl TerminalSession {
         if self.runtime.pty_exited {
             return;
         }
+
+        if let Some(status) = self.runtime.pty.try_wait() {
+            log::info!("shell exited with status: {status:?}, closing");
+            self.runtime.pty.close();
+            self.runtime.pty_exited = true;
+            return;
+        }
+
+        if !self.runtime.pty.has_pending_read() {
+            return;
+        }
+
         let batch = &mut self.runtime.batch_buf;
         trim_batch_capacity(batch);
         batch.clear();
@@ -124,14 +136,6 @@ impl TerminalSession {
             if let Err(e) = self.runtime.pty.write(resp.as_bytes()) {
                 log::error!("failed to write notification response: {e}");
             }
-        }
-
-        if !self.runtime.pty_exited
-            && let Some(status) = self.runtime.pty.try_wait()
-        {
-            log::info!("shell exited with status: {status:?}, closing");
-            self.runtime.pty.close();
-            self.runtime.pty_exited = true;
         }
     }
 

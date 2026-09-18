@@ -5,7 +5,8 @@
 
 use std::io::{BufReader, Read, Write};
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 
 use portable_pty::{
@@ -51,6 +52,9 @@ pub struct PtySession {
     writer: Option<Box<dyn Write + Send>>,
     /// Receiver — bytes emitted by the shell arrive here.
     rx: mpsc::Receiver<Vec<u8>>,
+    /// Set by the reader thread when the channel may contain data.
+    /// This avoids polling the channel on every unrelated UI repaint.
+    pending_read: Arc<AtomicBool>,
     /// The master PTY handle (kept alive for resize; dropped early during
     /// [`close()`](Self::close()) to unblock the reader thread on Windows).
     master: Option<Box<dyn MasterPty>>,
@@ -175,6 +179,8 @@ impl PtySession {
         // the shell eventually blocks on the OS PTY buffer instead of losing
         // terminal data or growing memory without bound.
         let (tx, rx) = mpsc::sync_channel(256);
+        let pending_read = Arc::new(AtomicBool::new(false));
+        let reader_pending_read = Arc::clone(&pending_read);
         let _reader_thread = thread::Builder::new()
             .name("pty-reader".into())
             .spawn(move || {
@@ -186,6 +192,7 @@ impl PtySession {
                         Ok(0) => {
                             // EOF — shell exited.
                             log::trace!("pty-reader: EOF from PTY");
+                            reader_pending_read.store(true, Ordering::Release);
                             let _ = tx.try_send(Vec::new());
                             break;
                         }
@@ -199,6 +206,7 @@ impl PtySession {
                                     break;
                                 }
                             }
+                            reader_pending_read.store(true, Ordering::Release);
                             // Notify the event loop that data is available.
                             // Called even when the channel was full (the
                             // main thread may have pending data to process).
@@ -218,6 +226,7 @@ impl PtySession {
         Ok(Self {
             writer: Some(Box::new(writer)),
             rx,
+            pending_read,
             master: Some(master),
             _reader_thread: Some(_reader_thread),
             child: Some(child),
@@ -230,6 +239,9 @@ impl PtySession {
     /// Returns `Some(Ok(bytes))` on data.
     /// Returns `Some(Err(...))` on shell exit.
     pub fn try_read(&self) -> Option<Result<Vec<u8>>> {
+        if !self.pending_read.load(Ordering::Acquire) {
+            return None;
+        }
         match self.rx.try_recv() {
             Ok(data) => {
                 if data.is_empty() {
@@ -240,12 +252,20 @@ impl PtySession {
                     Some(Ok(data))
                 }
             }
-            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Empty) => {
+                self.pending_read.store(false, Ordering::Release);
+                None
+            }
             Err(mpsc::TryRecvError::Disconnected) => {
                 log::trace!("pty try_read: reader thread disconnected");
                 Some(Err(Error::Pty("PTY reader disconnected".into())))
             }
         }
+    }
+
+    /// Whether the reader thread has signalled that a read may be pending.
+    pub fn has_pending_read(&self) -> bool {
+        self.pending_read.load(Ordering::Acquire)
     }
 
     /// Non-blocking check whether the child process has exited.

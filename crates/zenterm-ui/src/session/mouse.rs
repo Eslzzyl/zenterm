@@ -41,7 +41,11 @@ impl TerminalSession {
     /// underline is rendered in the correct frame.
     pub fn compute_hover(&mut self, ui: &egui::Ui, cell_rect: egui::Rect) {
         if !self.input.url_hover_underline {
+            if self.input.hovered_link.is_some() {
+                self.runtime.terminal_dirty = true;
+            }
             self.input.hover_cell = None;
+            self.input.hovered_link = None;
             return;
         }
         let cell_area = egui::Rect::from_min_max(
@@ -53,36 +57,30 @@ impl TerminalSession {
         );
         let ppp = ui.ctx().pixels_per_point();
         let pos = ui.ctx().input(|i| i.pointer.hover_pos());
-        log::trace!(
-            "compute_hover: pointer_pos={:?} cell_rect={:?} cw={} ch={}",
-            pos,
-            cell_rect,
-            self.view.cell_width,
-            self.view.cell_height,
-        );
-        let mut new_hover = pos.filter(|pos| cell_area.contains(*pos)).and_then(|pos| {
+        let new_hover = pos.filter(|pos| cell_area.contains(*pos)).and_then(|pos| {
             // URL hover tracks the cell actually under the pointer.  The
             // forward-lean threshold is reserved for text selection.
             let col = ((pos.x - cell_area.left()) * ppp / self.view.cell_width).floor() as usize;
             let row = ((pos.y - cell_area.top()) * ppp / self.view.cell_height).floor() as usize;
             let cols = self.runtime.terminal.size().cols as usize;
             let rows = self.runtime.terminal.size().rows as usize;
-            log::trace!(
-                "compute_hover: col={} row={} cols={} rows={} cw={} ch={}",
-                col,
-                row,
-                cols,
-                rows,
-                self.view.cell_width,
-                self.view.cell_height,
-            );
             if col < cols && row < rows {
                 Some((row, col))
             } else {
-                log::trace!("compute_hover: cell ({},{}) out of bounds", row, col);
                 None
             }
         });
+
+        // Hover state is cell-granular.  Pointer motion inside one cell
+        // cannot change the effective link, so avoid touching the terminal
+        // grid or scanning every detected link again.  A dirty terminal is
+        // still refreshed by `update_cell_instances`, which rebuilds the
+        // link list before rendering the changed frame.
+        if new_hover == self.input.hover_cell {
+            return;
+        }
+
+        let mut new_hover = new_hover;
 
         // Snap hover cell from spacer (right half of CJK / emoji wide chars)
         // back to the leading cell so URL hover-underline works over the
@@ -90,16 +88,19 @@ impl TerminalSession {
         if let Some((row, col)) = new_hover {
             new_hover = Some((row, snap_col(&mut self.runtime.terminal, row, col)));
         }
-        log::trace!(
-            "compute_hover: old={:?} new={:?}",
-            self.input.hover_cell,
-            new_hover,
-        );
+        let new_link = new_hover.and_then(|(row, col)| {
+            self.input
+                .detected_links
+                .iter()
+                .position(|link| link.contains_cell(row, col))
+        });
+        let link_changed = new_link != self.input.hovered_link;
         if new_hover != self.input.hover_cell {
             self.input.hover_cell = new_hover;
-            if self.input.url_hover_underline {
-                self.runtime.terminal_dirty = true;
-            }
+        }
+        if link_changed {
+            self.input.hovered_link = new_link;
+            self.runtime.terminal_dirty = true;
         }
     }
 
@@ -123,16 +124,32 @@ impl TerminalSession {
             && mode.intersects(
                 TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION,
             );
-        log::info!(
-            "[dbg] mouse_reporting={} mode={:#b} sgr={} click={} drag={} motion={} alt_screen={}",
-            mouse_reporting,
-            mode.bits(),
-            mode.contains(TermMode::SGR_MOUSE),
-            mode.contains(TermMode::MOUSE_REPORT_CLICK),
-            mode.contains(TermMode::MOUSE_DRAG),
-            mode.contains(TermMode::MOUSE_MOTION),
-            mode.contains(TermMode::ALT_SCREEN),
-        );
+
+        // Ordinary pointer movement does not affect terminal selection,
+        // scrolling, or PTY mouse reporting. URL hover was already computed
+        // before this method, so avoid rebuilding all mouse geometry and
+        // scanning the input queue for this common path.
+        let has_mouse_event = ui.ctx().input(|input| {
+            input.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::PointerButton { .. }
+                        | egui::Event::MouseWheel { .. }
+                        | egui::Event::Touch { .. }
+                )
+            })
+        });
+        let interaction_active = self.input.selecting
+            || self.input.scrollbar_dragging
+            || response.clicked()
+            || response.drag_started()
+            || response.dragged()
+            || response.drag_stopped()
+            || response.secondary_clicked()
+            || response.middle_clicked();
+        if !mouse_reporting && !has_mouse_event && !interaction_active {
+            return;
+        }
 
         // SGR modifier encoding: Shift=4, Alt=8, Ctrl=16
         let mods = ui.ctx().input(|i| i.modifiers);
@@ -258,27 +275,6 @@ impl TerminalSession {
             }
         };
 
-        // ── Hover tracking (for URL underline) ──────────────────────────
-        let new_hover = if self.input.url_hover_underline {
-            let pos = response.hover_pos();
-            log::debug!("mouse: response.hover_pos()={:?}", pos);
-            pos.and_then(&pixel_to_link_cell)
-                .map(|(row, col)| (row, snap_col(&mut self.runtime.terminal, row, col)))
-        } else {
-            None
-        };
-        if new_hover != self.input.hover_cell {
-            log::debug!(
-                "mouse: hover_cell {:?} → {:?}",
-                self.input.hover_cell,
-                new_hover
-            );
-            self.input.hover_cell = new_hover;
-            if self.input.url_hover_underline {
-                self.runtime.terminal_dirty = true;
-            }
-        }
-
         // ── Drag start / selection ─────────────────────────────────────
         if response.drag_started()
             && let Some(pos) = response.interact_pointer_pos()
@@ -401,13 +397,6 @@ impl TerminalSession {
         let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
         let pointer_in_terminal = pointer_pos.is_some_and(|p| response.rect.contains(p));
         if pointer_in_terminal || self.input.scrollbar_dragging {
-            log::info!(
-                "[dbg] wheel: enter processing, pointer_in_terminal={} scrollbar_dragging={} mouse_reporting={} num_events={}",
-                pointer_in_terminal,
-                self.input.scrollbar_dragging,
-                mouse_reporting,
-                ui.ctx().input(|i| i.events.len()),
-            );
             if mouse_reporting {
                 // Collect each scroll event's direction so we can forward
                 // them individually as SGR mouse events.
@@ -427,13 +416,6 @@ impl TerminalSession {
                         })
                         .collect()
                 });
-                log::info!(
-                    "[dbg] SGR branch: collected {} wheel events: {:?}, pointer_pos={:?}, pixel_to_cell={:?}",
-                    scroll_ys.len(),
-                    scroll_ys,
-                    pointer_pos,
-                    pointer_pos.and_then(&pixel_to_cell),
-                );
                 // Consume all wheel events to prevent egui from using them.
                 ui.ctx().input_mut(|i| {
                     i.events
@@ -444,96 +426,74 @@ impl TerminalSession {
                 // line of total scroll.  Without this, each tiny sub-line
                 // trackpad delta (e.g. 0.09 lines) would generate its own
                 // SGR event, making scrolling feel sluggish.
-                if !scroll_ys.is_empty() {
-                    if let Some(pos) = pointer_pos {
-                        if let Some((row, col)) = pixel_to_cell(pos) {
-                            let total: f32 = scroll_ys.iter().sum();
-                            // Accumulate in pixel space (alacritty-style).
-                            // This preserves fractional deltas across frames
-                            // so slow/precise scrolling doesn't lose events.
-                            self.input.scroll_accumulator_y +=
-                                total as f64 * self.view.cell_height as f64;
-                            let lines = (self.input.scroll_accumulator_y
-                                / self.view.cell_height as f64)
-                                .abs() as i32;
-                            if lines != 0 {
-                                let btn = if self.input.scroll_accumulator_y > 0.0 {
-                                    64
-                                } else {
-                                    65
-                                };
-                                let btn_val = btn | mod_bits;
-                                log::info!(
-                                    "[dbg] SGR: acc={}, sending {} events btn={} col={} row={}",
-                                    self.input.scroll_accumulator_y,
-                                    lines,
-                                    btn_val,
-                                    col + 1,
-                                    row + 1,
-                                );
-                                // Batch all SGR sequences into a single PTY
-                                // write to avoid N `flush()` calls per frame.
-                                // Rapid scrolling can fill the PTY buffer and
-                                // cause individual flushes to block.
-                                let col_1 = col + 1;
-                                let row_1 = row + 1;
-                                let count = lines as usize;
-                                let mut batch = Vec::with_capacity(count * 16);
-                                for _ in 0..count {
-                                    batch.push(b'\x1b');
-                                    batch.push(b'[');
-                                    batch.push(b'<');
-                                    // button (always 2 digits: 64-81)
-                                    batch.push(b'0' + (btn_val / 10));
-                                    batch.push(b'0' + (btn_val % 10));
-                                    batch.push(b';');
-                                    // column (1-3 digits)
-                                    if col_1 >= 100 {
-                                        batch.push(b'0' + (col_1 / 100) as u8);
-                                        batch.push(b'0' + ((col_1 / 10) % 10) as u8);
-                                    } else if col_1 >= 10 {
-                                        batch.push(b'0' + (col_1 / 10) as u8);
-                                    }
-                                    batch.push(b'0' + (col_1 % 10) as u8);
-                                    batch.push(b';');
-                                    // row (1-3 digits)
-                                    if row_1 >= 100 {
-                                        batch.push(b'0' + (row_1 / 100) as u8);
-                                        batch.push(b'0' + ((row_1 / 10) % 10) as u8);
-                                    } else if row_1 >= 10 {
-                                        batch.push(b'0' + (row_1 / 10) as u8);
-                                    }
-                                    batch.push(b'0' + (row_1 % 10) as u8);
-                                    batch.push(b'M');
-                                }
-                                // Preserve the fractional remainder in pixel
-                                // space, matching alacritty's approach.
-                                self.input.scroll_accumulator_y %= self.view.cell_height as f64;
-                                let write_start = Instant::now();
-                                if let Err(e) = self.runtime.pty.write(&batch) {
-                                    log::error!("SGR mouse batch write error: {e}");
-                                }
-                                let write_elapsed = write_start.elapsed();
-                                if write_elapsed > std::time::Duration::from_millis(10) {
-                                    log::warn!(
-                                        "[perf] SGR batch write: {} bytes in {:?}",
-                                        batch.len(),
-                                        write_elapsed,
-                                    );
-                                }
-                            } else {
-                                log::info!(
-                                    "[dbg] SGR: accumulated total={} too small, skipping",
-                                    total
-                                );
-                            }
+                if !scroll_ys.is_empty()
+                    && let Some(pos) = pointer_pos
+                    && let Some((row, col)) = pixel_to_cell(pos)
+                {
+                    let total: f32 = scroll_ys.iter().sum();
+                    // Accumulate in pixel space (alacritty-style).
+                    // This preserves fractional deltas across frames
+                    // so slow/precise scrolling doesn't lose events.
+                    self.input.scroll_accumulator_y += total as f64 * self.view.cell_height as f64;
+                    let lines = (self.input.scroll_accumulator_y / self.view.cell_height as f64)
+                        .abs() as i32;
+                    if lines != 0 {
+                        let btn = if self.input.scroll_accumulator_y > 0.0 {
+                            64
                         } else {
-                            log::info!(
-                                "[dbg] SGR: pixel_to_cell returned None (pointer over scrollbar?)"
+                            65
+                        };
+                        let btn_val = btn | mod_bits;
+                        // Batch all SGR sequences into a single PTY
+                        // write to avoid N `flush()` calls per frame.
+                        // Rapid scrolling can fill the PTY buffer and
+                        // cause individual flushes to block.
+                        let col_1 = col + 1;
+                        let row_1 = row + 1;
+                        let count = lines as usize;
+                        let mut batch = Vec::with_capacity(count * 16);
+                        for _ in 0..count {
+                            batch.push(b'\x1b');
+                            batch.push(b'[');
+                            batch.push(b'<');
+                            // button (always 2 digits: 64-81)
+                            batch.push(b'0' + (btn_val / 10));
+                            batch.push(b'0' + (btn_val % 10));
+                            batch.push(b';');
+                            // column (1-3 digits)
+                            if col_1 >= 100 {
+                                batch.push(b'0' + (col_1 / 100) as u8);
+                                batch.push(b'0' + ((col_1 / 10) % 10) as u8);
+                            } else if col_1 >= 10 {
+                                batch.push(b'0' + (col_1 / 10) as u8);
+                            }
+                            batch.push(b'0' + (col_1 % 10) as u8);
+                            batch.push(b';');
+                            // row (1-3 digits)
+                            if row_1 >= 100 {
+                                batch.push(b'0' + (row_1 / 100) as u8);
+                                batch.push(b'0' + ((row_1 / 10) % 10) as u8);
+                            } else if row_1 >= 10 {
+                                batch.push(b'0' + (row_1 / 10) as u8);
+                            }
+                            batch.push(b'0' + (row_1 % 10) as u8);
+                            batch.push(b'M');
+                        }
+                        // Preserve the fractional remainder in pixel
+                        // space, matching alacritty's approach.
+                        self.input.scroll_accumulator_y %= self.view.cell_height as f64;
+                        let write_start = Instant::now();
+                        if let Err(e) = self.runtime.pty.write(&batch) {
+                            log::error!("SGR mouse batch write error: {e}");
+                        }
+                        let write_elapsed = write_start.elapsed();
+                        if write_elapsed > std::time::Duration::from_millis(10) {
+                            log::warn!(
+                                "[perf] SGR batch write: {} bytes in {:?}",
+                                batch.len(),
+                                write_elapsed,
                             );
                         }
-                    } else {
-                        log::info!("[dbg] SGR: pointer_pos is None, can't send SGR");
                     }
                 }
             } else {
@@ -567,12 +527,6 @@ impl TerminalSession {
                             self.runtime.terminal.scroll_display(lines);
                             self.runtime.terminal_dirty = true;
                         }
-                    } else {
-                        log::info!(
-                            "[dbg] non-SGR + ALT_SCREEN: consuming {} scroll events without forwarding! total_scroll={}",
-                            total_scroll.abs().round() as i32,
-                            total_scroll,
-                        );
                     }
                 }
             }

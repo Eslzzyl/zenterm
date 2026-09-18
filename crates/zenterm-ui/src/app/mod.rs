@@ -45,6 +45,16 @@ use crate::workspace::WorkspaceManager;
 
 // ── App-level state ────────────────────────────────────────────────────
 
+#[derive(Clone, PartialEq)]
+struct BackgroundFrameKey {
+    active: bool,
+    viewport_size_bits: [u32; 2],
+    image_size: Option<(u32, u32)>,
+    image_mode: zenterm_config::background::ImageFitMode,
+    opacity_bits: u32,
+    background_bits: [u32; 4],
+}
+
 /// The top-level eframe application state.
 pub struct ZentermApp {
     // ── Shared GPU / atlas ─────────────────────────────────────────
@@ -80,6 +90,8 @@ pub struct ZentermApp {
     background_image_loaded: bool,
     /// Pixel dimensions of the loaded background image (for fit mode).
     loaded_bg_image_size: Option<(u32, u32)>,
+    /// Parameters of the last background quad submitted to the GPU.
+    background_frame_key: Option<BackgroundFrameKey>,
 
     // ── Pending actions accumulated by the dock viewer ─────────────
     pending_close: Vec<SessionId>,
@@ -379,6 +391,7 @@ impl ZentermApp {
             command_palette: command_palette::CommandPaletteState::default(),
             background_image_loaded: false,
             loaded_bg_image_size: None,
+            background_frame_key: None,
             pending_close: Vec::new(),
             pending_adds: 0,
             pending_rename: None,
@@ -559,10 +572,9 @@ impl eframe::App for ZentermApp {
                 });
         }
 
-        // Clear the shared instance buffer and atlas ranges at the
-        // start of every frame (single lock for both).  Each session
-        // appends its own instances and ranges; the final
-        // `bump_instance_gen` is called once after the dock finishes.
+        // Clear the staging buffer at the start of every UI frame.  Clean
+        // sessions do not copy their cached instances into it; the GPU keeps
+        // rendering the last submitted generation until something changes.
         self.gpu.clear_frame();
 
         // Determine the terminal-area viewport size for aspect-ratio
@@ -584,10 +596,10 @@ impl eframe::App for ZentermApp {
         // Emit a BACKGROUND quad at instance 0 if a background image
         // is loaded.  This must happen BEFORE sessions append their
         // cell instances so the background quad is at index 0.
-        self.emit_background_quad(viewport_size_px);
+        let background_changed = self.emit_background_quad(viewport_size_px);
 
-        if self.config.ui.tabs_enabled {
-            self.render_tabs_with_dock(ui);
+        let terminal_changed = if self.config.ui.tabs_enabled {
+            self.render_tabs_with_dock(ui)
         } else {
             // Legacy single-terminal path (no dock, no sidebar).
             egui::CentralPanel::default()
@@ -597,16 +609,36 @@ impl eframe::App for ZentermApp {
                 // through outside the cell rectangle for one frame.
                 .frame(egui::Frame::NONE.fill(self.default_bg))
                 .show_inside(ui, |ui| {
-                    render_legacy_single(ui, &mut self.sessions, self.background_image_loaded);
-                });
-        }
+                    render_legacy_single(ui, &mut self.sessions, self.background_image_loaded)
+                })
+                .inner
+        };
 
         // Render app-level overlays after terminal content so they stay above
         // the GPU callback and receive input before the terminal does.
         self.render_command_palette(ui.ctx());
 
-        // Push the concatenated instance buffer to the GPU side.
-        self.gpu.bump_instance_gen();
+        // A shared callback covers all visible tabs, so a changed session
+        // requires a complete visible-frame rebuild. Clean sessions are
+        // copied only on this path; ordinary pointer movement does not enter
+        // it.
+        if background_changed || terminal_changed {
+            self.rebuild_visible_instance_frame(viewport_size_px);
+            self.gpu.bump_instance_gen();
+        }
+
+        // `egui-winit` refreshes the native IME candidate rectangle whenever
+        // the input event queue is non-empty.  A plain PointerMoved event
+        // does not change the terminal cursor or IME rectangle, but would
+        // still enqueue a Windows IME API call on every mouse move.  All UI
+        // consumers have processed the event by this point, so discard only
+        // pointer-motion events while keeping keyboard/text/button events for
+        // IME and application behavior.
+        ui.ctx().input_mut(|input| {
+            input
+                .events
+                .retain(|event| !matches!(event, egui::Event::PointerMoved(_)));
+        });
     }
 
     fn on_exit(&mut self) {
@@ -634,7 +666,7 @@ impl ZentermApp {
     ///
     /// Must be called after `clear_frame()` and before any session's
     /// `update_cell_instances()` so the quad sits at index 0.
-    fn emit_background_quad(&mut self, viewport_size_px: [f32; 2]) {
+    fn emit_background_quad(&mut self, viewport_size_px: [f32; 2]) -> bool {
         // If the flags aren't set yet, check whether an async decode
         // has completed (background_data will be populated by the thread).
         if !self.background_image_loaded {
@@ -651,11 +683,17 @@ impl ZentermApp {
                 self.loaded_bg_image_size = Some(sz);
             } else {
                 // No background image configured or still loading.
-                let mut fd = self.gpu.lock_frame_data();
-                fd.background_active = false;
-                return;
+                drop(guard);
+                {
+                    let mut fd = self.gpu.lock_frame_data();
+                    fd.background_active = false;
+                }
+                let changed = self.update_background_frame_key(viewport_size_px, false);
+                return changed;
             }
         }
+
+        let changed = self.update_background_frame_key(viewport_size_px, true);
 
         let img_opacity = self.config.background.image_opacity;
         let bg = self.theme.background;
@@ -756,6 +794,43 @@ impl ZentermApp {
             bg_color: [bg.r(), bg.g(), bg.b(), 1.0],
             flags: glyph_type::BACKGROUND,
         });
+        changed
+    }
+
+    fn update_background_frame_key(&mut self, viewport_size_px: [f32; 2], active: bool) -> bool {
+        let bg = self.theme.background;
+        let key = BackgroundFrameKey {
+            active,
+            viewport_size_bits: [viewport_size_px[0].to_bits(), viewport_size_px[1].to_bits()],
+            image_size: self.loaded_bg_image_size,
+            image_mode: self.config.background.image_mode,
+            opacity_bits: self.config.background.image_opacity.to_bits(),
+            background_bits: [
+                bg.r().to_bits(),
+                bg.g().to_bits(),
+                bg.b().to_bits(),
+                bg.a().to_bits(),
+            ],
+        };
+        let changed = self.background_frame_key.as_ref() != Some(&key);
+        self.background_frame_key = Some(key);
+        changed
+    }
+
+    fn rebuild_visible_instance_frame(&mut self, viewport_size_px: [f32; 2]) {
+        self.gpu.clear_frame();
+        let _ = self.emit_background_quad(viewport_size_px);
+
+        let visible_ids = if self.config.ui.tabs_enabled {
+            self.workspaces.active_workspace().all_tab_ids()
+        } else {
+            vec![SessionId(0)]
+        };
+        for id in visible_ids {
+            if let Some(session) = self.sessions.get(&id) {
+                session.append_cached_cell_instances();
+            }
+        }
     }
 
     /// Load a background image from disk and push it to the GPU via

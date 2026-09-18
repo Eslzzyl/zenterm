@@ -375,8 +375,6 @@ impl CallbackTrait for TerminalWgpuCallback {
                 }
             }
             self.shared.atlas_dirty.store(false, Ordering::Release);
-        } else {
-            log::trace!("callback prepare: atlas not dirty");
         }
 
         // ── 1b. Update exact-size terminal image textures ───────────────
@@ -448,9 +446,7 @@ impl CallbackTrait for TerminalWgpuCallback {
             let background_active = guard.background_active;
             drop(guard);
 
-            if !instances.is_empty()
-                && let Ok(rp_guard) = self.render_pass.lock()
-            {
+            if let Ok(rp_guard) = self.render_pass.lock() {
                 if let Some(ref rp) = *rp_guard {
                     rp.update_instances(&self.queue, &instances);
                     log::trace!(
@@ -464,8 +460,7 @@ impl CallbackTrait for TerminalWgpuCallback {
             }
 
             // Pass atlas ranges and background_active to the render pass.
-            if (!atlas_ranges.is_empty() || background_active)
-                && let Ok(mut rp_guard) = self.render_pass.lock()
+            if let Ok(mut rp_guard) = self.render_pass.lock()
                 && let Some(ref mut rp) = *rp_guard
             {
                 rp.set_atlas_ranges(atlas_ranges);
@@ -479,11 +474,6 @@ impl CallbackTrait for TerminalWgpuCallback {
             if guard.instances.is_empty() {
                 guard.instances = instances;
             }
-        } else {
-            log::trace!(
-                "callback prepare: instances unchanged (gen {}), skipping upload",
-                last_gen
-            );
         }
 
         vec![]

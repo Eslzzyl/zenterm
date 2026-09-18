@@ -83,11 +83,6 @@ pub(crate) fn process_ligature_run(
         };
     }
 
-    log::debug!(
-        "ligature ENTER: row={row} run={run_start}..{run_end} \
-         text={run_text:?}",
-    );
-
     match atlas.shape_and_rasterize_run_with_style(&run_text, style) {
         Ok((shaped, atlas_modified, had_effect)) => {
             let mut has_new_glyphs = false;

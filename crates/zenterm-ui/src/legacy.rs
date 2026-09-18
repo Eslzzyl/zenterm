@@ -28,10 +28,10 @@ pub fn render_legacy_single(
     ui: &mut egui::Ui,
     sessions: &mut std::collections::HashMap<SessionId, TerminalSession>,
     background_active: bool,
-) {
+) -> bool {
     let session = match sessions.get_mut(&SessionId(0)) {
         Some(s) => s,
-        None => return,
+        None => return false,
     };
 
     let available = ui.available_size();
@@ -49,7 +49,7 @@ pub fn render_legacy_single(
     // rendered on the correct frame (not one frame behind).
     let cell_rect = ui.max_rect();
     session.compute_hover(ui, cell_rect);
-    session.update_cell_instances([0.0, 0.0], size_px);
+    let instances_changed = session.update_cell_instances([0.0, 0.0], size_px);
 
     let sense = egui::Sense::click_and_drag();
     let (cell_rect, response) = ui.allocate_exact_size(available, sense);
@@ -69,4 +69,6 @@ pub fn render_legacy_single(
 
     // Transient resize overlay (on top of terminal content).
     session.render_resize_overlay(ui, cell_rect);
+
+    instances_changed
 }

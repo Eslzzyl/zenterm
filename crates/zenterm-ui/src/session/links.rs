@@ -295,6 +295,7 @@ impl TerminalSession {
             self.input.detected_links.len(),
             self.input.hover_cell
         );
+        self.input.hovered_link = self.hovered_link_index();
     }
 
     pub(crate) fn hovered_link_index(&self) -> Option<usize> {
