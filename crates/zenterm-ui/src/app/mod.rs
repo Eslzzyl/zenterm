@@ -82,6 +82,7 @@ pub struct ZentermApp {
     pub default_bg: egui::Color32,
     pub pixels_per_point: f32,
     pub error_toast: Option<String>,
+    pub(crate) version: &'static str,
 
     /// State for the VS Code-style command palette in the main viewport.
     command_palette: command_palette::CommandPaletteState,
@@ -154,6 +155,7 @@ impl ZentermApp {
         target_format: wgpu::TextureFormat,
         pixels_per_point: f32,
         mut config: Config,
+        version: &'static str,
     ) -> zenterm_core::Result<Self> {
         // Legacy configurations did not persist a shell.  Resolve that once
         // at startup so every new session uses a fixed executable path.
@@ -388,6 +390,7 @@ impl ZentermApp {
             default_bg,
             pixels_per_point,
             error_toast: None,
+            version,
             command_palette: command_palette::CommandPaletteState::default(),
             background_image_loaded: false,
             loaded_bg_image_size: None,

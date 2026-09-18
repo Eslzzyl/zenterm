@@ -53,6 +53,7 @@ impl ZentermApp {
         // borrowed by update()).
         let settings_state = &mut self.settings_state;
         let config = &self.config;
+        let version = self.version;
 
         let output = ctx.show_viewport_immediate(viewport_id, builder, |ctx, _class| {
             // User clicked the native close button → hide the viewport. Keep
@@ -79,7 +80,7 @@ impl ZentermApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.to_owned()));
 
             // Render the settings form (no egui::Window wrapper).
-            crate::settings::render_settings_viewport(ctx, settings_state, config)
+            crate::settings::render_settings_viewport(ctx, settings_state, config, version)
         });
 
         // ── Immediate apply: if working_config changed, apply now ─

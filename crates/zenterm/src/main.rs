@@ -4,6 +4,10 @@ use std::sync::Arc;
 
 use zenterm_config::Config;
 
+mod build_info {
+    include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
+}
+
 #[cfg(target_os = "windows")]
 fn set_windows_app_user_model_id() {
     use std::os::windows::ffi::OsStrExt;
@@ -144,6 +148,7 @@ fn main() -> eframe::Result<()> {
                 render_state.target_format,
                 pixels_per_point,
                 config,
+                build_info::DISPLAY_VERSION,
             )?))
         }),
     )

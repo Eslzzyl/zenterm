@@ -8,7 +8,7 @@ use egui::{Color32, FontDefinitions, FontId, Rect, Response, Sense, Ui, Vec2, Wi
 
 // Re-export common Phosphor regular icon glyphs
 pub use egui_phosphor::regular::{
-    APP_WINDOW, ARROW_COUNTER_CLOCKWISE, CURSOR, DOT, GEAR, IMAGE, MAGNIFYING_GLASS, PALETTE,
+    APP_WINDOW, ARROW_COUNTER_CLOCKWISE, CURSOR, DOT, GEAR, IMAGE, INFO, MAGNIFYING_GLASS, PALETTE,
     PENCIL_SIMPLE, PLUS, SELECTION, SLIDERS_HORIZONTAL, TERMINAL, TERMINAL_WINDOW, TEXT_T, TRASH,
     WARNING_CIRCLE, X,
 };

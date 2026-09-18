@@ -41,6 +41,7 @@ pub enum SettingsSection {
     Selection,
     Ui,
     Background,
+    About,
 }
 
 impl SettingsSection {
@@ -54,6 +55,7 @@ impl SettingsSection {
         Self::Selection,
         Self::Ui,
         Self::Background,
+        Self::About,
     ];
 
     pub fn label(self) -> &'static str {
@@ -66,6 +68,7 @@ impl SettingsSection {
             Self::Selection => "Selection",
             Self::Ui => "UI",
             Self::Background => "Background",
+            Self::About => "About",
         }
     }
 
@@ -79,6 +82,7 @@ impl SettingsSection {
             Self::Selection => crate::icons::SELECTION,
             Self::Ui => crate::icons::SLIDERS_HORIZONTAL,
             Self::Background => crate::icons::IMAGE,
+            Self::About => crate::icons::INFO,
         }
     }
 }
@@ -171,11 +175,12 @@ pub fn render_settings_viewport(
     ctx: &egui::Context,
     state: &mut SettingsState,
     current_config: &Config,
+    version: &'static str,
 ) -> SettingsOutput {
     let mut output = SettingsOutput::default();
     #[allow(deprecated)]
     egui::CentralPanel::default().show(ctx, |ui| {
-        render_settings_content(ui, state, current_config, &mut output);
+        render_settings_content(ui, state, current_config, version, &mut output);
     });
     output
 }
@@ -187,6 +192,7 @@ fn render_settings_content(
     ui: &mut egui::Ui,
     state: &mut SettingsState,
     current_config: &Config,
+    version: &'static str,
     output: &mut SettingsOutput,
 ) {
     ui.horizontal_top(|ui| {
@@ -352,6 +358,7 @@ fn render_settings_content(
                     &state.font_families,
                     &state.registered_fonts,
                     &mut state.shell_candidates,
+                    version,
                 );
             });
         });
@@ -390,6 +397,7 @@ fn render_section(
     font_families: &[String],
     registered_fonts: &HashSet<String>,
     shell_candidates: &mut Vec<ShellCandidate>,
+    version: &'static str,
 ) {
     match section {
         SettingsSection::Window => render_window_section(ui, &mut cfg.window),
@@ -404,7 +412,15 @@ fn render_section(
         SettingsSection::Selection => render_selection_section(ui, &mut cfg.selection),
         SettingsSection::Ui => render_ui_section(ui, &mut cfg.ui),
         SettingsSection::Background => render_background_section(ui, &mut cfg.background),
+        SettingsSection::About => render_about_section(ui, version),
     }
+}
+
+fn render_about_section(ui: &mut egui::Ui, version: &str) {
+    settings_widgets::section_header(ui, "About", "Application information.");
+    settings_widgets::row(ui, "Version", "", |ui| {
+        ui.label(egui::RichText::new(version).monospace());
+    });
 }
 
 // ── Window section ───────────────────────────────────────────────────────
