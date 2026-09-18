@@ -49,7 +49,7 @@ impl ZentermApp {
             None => return,
         };
 
-        let ts = session.terminal.size();
+        let ts = session.terminal().size();
         let dims = &mut self.config.window.dimensions;
 
         if ts.cols != dims.columns || ts.rows != dims.lines {
@@ -93,15 +93,14 @@ impl ZentermApp {
         if changes.colors {
             let scheme = ColorScheme::from_theme(&self.theme);
             for session in self.sessions.values_mut() {
-                session.terminal.set_scheme(scheme.clone());
-                session.default_bg = self.default_bg;
+                session.set_theme(scheme.clone(), self.default_bg);
             }
         }
 
         // Propagate selection config changes.
         if changes.selection {
             for session in self.sessions.values_mut() {
-                session.save_to_clipboard = self.config.selection.save_to_clipboard;
+                session.set_save_to_clipboard(self.config.selection.save_to_clipboard);
             }
         }
 
@@ -110,9 +109,9 @@ impl ZentermApp {
         if changes.terminal {
             for session in self.sessions.values_mut() {
                 session
-                    .terminal
+                    .terminal_mut()
                     .set_scrollback_lines(self.config.terminal.scrollback_lines);
-                session.terminal_dirty = true;
+                session.mark_terminal_dirty();
             }
         }
 
@@ -120,7 +119,7 @@ impl ZentermApp {
         if changes.font || changes.cursor || changes.colors {
             for session in self.sessions.values_mut() {
                 session.apply_config_change(self.config.font.size, &self.config.cursor);
-                session.terminal_dirty = true;
+                session.mark_terminal_dirty();
             }
         }
 

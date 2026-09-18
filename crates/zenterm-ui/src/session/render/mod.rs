@@ -66,10 +66,10 @@ impl TerminalSession {
         //   dock_clip_x = (dock_px - dock_origin) * 2 / dock_size - 1
         //
         // where dock_px = tab_origin + local_cell_px.
-        let dock_w = self.dock_vp_size_px[0];
-        let dock_h = self.dock_vp_size_px[1];
-        let dock_ox = self.dock_vp_origin_px[0];
-        let dock_oy = self.dock_vp_origin_px[1];
+        let dock_w = self.view.dock_vp_size_px[0];
+        let dock_h = self.view.dock_vp_size_px[1];
+        let dock_ox = self.view.dock_vp_origin_px[0];
+        let dock_oy = self.view.dock_vp_origin_px[1];
         if dock_w <= 0.0 || dock_h <= 0.0 {
             return false;
         }
@@ -85,22 +85,27 @@ impl TerminalSession {
         // blinking already sets `terminal_dirty = true` every
         // blink tick (see `app.rs`), so the cursor animation still
         // works correctly.
-        if self.pty_exited || !self.terminal_dirty {
-            let has_instances = !self.cached_bg.is_empty()
-                || self.cached_glyph_per_atlas.iter().any(|v| !v.is_empty())
-                || !self.cached_deco.is_empty()
-                || self.cached_image_below.iter().any(|v| !v.is_empty())
-                || self.cached_image_above.iter().any(|v| !v.is_empty());
+        if self.runtime.pty_exited || !self.runtime.terminal_dirty {
+            let has_instances = !self.view.cached_bg.is_empty()
+                || self
+                    .view
+                    .cached_glyph_per_atlas
+                    .iter()
+                    .any(|v| !v.is_empty())
+                || !self.view.cached_deco.is_empty()
+                || self.view.cached_image_below.iter().any(|v| !v.is_empty())
+                || self.view.cached_image_above.iter().any(|v| !v.is_empty());
             if has_instances {
                 let mut fd = self
+                    .view
                     .gpu
                     .shared
                     .frame_data
                     .lock()
                     .expect("frame_data poisoned");
-                fd.instances.extend(&self.cached_bg);
+                fd.instances.extend(&self.view.cached_bg);
                 // Append per-atlas image instances (z < 0).
-                for (slot_idx, instances) in self.cached_image_below.iter().enumerate() {
+                for (slot_idx, instances) in self.view.cached_image_below.iter().enumerate() {
                     if instances.is_empty() {
                         continue;
                     }
@@ -114,7 +119,7 @@ impl TerminalSession {
                     });
                 }
                 // Append per-atlas glyph instances.
-                for (slot_idx, instances) in self.cached_glyph_per_atlas.iter().enumerate() {
+                for (slot_idx, instances) in self.view.cached_glyph_per_atlas.iter().enumerate() {
                     if instances.is_empty() {
                         continue;
                     }
@@ -127,9 +132,9 @@ impl TerminalSession {
                         count: instances.len() as u32,
                     });
                 }
-                fd.instances.extend(&self.cached_deco);
+                fd.instances.extend(&self.view.cached_deco);
                 // Append per-atlas image instances (z >= 0).
-                for (slot_idx, instances) in self.cached_image_above.iter().enumerate() {
+                for (slot_idx, instances) in self.view.cached_image_above.iter().enumerate() {
                     if instances.is_empty() {
                         continue;
                     }
@@ -146,21 +151,23 @@ impl TerminalSession {
             return has_instances;
         }
 
-        let evicted_hashes = self.terminal.take_evicted_image_hashes();
-        self.terminal
+        let evicted_hashes = self.runtime.terminal.take_evicted_image_hashes();
+        self.runtime
+            .terminal
             .pending_image_deallocations
             .extend(evicted_hashes);
 
         // Read cursor info BEFORE visible_cells() since both borrow
-        // self.terminal (one mut, one immut).
+        // self.runtime.terminal (one mut, one immut).
         // Drain pending image atlas deallocations (images removed by kitty
         // delete commands).
-        for hash in self.terminal.pending_image_deallocations.drain(..) {
-            self.atlas
-                .release_image_hash_for_sources(&hash, &mut self.image_sources);
+        for hash in self.runtime.terminal.pending_image_deallocations.drain(..) {
+            self.view
+                .atlas
+                .release_image_hash_for_sources(&hash, &mut self.view.image_sources);
         }
 
-        let cursor = self.terminal.cursor();
+        let cursor = self.runtime.terminal.cursor();
         let cursor_row = cursor.pos.line;
         let cursor_orig_col = cursor.pos.column;
         let cursor_bg = cursor.cursor_bg;
@@ -178,12 +185,12 @@ impl TerminalSession {
             // `blink_timeout` (seconds, 0 = forever) stops the blinking
             // once the terminal has been idle that long; `blink_epoch`
             // is reset on user activity.
-            let elapsed = self.blink_epoch.elapsed().as_millis();
-            let timeout_ms = self.blink_timeout.saturating_mul(1000) as u128;
+            let elapsed = self.input.blink_epoch.elapsed().as_millis();
+            let timeout_ms = self.input.blink_timeout.saturating_mul(1000) as u128;
             if timeout_ms > 0 && elapsed >= timeout_ms {
                 true
             } else {
-                let period = self.blink_interval.max(100) as u128 * 2;
+                let period = self.input.blink_interval.max(100) as u128 * 2;
                 (elapsed % period) < period / 2
             }
         } else {
@@ -191,29 +198,29 @@ impl TerminalSession {
         };
         let cursor_visible = cursor.visible && blink_on;
         let cursor_shape = cursor.style.shape;
-        let hollow_cursor = self.unfocused_hollow && !self.window_focused;
+        let hollow_cursor = self.input.unfocused_hollow && !self.input.window_focused;
 
-        let sel_range: Option<SelectionRange> = self.terminal.selection_range();
-        let sel_bg = self.terminal.selection_bg();
-        let sel_fg = self.terminal.selection_fg();
-        let default_bg = self.terminal.default_bg();
-        let display_offset = self.terminal.display_offset();
+        let sel_range: Option<SelectionRange> = self.runtime.terminal.selection_range();
+        let sel_bg = self.runtime.terminal.selection_bg();
+        let sel_fg = self.runtime.terminal.selection_fg();
+        let default_bg = self.runtime.terminal.default_bg();
+        let display_offset = self.runtime.terminal.display_offset();
 
-        if self.url_open || self.url_hover_underline {
+        if self.input.url_open || self.input.url_hover_underline {
             self.refresh_detected_links();
         } else {
-            self.detected_links.clear();
+            self.input.detected_links.clear();
         }
 
-        let hovered_link = if self.url_hover_underline {
+        let hovered_link = if self.input.url_hover_underline {
             self.hovered_link_index()
         } else {
             None
         };
-        let mut atlas = self.atlas.lock();
-        let cw = self.cell_width;
-        let ch = self.cell_height;
-        let grid = self.terminal.visible_cells();
+        let mut atlas = self.view.atlas.lock();
+        let cw = self.view.cell_width;
+        let ch = self.view.cell_height;
+        let grid = self.runtime.terminal.visible_cells();
         let rows = grid.row_count();
         let cols = grid.col_count();
         if rows == 0 || cols == 0 {
@@ -223,6 +230,7 @@ impl TerminalSession {
         // When IME preedit is active, advance the visual cursor to the
         // end of the composing text so the cursor follows the input.
         let preedit_advance = self
+            .input
             .preedit_text
             .as_ref()
             .map(|t| t.chars().count())
@@ -233,34 +241,37 @@ impl TerminalSession {
 
         // Reuse cached instance buffers — clear instead of re-allocating.
         let instances_cap = rows * cols;
-        self.cached_bg.clear();
-        for v in &mut self.cached_glyph_per_atlas {
+        self.view.cached_bg.clear();
+        for v in &mut self.view.cached_glyph_per_atlas {
             clear_high_water_buffer(v);
         }
         while self
+            .view
             .cached_glyph_per_atlas
             .last()
             .is_some_and(Vec::is_empty)
         {
-            self.cached_glyph_per_atlas.pop();
+            self.view.cached_glyph_per_atlas.pop();
         }
-        if self.cached_glyph_per_atlas.capacity() >= GLYPH_HIGH_WATER_CAPACITY
-            && self.cached_glyph_per_atlas.capacity()
-                > self.cached_glyph_per_atlas.len().saturating_mul(2)
+        if self.view.cached_glyph_per_atlas.capacity() >= GLYPH_HIGH_WATER_CAPACITY
+            && self.view.cached_glyph_per_atlas.capacity()
+                > self.view.cached_glyph_per_atlas.len().saturating_mul(2)
         {
-            self.cached_glyph_per_atlas
-                .shrink_to(self.cached_glyph_per_atlas.len());
+            self.view
+                .cached_glyph_per_atlas
+                .shrink_to(self.view.cached_glyph_per_atlas.len());
         }
-        for v in &mut self.cached_image_below {
+        for v in &mut self.view.cached_image_below {
             v.clear();
         }
-        for v in &mut self.cached_image_above {
+        for v in &mut self.view.cached_image_above {
             v.clear();
         }
-        self.cached_deco.clear();
-        if self.cached_bg.capacity() < instances_cap {
-            self.cached_bg
-                .reserve(instances_cap - self.cached_bg.capacity());
+        self.view.cached_deco.clear();
+        if self.view.cached_bg.capacity() < instances_cap {
+            self.view
+                .cached_bg
+                .reserve(instances_cap - self.view.cached_bg.capacity());
         }
         // Decorations and image quads are sparse for ordinary terminal
         // output.  Let these buffers grow only when such instances exist;
@@ -270,17 +281,17 @@ impl TerminalSession {
         // (capacity > 2x needed) to avoid retaining large allocations
         // after window resize.
         let shrink_threshold = instances_cap.saturating_mul(2);
-        if self.cached_bg.capacity() > shrink_threshold {
-            self.cached_bg.shrink_to(instances_cap);
+        if self.view.cached_bg.capacity() > shrink_threshold {
+            self.view.cached_bg.shrink_to(instances_cap);
         }
-        if self.cached_deco.capacity() > shrink_threshold {
-            self.cached_deco.shrink_to(instances_cap);
+        if self.view.cached_deco.capacity() > shrink_threshold {
+            self.view.cached_deco.shrink_to(instances_cap);
         }
-        if self.cached_image_below.capacity() > shrink_threshold {
-            self.cached_image_below.shrink_to(instances_cap);
+        if self.view.cached_image_below.capacity() > shrink_threshold {
+            self.view.cached_image_below.shrink_to(instances_cap);
         }
-        if self.cached_image_above.capacity() > shrink_threshold {
-            self.cached_image_above.shrink_to(instances_cap);
+        if self.view.cached_image_above.capacity() > shrink_threshold {
+            self.view.cached_image_above.shrink_to(instances_cap);
         }
         let mut has_new_glyphs = false;
         let mut image_entries = ImageEntryCache::new();
@@ -289,7 +300,7 @@ impl TerminalSession {
 
         // ── Cursor line highlight (OSC 1337 HighlightCursorLine) ─────
         // Emit a full-width background quad at the cursor row.
-        if self.highlight_cursor_line && cursor_visible {
+        if self.runtime.highlight_cursor_line && cursor_visible {
             // Pick a subtle highlight colour based on background luminance.
             let bg = default_bg;
             let luminance = 0.299 * bg.r() + 0.587 * bg.g() + 0.114 * bg.b();
@@ -304,11 +315,11 @@ impl TerminalSession {
             // (always true here due to alpha, but force=false so the
             // emit_background_quad function can skip if they match).
             emit_background_quad(
-                &mut self.cached_bg,
+                &mut self.view.cached_bg,
                 0,          // col
                 cursor_row, // row
-                self.cell_width,
-                self.cell_height,
+                self.view.cell_width,
+                self.view.cell_height,
                 cols as f32, // num_cells — highlight spans full row width
                 highlight,
                 default_bg,
@@ -334,13 +345,13 @@ impl TerminalSession {
 
                 let mut ch_char = cell.c;
 
-                let is_preedit = self.preedit_text.as_ref().is_some_and(|preedit| {
+                let is_preedit = self.input.preedit_text.as_ref().is_some_and(|preedit| {
                     row == cursor_row
                         && col >= cursor_orig_col
                         && col - cursor_orig_col < preedit.chars().count()
                 });
                 if is_preedit
-                    && let Some(ref preedit) = self.preedit_text
+                    && let Some(ref preedit) = self.input.preedit_text
                     && let Some(c) = preedit.chars().nth(col - cursor_orig_col)
                 {
                     ch_char = c;
@@ -397,16 +408,16 @@ impl TerminalSession {
                     hovered_link,
                     row,
                     col,
-                    self.terminal_dirty
+                    self.runtime.terminal_dirty
                 );
                 if hovered_link
-                    .is_some_and(|link| self.detected_links[link].contains_cell(row, col))
+                    .is_some_and(|link| self.input.detected_links[link].contains_cell(row, col))
                 {
                     log::debug!("url_underline: emit row={} col={}", row, col);
                     let thickness = 1.0_f32.max((ch * 0.06).round());
                     let deco_y = y_off + row as f32 * ch + baseline + 0.5;
                     let deco_x = x_off + col as f32 * cw;
-                    self.cached_deco.push(CellInstance {
+                    self.view.cached_deco.push(CellInstance {
                         clip_pos: [deco_x * x_scale - 1.0, 1.0 - deco_y * y_scale],
                         uv_min: [0.0; 2],
                         uv_max: [0.0; 2],
@@ -440,7 +451,7 @@ impl TerminalSession {
                         cursor_col,
                         cursor_shape,
                         hollow_cursor,
-                        self.cursor_thickness,
+                        self.input.cursor_thickness,
                         cursor_bg,
                         display_offset,
                         sel_range.as_ref(),
@@ -455,9 +466,9 @@ impl TerminalSession {
                         x_scale,
                         y_scale,
                         cols,
-                        &mut self.cached_bg,
-                        &mut self.cached_glyph_per_atlas,
-                        &mut self.cached_deco,
+                        &mut self.view.cached_bg,
+                        &mut self.view.cached_glyph_per_atlas,
+                        &mut self.view.cached_deco,
                     );
                     last_checked_run_end = outcome.last_checked;
                     if outcome.has_new_glyphs {
@@ -470,14 +481,14 @@ impl TerminalSession {
                         // underline for those cells must be emitted here.
                         if let Some(link) = hovered_link {
                             for c in run_start..outcome.run_end {
-                                if !self.detected_links[link].contains_cell(row, c) {
+                                if !self.input.detected_links[link].contains_cell(row, c) {
                                     continue;
                                 }
                                 log::debug!("url_underline: ligature-bypass row={} col={}", row, c);
                                 let thickness = 1.0_f32.max((ch * 0.06).round());
                                 let deco_y = y_off + row as f32 * ch + baseline + 0.5;
                                 let deco_x = x_off + c as f32 * cw;
-                                self.cached_deco.push(CellInstance {
+                                self.view.cached_deco.push(CellInstance {
                                     clip_pos: [deco_x * x_scale - 1.0, 1.0 - deco_y * y_scale],
                                     uv_min: [0.0; 2],
                                     uv_max: [0.0; 2],
@@ -505,7 +516,7 @@ impl TerminalSession {
                 if !is_cursor || is_block_cursor {
                     let cell_bg = if is_sel { sel_bg } else { draw_bg };
                     emit_background_quad(
-                        &mut self.cached_bg,
+                        &mut self.view.cached_bg,
                         col,
                         row,
                         cw,
@@ -525,10 +536,10 @@ impl TerminalSession {
                 if let Some(ref img) = cell.image
                     && img.z_index < 0
                 {
-                    self.image_sources.insert(image_source_id(img));
+                    self.view.image_sources.insert(image_source_id(img));
                     emit_image_quad(
-                        &mut self.cached_image_below,
-                        &self.atlas,
+                        &mut self.view.cached_image_below,
+                        &self.view.atlas,
                         &mut image_entries,
                         img,
                         col,
@@ -641,11 +652,12 @@ impl TerminalSession {
 
                     // Ensure per-atlas cache vec is large enough.
                     let ai_usize = ai as usize;
-                    if ai_usize >= self.cached_glyph_per_atlas.len() {
-                        self.cached_glyph_per_atlas
+                    if ai_usize >= self.view.cached_glyph_per_atlas.len() {
+                        self.view
+                            .cached_glyph_per_atlas
                             .resize_with(ai_usize + 1, Vec::new);
                     }
-                    self.cached_glyph_per_atlas[ai_usize].push(CellInstance {
+                    self.view.cached_glyph_per_atlas[ai_usize].push(CellInstance {
                         clip_pos: [glyph_x_px * x_scale - 1.0, 1.0 - glyph_y_px * y_scale],
                         uv_min: [u_min, v_min],
                         uv_max: [u_max, v_max],
@@ -664,7 +676,7 @@ impl TerminalSession {
 
                 if has_deco || is_cursor {
                     emit_deco_for_cell(
-                        &mut self.cached_deco,
+                        &mut self.view.cached_deco,
                         &grid,
                         row,
                         col,
@@ -674,7 +686,7 @@ impl TerminalSession {
                         cursor_col,
                         cursor_shape,
                         hollow_cursor,
-                        self.cursor_thickness,
+                        self.input.cursor_thickness,
                         cursor_bg,
                         display_offset,
                         sel_range.as_ref(),
@@ -695,7 +707,7 @@ impl TerminalSession {
                     let thickness = 1.0_f32.max((ch * 0.05).round());
                     let deco_y_px = y_off + row as f32 * ch + baseline + 1.0;
                     let deco_x_px = x_off + col as f32 * cw;
-                    self.cached_deco.push(CellInstance {
+                    self.view.cached_deco.push(CellInstance {
                         clip_pos: [deco_x_px * x_scale - 1.0, 1.0 - deco_y_px * y_scale],
                         uv_min: [0.0; 2],
                         uv_max: [0.0; 2],
@@ -712,10 +724,10 @@ impl TerminalSession {
                 if let Some(ref img) = cell.image
                     && img.z_index >= 0
                 {
-                    self.image_sources.insert(image_source_id(img));
+                    self.view.image_sources.insert(image_source_id(img));
                     emit_image_quad(
-                        &mut self.cached_image_above,
-                        &self.atlas,
+                        &mut self.view.cached_image_above,
+                        &self.view.atlas,
                         &mut image_entries,
                         img,
                         col,
@@ -739,21 +751,22 @@ impl TerminalSession {
                 "[img] render frame: below={}, above={}, total_placements={}, dirty={}",
                 img_below_count,
                 img_above_count,
-                self.terminal.image_placements_count(),
-                self.terminal_dirty,
+                self.runtime.terminal.image_placements_count(),
+                self.runtime.terminal_dirty,
             );
         }
 
         // Append to the shared instance buffer in draw order.
         let mut fd = self
+            .view
             .gpu
             .shared
             .frame_data
             .lock()
             .expect("frame_data poisoned");
-        fd.instances.extend(&self.cached_bg);
+        fd.instances.extend(&self.view.cached_bg);
         // Append per-atlas image instances (z < 0).
-        for (slot_idx, instances) in self.cached_image_below.iter().enumerate() {
+        for (slot_idx, instances) in self.view.cached_image_below.iter().enumerate() {
             if instances.is_empty() {
                 continue;
             }
@@ -767,7 +780,7 @@ impl TerminalSession {
             });
         }
         // Append per-atlas glyph instances.
-        for (slot_idx, instances) in self.cached_glyph_per_atlas.iter().enumerate() {
+        for (slot_idx, instances) in self.view.cached_glyph_per_atlas.iter().enumerate() {
             if instances.is_empty() {
                 continue;
             }
@@ -780,9 +793,9 @@ impl TerminalSession {
                 count: instances.len() as u32,
             });
         }
-        fd.instances.extend(&self.cached_deco);
+        fd.instances.extend(&self.view.cached_deco);
         // Append per-atlas image instances (z >= 0).
-        for (slot_idx, instances) in self.cached_image_above.iter().enumerate() {
+        for (slot_idx, instances) in self.view.cached_image_above.iter().enumerate() {
             if instances.is_empty() {
                 continue;
             }
@@ -800,10 +813,10 @@ impl TerminalSession {
         // the app after all sessions have appended).
         if has_new_glyphs {
             drop(atlas); // release before sync_to_gpu re-locks
-            self.atlas.sync_to_gpu();
+            self.view.atlas.sync_to_gpu();
         }
 
-        self.terminal_dirty = false;
+        self.runtime.terminal_dirty = false;
         true
     }
 }

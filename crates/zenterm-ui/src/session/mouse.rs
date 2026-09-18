@@ -40,8 +40,8 @@ impl TerminalSession {
     /// Must be called **before** `update_cell_instances` so the URL
     /// underline is rendered in the correct frame.
     pub fn compute_hover(&mut self, ui: &egui::Ui, cell_rect: egui::Rect) {
-        if !self.url_hover_underline {
-            self.hover_cell = None;
+        if !self.input.url_hover_underline {
+            self.input.hover_cell = None;
             return;
         }
         let cell_area = egui::Rect::from_min_max(
@@ -57,24 +57,24 @@ impl TerminalSession {
             "compute_hover: pointer_pos={:?} cell_rect={:?} cw={} ch={}",
             pos,
             cell_rect,
-            self.cell_width,
-            self.cell_height,
+            self.view.cell_width,
+            self.view.cell_height,
         );
         let mut new_hover = pos.filter(|pos| cell_area.contains(*pos)).and_then(|pos| {
             // URL hover tracks the cell actually under the pointer.  The
             // forward-lean threshold is reserved for text selection.
-            let col = ((pos.x - cell_area.left()) * ppp / self.cell_width).floor() as usize;
-            let row = ((pos.y - cell_area.top()) * ppp / self.cell_height).floor() as usize;
-            let cols = self.terminal.size().cols as usize;
-            let rows = self.terminal.size().rows as usize;
+            let col = ((pos.x - cell_area.left()) * ppp / self.view.cell_width).floor() as usize;
+            let row = ((pos.y - cell_area.top()) * ppp / self.view.cell_height).floor() as usize;
+            let cols = self.runtime.terminal.size().cols as usize;
+            let rows = self.runtime.terminal.size().rows as usize;
             log::trace!(
                 "compute_hover: col={} row={} cols={} rows={} cw={} ch={}",
                 col,
                 row,
                 cols,
                 rows,
-                self.cell_width,
-                self.cell_height,
+                self.view.cell_width,
+                self.view.cell_height,
             );
             if col < cols && row < rows {
                 Some((row, col))
@@ -88,17 +88,17 @@ impl TerminalSession {
         // back to the leading cell so URL hover-underline works over the
         // entire glyph.
         if let Some((row, col)) = new_hover {
-            new_hover = Some((row, snap_col(&mut self.terminal, row, col)));
+            new_hover = Some((row, snap_col(&mut self.runtime.terminal, row, col)));
         }
         log::trace!(
             "compute_hover: old={:?} new={:?}",
-            self.hover_cell,
+            self.input.hover_cell,
             new_hover,
         );
-        if new_hover != self.hover_cell {
-            self.hover_cell = new_hover;
-            if self.url_hover_underline {
-                self.terminal_dirty = true;
+        if new_hover != self.input.hover_cell {
+            self.input.hover_cell = new_hover;
+            if self.input.url_hover_underline {
+                self.runtime.terminal_dirty = true;
             }
         }
     }
@@ -118,7 +118,7 @@ impl TerminalSession {
         size_px: [f32; 2],
         response: &egui::Response,
     ) {
-        let mode = self.terminal.mode();
+        let mode = self.runtime.terminal.mode();
         let mouse_reporting = mode.contains(TermMode::SGR_MOUSE)
             && mode.intersects(
                 TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION,
@@ -140,11 +140,11 @@ impl TerminalSession {
             | (if mods.alt { 8u8 } else { 0 })
             | (if mods.ctrl { 16u8 } else { 0 });
 
-        let cw = self.cell_width;
-        let ch = self.cell_height;
+        let cw = self.view.cell_width;
+        let ch = self.view.cell_height;
         let ppp = ui.ctx().pixels_per_point();
-        let rows = self.terminal.size().rows as usize;
-        let cols = self.terminal.size().cols as usize;
+        let rows = self.runtime.terminal.size().rows as usize;
+        let cols = self.runtime.terminal.size().cols as usize;
         let _ = size_px;
 
         // ── Scrollbar geometry ───────────────────────────────────────────
@@ -166,50 +166,50 @@ impl TerminalSession {
         {
             // ── Drag start on the scrollbar ──
             if response.drag_started() {
-                self.scrollbar_dragging = true;
-                self.scrollbar_drag_start_y = pos.y;
-                self.scrollbar_drag_start_offset = self.terminal.display_offset();
+                self.input.scrollbar_dragging = true;
+                self.input.scrollbar_drag_start_y = pos.y;
+                self.input.scrollbar_drag_start_offset = self.runtime.terminal.display_offset();
             }
             // ── Track-click (above/below thumb) → page up/down ──
             if response.clicked() {
-                let hist = self.terminal.history_size();
+                let hist = self.runtime.terminal.history_size();
                 if hist > 0 {
                     let (thumb, _) = Self::scrollbar_thumb_rect(
                         sb_rect,
-                        self.terminal.size().rows as usize,
+                        self.runtime.terminal.size().rows as usize,
                         hist,
-                        self.terminal.display_offset(),
+                        self.runtime.terminal.display_offset(),
                     );
                     if pos.y < thumb.top() {
-                        self.terminal.scroll_display(rows as i32);
+                        self.runtime.terminal.scroll_display(rows as i32);
                     } else if pos.y > thumb.bottom() {
-                        self.terminal.scroll_display(-(rows as i32));
+                        self.runtime.terminal.scroll_display(-(rows as i32));
                     }
-                    self.terminal_dirty = true;
+                    self.runtime.terminal_dirty = true;
                 }
             }
             return; // scrollbar area: don't process cell events
         }
 
         // ── Scrollbar: drag thumb update (tracked even if pointer left the bar) ──
-        if self.scrollbar_dragging {
+        if self.input.scrollbar_dragging {
             if let Some(pos) = response.interact_pointer_pos() {
-                let hist = self.terminal.history_size() as f32;
+                let hist = self.runtime.terminal.history_size() as f32;
                 if hist > 0.0 {
-                    let dy = pos.y - self.scrollbar_drag_start_y;
+                    let dy = pos.y - self.input.scrollbar_drag_start_y;
                     let ratio_delta = dy / sb_rect.height();
                     let offset_delta = (ratio_delta * hist) as i32;
-                    let target = (self.scrollbar_drag_start_offset as i32 - offset_delta)
+                    let target = (self.input.scrollbar_drag_start_offset as i32 - offset_delta)
                         .clamp(0, hist as i32);
-                    let cur = self.terminal.display_offset() as i32;
+                    let cur = self.runtime.terminal.display_offset() as i32;
                     if target != cur {
-                        self.terminal.scroll_display(target - cur);
-                        self.terminal_dirty = true;
+                        self.runtime.terminal.scroll_display(target - cur);
+                        self.runtime.terminal_dirty = true;
                     }
                 }
             }
             if response.drag_stopped() {
-                self.scrollbar_dragging = false;
+                self.input.scrollbar_dragging = false;
             }
         }
 
@@ -259,19 +259,23 @@ impl TerminalSession {
         };
 
         // ── Hover tracking (for URL underline) ──────────────────────────
-        let new_hover = if self.url_hover_underline {
+        let new_hover = if self.input.url_hover_underline {
             let pos = response.hover_pos();
             log::debug!("mouse: response.hover_pos()={:?}", pos);
             pos.and_then(&pixel_to_link_cell)
-                .map(|(row, col)| (row, snap_col(&mut self.terminal, row, col)))
+                .map(|(row, col)| (row, snap_col(&mut self.runtime.terminal, row, col)))
         } else {
             None
         };
-        if new_hover != self.hover_cell {
-            log::debug!("mouse: hover_cell {:?} → {:?}", self.hover_cell, new_hover);
-            self.hover_cell = new_hover;
-            if self.url_hover_underline {
-                self.terminal_dirty = true;
+        if new_hover != self.input.hover_cell {
+            log::debug!(
+                "mouse: hover_cell {:?} → {:?}",
+                self.input.hover_cell,
+                new_hover
+            );
+            self.input.hover_cell = new_hover;
+            if self.input.url_hover_underline {
+                self.runtime.terminal_dirty = true;
             }
         }
 
@@ -280,17 +284,19 @@ impl TerminalSession {
             && let Some(pos) = response.interact_pointer_pos()
             && let Some((row, col)) = pixel_to_cell(pos)
         {
-            let col = snap_col(&mut self.terminal, row, col);
+            let col = snap_col(&mut self.runtime.terminal, row, col);
             if mouse_reporting {
                 let btn = mod_bits; // left button
-                self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
-                self.sgr_mouse_buttons.push(btn);
+                self.input
+                    .sgr_mouse_buttons
+                    .retain(|&b| b & 0b11 != btn & 0b11);
+                self.input.sgr_mouse_buttons.push(btn);
                 self.send_sgr_mouse(row, col, btn, false);
             } else {
-                self.terminal.clear_selection();
-                self.terminal.start_selection(row, col);
-                self.selecting = true;
-                self.terminal_dirty = true;
+                self.runtime.terminal.clear_selection();
+                self.runtime.terminal.start_selection(row, col);
+                self.input.selecting = true;
+                self.runtime.terminal_dirty = true;
             }
         }
 
@@ -309,36 +315,38 @@ impl TerminalSession {
                 if let Some(pos) = pointer_pos
                     && let Some((row, col)) = pixel_to_cell(pos)
                 {
-                    let col = snap_col(&mut self.terminal, row, col);
+                    let col = snap_col(&mut self.runtime.terminal, row, col);
                     self.send_sgr_mouse(row, col, 32 | mod_bits, false);
                 }
-            } else if self.selecting
+            } else if self.input.selecting
                 && let Some(pos) = pointer_pos
             {
                 // Normal: pointer inside the cell grid → update selection.
                 if let Some((row, col)) = pixel_to_cell(pos) {
-                    let col = snap_col(&mut self.terminal, row, col);
-                    self.terminal.update_selection(row, col);
-                    self.terminal_dirty = true;
+                    let col = snap_col(&mut self.runtime.terminal, row, col);
+                    self.runtime.terminal.update_selection(row, col);
+                    self.runtime.terminal_dirty = true;
                 } else {
                     // Edge-scroll: pointer is outside the cell grid.
                     let rel_y = pos.y - cell_area.top();
                     let clamped = pixel_to_cell_clamped(pos);
-                    let col = snap_col(&mut self.terminal, clamped.0, clamped.1);
+                    let col = snap_col(&mut self.runtime.terminal, clamped.0, clamped.1);
                     if rel_y < 0.0 {
                         // Above top → scroll up.
                         let dist = -rel_y;
                         let lines = (dist * ppp / ch).ceil().max(1.0) as i32;
-                        self.terminal.scroll_display(lines);
-                        self.terminal.update_selection(0, col);
+                        self.runtime.terminal.scroll_display(lines);
+                        self.runtime.terminal.update_selection(0, col);
                     } else {
                         // Below bottom → scroll down.
                         let dist = pos.y - cell_area.bottom();
                         let lines = (dist * ppp / ch).ceil().max(1.0) as i32;
-                        self.terminal.scroll_display(-lines);
-                        self.terminal.update_selection(rows.saturating_sub(1), col);
+                        self.runtime.terminal.scroll_display(-lines);
+                        self.runtime
+                            .terminal
+                            .update_selection(rows.saturating_sub(1), col);
                     }
-                    self.terminal_dirty = true;
+                    self.runtime.terminal_dirty = true;
                 }
             }
         }
@@ -349,10 +357,12 @@ impl TerminalSession {
             && let Some(pos) = response.interact_pointer_pos()
             && let Some((row, col)) = pixel_to_cell(pos)
         {
-            let col = snap_col(&mut self.terminal, row, col);
+            let col = snap_col(&mut self.runtime.terminal, row, col);
             let btn = 2 | mod_bits; // right button
-            self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
-            self.sgr_mouse_buttons.push(btn);
+            self.input
+                .sgr_mouse_buttons
+                .retain(|&b| b & 0b11 != btn & 0b11);
+            self.input.sgr_mouse_buttons.push(btn);
             self.send_sgr_mouse(row, col, btn, false);
         }
 
@@ -362,17 +372,19 @@ impl TerminalSession {
                 if let Some(pos) = response.interact_pointer_pos()
                     && let Some((row, col)) = pixel_to_cell(pos)
                 {
-                    let col = snap_col(&mut self.terminal, row, col);
+                    let col = snap_col(&mut self.runtime.terminal, row, col);
                     let btn = 1 | mod_bits; // middle button
-                    self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
-                    self.sgr_mouse_buttons.push(btn);
+                    self.input
+                        .sgr_mouse_buttons
+                        .retain(|&b| b & 0b11 != btn & 0b11);
+                    self.input.sgr_mouse_buttons.push(btn);
                     self.send_sgr_mouse(row, col, btn, false);
                 }
             } else {
-                if let Some(ref mut clipboard) = self.clipboard
+                if let Some(ref mut clipboard) = self.input.clipboard
                     && let Ok(text) = clipboard.get_text()
                     && !text.is_empty()
-                    && let Err(e) = self.pty.write(text.as_bytes())
+                    && let Err(e) = self.runtime.pty.write(text.as_bytes())
                 {
                     log::error!("PTY paste error: {e}");
                 }
@@ -388,11 +400,11 @@ impl TerminalSession {
         // to fail even when the pointer is physically in the terminal area.
         let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
         let pointer_in_terminal = pointer_pos.is_some_and(|p| response.rect.contains(p));
-        if pointer_in_terminal || self.scrollbar_dragging {
+        if pointer_in_terminal || self.input.scrollbar_dragging {
             log::info!(
                 "[dbg] wheel: enter processing, pointer_in_terminal={} scrollbar_dragging={} mouse_reporting={} num_events={}",
                 pointer_in_terminal,
-                self.scrollbar_dragging,
+                self.input.scrollbar_dragging,
                 mouse_reporting,
                 ui.ctx().input(|i| i.events.len()),
             );
@@ -439,11 +451,13 @@ impl TerminalSession {
                             // Accumulate in pixel space (alacritty-style).
                             // This preserves fractional deltas across frames
                             // so slow/precise scrolling doesn't lose events.
-                            self.scroll_accumulator_y += total as f64 * self.cell_height as f64;
-                            let lines =
-                                (self.scroll_accumulator_y / self.cell_height as f64).abs() as i32;
+                            self.input.scroll_accumulator_y +=
+                                total as f64 * self.view.cell_height as f64;
+                            let lines = (self.input.scroll_accumulator_y
+                                / self.view.cell_height as f64)
+                                .abs() as i32;
                             if lines != 0 {
-                                let btn = if self.scroll_accumulator_y > 0.0 {
+                                let btn = if self.input.scroll_accumulator_y > 0.0 {
                                     64
                                 } else {
                                     65
@@ -451,7 +465,7 @@ impl TerminalSession {
                                 let btn_val = btn | mod_bits;
                                 log::info!(
                                     "[dbg] SGR: acc={}, sending {} events btn={} col={} row={}",
-                                    self.scroll_accumulator_y,
+                                    self.input.scroll_accumulator_y,
                                     lines,
                                     btn_val,
                                     col + 1,
@@ -494,9 +508,9 @@ impl TerminalSession {
                                 }
                                 // Preserve the fractional remainder in pixel
                                 // space, matching alacritty's approach.
-                                self.scroll_accumulator_y %= self.cell_height as f64;
+                                self.input.scroll_accumulator_y %= self.view.cell_height as f64;
                                 let write_start = Instant::now();
-                                if let Err(e) = self.pty.write(&batch) {
+                                if let Err(e) = self.runtime.pty.write(&batch) {
                                     log::error!("SGR mouse batch write error: {e}");
                                 }
                                 let write_elapsed = write_start.elapsed();
@@ -550,8 +564,8 @@ impl TerminalSession {
                     if !mode.contains(TermMode::ALT_SCREEN) {
                         let lines = total_scroll.round() as i32;
                         if lines != 0 {
-                            self.terminal.scroll_display(lines);
-                            self.terminal_dirty = true;
+                            self.runtime.terminal.scroll_display(lines);
+                            self.runtime.terminal_dirty = true;
                         }
                     } else {
                         log::info!(
@@ -566,7 +580,7 @@ impl TerminalSession {
 
         // ── Drag stop ──────────────────────────────────────────────────
         let drag_ended = response.drag_stopped()
-            || (self.selecting && !ui.ctx().input(|i| i.pointer.is_decidedly_dragging()));
+            || (self.input.selecting && !ui.ctx().input(|i| i.pointer.is_decidedly_dragging()));
         if drag_ended {
             if mouse_reporting {
                 if let Some(pos) = response
@@ -574,22 +588,22 @@ impl TerminalSession {
                     .or_else(|| ui.ctx().input(|i| i.pointer.interact_pos()))
                     && let Some((row, col)) = pixel_to_cell(pos)
                 {
-                    let col = snap_col(&mut self.terminal, row, col);
+                    let col = snap_col(&mut self.runtime.terminal, row, col);
                     // Use the last tracked button for the release encoding;
                     // fall back to left button (0) if nothing is tracked.
-                    let base = self.sgr_mouse_buttons.last().copied().unwrap_or(0);
-                    self.sgr_mouse_buttons.pop();
+                    let base = self.input.sgr_mouse_buttons.last().copied().unwrap_or(0);
+                    self.input.sgr_mouse_buttons.pop();
                     self.send_sgr_mouse(row, col, base | mod_bits, true);
                 }
             } else {
-                self.selecting = false;
-                self.terminal_dirty = true;
+                self.input.selecting = false;
+                self.runtime.terminal_dirty = true;
 
                 // ── Auto-copy selection to clipboard ──────────────
-                if self.save_to_clipboard
-                    && let Some(text) = self.terminal.selected_text()
+                if self.input.save_to_clipboard
+                    && let Some(text) = self.runtime.terminal.selected_text()
                     && !text.is_empty()
-                    && let Some(ref mut cb) = self.clipboard
+                    && let Some(ref mut cb) = self.input.clipboard
                     && let Err(e) = cb.set_text(text)
                 {
                     log::error!("failed to copy selection to clipboard: {e}");
@@ -605,11 +619,15 @@ impl TerminalSession {
             if let Some(pos) = response.interact_pointer_pos()
                 && let Some((row, col)) = pixel_to_cell(pos)
             {
-                let col = snap_col(&mut self.terminal, row, col);
+                let col = snap_col(&mut self.runtime.terminal, row, col);
                 let btn = mod_bits; // left button
-                self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
+                self.input
+                    .sgr_mouse_buttons
+                    .retain(|&b| b & 0b11 != btn & 0b11);
                 self.send_sgr_mouse(row, col, btn, false); // press
-                self.sgr_mouse_buttons.retain(|&b| b & 0b11 != btn & 0b11);
+                self.input
+                    .sgr_mouse_buttons
+                    .retain(|&b| b & 0b11 != btn & 0b11);
                 self.send_sgr_mouse(row, col, btn, true); // release
             }
             return;
@@ -618,19 +636,20 @@ impl TerminalSession {
         // A duplicated `clicked()` frame must be suppressed, but a later
         // real click after an idle frame must be accepted.
         if !response.clicked() {
-            self.url_click_handled = false;
+            self.input.url_click_handled = false;
         }
 
         // ── Single click: URL open (Ctrl+Click) or clear selection ───
-        if response.clicked() && !self.selecting && !mouse_reporting {
-            if self.url_open && !self.url_click_handled {
+        if response.clicked() && !self.input.selecting && !mouse_reporting {
+            if self.input.url_open && !self.input.url_click_handled {
                 let ctrl = ui.ctx().input(|i| i.modifiers.ctrl || i.modifiers.mac_cmd);
                 if ctrl
                     && let Some(pos) = response.interact_pointer_pos()
                     && let Some((row, col)) = pixel_to_link_cell(pos)
                 {
-                    let col = snap_col(&mut self.terminal, row, col);
+                    let col = snap_col(&mut self.runtime.terminal, row, col);
                     if let Some(link) = self
+                        .input
                         .detected_links
                         .iter()
                         .find(|link| link.contains_cell(row, col))
@@ -644,14 +663,14 @@ impl TerminalSession {
                         if let Err(error) = open::that(&link.target) {
                             log::warn!("link click: failed to open {}: {error}", link.target);
                         }
-                        self.url_click_handled = true;
+                        self.input.url_click_handled = true;
                         return;
                     }
                 }
             }
-            self.url_click_handled = false;
-            self.terminal.clear_selection();
-            self.terminal_dirty = true;
+            self.input.url_click_handled = false;
+            self.runtime.terminal.clear_selection();
+            self.runtime.terminal_dirty = true;
         }
 
         // ── SGR motion (hover / drag move) ──────────────────────────────
@@ -660,20 +679,20 @@ impl TerminalSession {
         //   • a button is currently pressed (drag, mode 1002).
         if mouse_reporting {
             let any_event = mode.contains(TermMode::MOUSE_MOTION);
-            let button_pressed = !self.sgr_mouse_buttons.is_empty();
+            let button_pressed = !self.input.sgr_mouse_buttons.is_empty();
             if any_event || button_pressed {
                 let pos = ui.ctx().input(|i| i.pointer.hover_pos());
                 if let Some(pos) = pos
                     && let Some((row, col)) = pixel_to_cell(pos)
                 {
-                    let col = snap_col(&mut self.terminal, row, col);
-                    if self.last_sgr_motion_pos != Some((row, col)) {
+                    let col = snap_col(&mut self.runtime.terminal, row, col);
+                    if self.input.last_sgr_motion_pos != Some((row, col)) {
                         // Base button: 32 (motion flag) + last tracked
                         // base button, or 32 if nothing is pressed (pure
                         // hover with any-event-mouse).
-                        let base = self.sgr_mouse_buttons.last().copied().unwrap_or(0);
+                        let base = self.input.sgr_mouse_buttons.last().copied().unwrap_or(0);
                         self.send_sgr_mouse(row, col, 32 | base | mod_bits, false);
-                        self.last_sgr_motion_pos = Some((row, col));
+                        self.input.last_sgr_motion_pos = Some((row, col));
                     }
                 }
             }
@@ -706,8 +725,8 @@ impl TerminalSession {
 
     /// Render a custom overlay scrollbar on the right edge of the terminal area.
     pub fn render_scrollbar(&mut self, ui: &egui::Ui, rect: egui::Rect) {
-        let history = self.terminal.history_size();
-        let screen = self.terminal.size().rows as usize;
+        let history = self.runtime.terminal.history_size();
+        let screen = self.runtime.terminal.size().rows as usize;
         let total = history + screen;
         if total == 0 {
             return;
@@ -718,10 +737,14 @@ impl TerminalSession {
             egui::pos2(rect.right(), rect.bottom()),
         );
 
-        let (thumb, _thumb_h) =
-            Self::scrollbar_thumb_rect(track, screen, history, self.terminal.display_offset());
+        let (thumb, _thumb_h) = Self::scrollbar_thumb_rect(
+            track,
+            screen,
+            history,
+            self.runtime.terminal.display_offset(),
+        );
 
-        let active = self.scrollbar_dragging || ui.rect_contains_pointer(track);
+        let active = self.input.scrollbar_dragging || ui.rect_contains_pointer(track);
 
         // Track background.
         ui.painter()
@@ -746,9 +769,9 @@ impl TerminalSession {
     /// Render the right-click context menu (Copy / Paste).
     pub fn render_context_menu(&mut self, _ui: &egui::Ui, response: &egui::Response) {
         response.context_menu(|ctx_ui| {
-            if self.terminal.has_selection() && ctx_ui.button("Copy").clicked() {
-                if let Some(text) = self.terminal.selected_text()
-                    && let Some(ref mut cb) = self.clipboard
+            if self.runtime.terminal.has_selection() && ctx_ui.button("Copy").clicked() {
+                if let Some(text) = self.runtime.terminal.selected_text()
+                    && let Some(ref mut cb) = self.input.clipboard
                     && let Err(e) = cb.set_text(text)
                 {
                     log::error!("failed to copy to clipboard: {e}");
@@ -756,10 +779,10 @@ impl TerminalSession {
                 ctx_ui.close();
             }
             if ctx_ui.button("Paste").clicked() {
-                if let Some(ref mut clipboard) = self.clipboard
+                if let Some(ref mut clipboard) = self.input.clipboard
                     && let Ok(text) = clipboard.get_text()
                     && !text.is_empty()
-                    && let Err(e) = self.pty.write(text.as_bytes())
+                    && let Err(e) = self.runtime.pty.write(text.as_bytes())
                 {
                     log::error!("PTY paste error: {e}");
                 }

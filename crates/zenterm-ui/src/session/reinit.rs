@@ -11,21 +11,22 @@ impl TerminalSession {
     /// layers.  This is also used for font hot-reload, where the grid size
     /// may stay unchanged and `Terminal::resize` would otherwise be skipped.
     pub(crate) fn update_cell_metrics(&mut self, cell_width: f32, cell_height: f32) {
-        self.cell_width = cell_width;
-        self.cell_height = cell_height;
+        self.view.cell_width = cell_width;
+        self.view.cell_height = cell_height;
 
         let cell_pixel_width = cell_width.ceil() as u32;
         let cell_pixel_height = cell_height.ceil() as u32;
-        self.terminal
+        self.runtime
+            .terminal
             .set_cell_pixel_size(cell_pixel_width, cell_pixel_height);
 
-        if let Err(error) = self.pty.resize(self.terminal.size()) {
+        if let Err(error) = self.runtime.pty.resize(self.runtime.terminal.size()) {
             log::warn!(
                 "failed to propagate cell metrics for session {} to PTY: {error}",
                 self.id.0
             );
         }
-        self.terminal_dirty = true;
+        self.runtime.terminal_dirty = true;
     }
 
     // ── Viewport (dock) helpers ─────────────────────────────────────
@@ -33,10 +34,10 @@ impl TerminalSession {
     /// Update the session's tracked viewport.  Called by the
     /// `TabViewer::ui` implementation before the session draws.
     pub fn set_viewport(&mut self, origin_px: [f32; 2], size_px: [f32; 2]) {
-        if self.last_vp_origin_px != origin_px || self.last_vp_size_px != size_px {
-            self.last_vp_origin_px = origin_px;
-            self.last_vp_size_px = size_px;
-            self.terminal_dirty = true;
+        if self.view.last_vp_origin_px != origin_px || self.view.last_vp_size_px != size_px {
+            self.view.last_vp_origin_px = origin_px;
+            self.view.last_vp_size_px = size_px;
+            self.runtime.terminal_dirty = true;
         }
     }
 
@@ -47,10 +48,10 @@ impl TerminalSession {
     ///
     /// Must be called before `update_cell_instances` each frame.
     pub fn set_dock_viewport(&mut self, origin_px: [f32; 2], size_px: [f32; 2]) {
-        if self.dock_vp_origin_px != origin_px || self.dock_vp_size_px != size_px {
-            self.dock_vp_origin_px = origin_px;
-            self.dock_vp_size_px = size_px;
-            self.terminal_dirty = true;
+        if self.view.dock_vp_origin_px != origin_px || self.view.dock_vp_size_px != size_px {
+            self.view.dock_vp_origin_px = origin_px;
+            self.view.dock_vp_size_px = size_px;
+            self.runtime.terminal_dirty = true;
         }
     }
 
@@ -62,7 +63,7 @@ impl TerminalSession {
     pub fn reinit_for_dpi(&mut self, new_ppp: f32, font_config: &FontConfig) {
         let new_font_size = font_config.size * new_ppp;
         let font_family = std::borrow::Cow::Owned(font_config.normal.family.clone());
-        let (cw, ch) = self.atlas.reinit_for_dpi(
+        let (cw, ch) = self.view.atlas.reinit_for_dpi(
             new_font_size,
             font_family,
             new_ppp,
@@ -71,9 +72,9 @@ impl TerminalSession {
             font_config.hinting,
             font_config.render_mode,
         );
-        self.atlas.seed_ascii();
+        self.view.atlas.seed_ascii();
         // Ensure the seeded atlas reaches the GPU before the next prepare().
-        self.atlas.sync_to_gpu();
+        self.view.atlas.sync_to_gpu();
         self.update_cell_metrics(cw, ch);
         log::info!(
             "DPI reinit: session={} new_ppp={new_ppp:.2} font_size={new_font_size:.1} \
@@ -85,29 +86,29 @@ impl TerminalSession {
     /// Forward `apply_config_change`-style updates to per-session state.
     pub fn apply_config_change(&mut self, font_size: f32, cursor: &CursorConfig) {
         let mut dirty = false;
-        if cursor.blink_interval != self.blink_interval {
-            self.blink_interval = cursor.blink_interval;
+        if cursor.blink_interval != self.input.blink_interval {
+            self.input.blink_interval = cursor.blink_interval;
             dirty = true;
         }
-        if cursor.blink_timeout != self.blink_timeout {
-            self.blink_timeout = cursor.blink_timeout;
+        if cursor.blink_timeout != self.input.blink_timeout {
+            self.input.blink_timeout = cursor.blink_timeout;
             dirty = true;
         }
-        if cursor.thickness != self.cursor_thickness {
-            self.cursor_thickness = cursor.thickness;
+        if cursor.thickness != self.input.cursor_thickness {
+            self.input.cursor_thickness = cursor.thickness;
             dirty = true;
         }
-        if cursor.unfocused_hollow != self.unfocused_hollow {
-            self.unfocused_hollow = cursor.unfocused_hollow;
+        if cursor.unfocused_hollow != self.input.unfocused_hollow {
+            self.input.unfocused_hollow = cursor.unfocused_hollow;
             dirty = true;
         }
-        self.terminal.set_cursor_prefs(CursorPrefs {
+        self.runtime.terminal.set_cursor_prefs(CursorPrefs {
             shape: Self::map_cursor_shape(cursor.style.shape),
             blink: Self::map_blink_policy(cursor.style.blinking),
         });
         if dirty {
-            self.blink_epoch = std::time::Instant::now();
-            self.terminal_dirty = true;
+            self.input.blink_epoch = std::time::Instant::now();
+            self.runtime.terminal_dirty = true;
         }
         // Font size changes that don't cross a DPI threshold are
         // ignored here: `reinit_for_dpi` handles the physical rebuild.
@@ -126,19 +127,19 @@ impl TerminalSession {
         if vp_width_px <= 0.0 || vp_height_px <= 0.0 {
             return;
         }
-        let cols = (vp_width_px / self.cell_width).max(10.0) as u16;
-        let rows = (vp_height_px / self.cell_height).max(5.0) as u16;
-        let current = self.terminal.size();
+        let cols = (vp_width_px / self.view.cell_width).max(10.0) as u16;
+        let rows = (vp_height_px / self.view.cell_height).max(5.0) as u16;
+        let current = self.runtime.terminal.size();
         if rows == current.rows && cols == current.cols {
             return;
         }
-        let pixel_width = (cols as f32 * self.cell_width) as u16;
-        let pixel_height = (rows as f32 * self.cell_height) as u16;
+        let pixel_width = (cols as f32 * self.view.cell_width) as u16;
+        let pixel_height = (rows as f32 * self.view.cell_height) as u16;
         let new_size = TermSize::new(rows, cols, pixel_width, pixel_height);
-        self.terminal.resize(new_size);
-        self.pty.resize(new_size).ok();
-        self.terminal_dirty = true;
-        self.last_resize_at = Some(time);
+        self.runtime.terminal.resize(new_size);
+        self.runtime.pty.resize(new_size).ok();
+        self.runtime.terminal_dirty = true;
+        self.runtime.last_resize_at = Some(time);
         let _ = ppp;
     }
 
@@ -154,7 +155,7 @@ impl TerminalSession {
     /// display window.  Call it **after** the terminal content has been
     /// painted so the overlay appears on top.
     pub fn render_resize_overlay(&self, ui: &egui::Ui, rect: egui::Rect) {
-        let last_time = match self.last_resize_at {
+        let last_time = match self.runtime.last_resize_at {
             Some(t) => t,
             None => return,
         };
@@ -164,7 +165,7 @@ impl TerminalSession {
             return;
         }
 
-        let size = self.terminal.size();
+        let size = self.runtime.terminal.size();
         let text = format!("{} × {}", size.cols, size.rows);
 
         // Use the active egui theme so the transient overlay belongs to

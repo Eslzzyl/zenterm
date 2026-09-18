@@ -58,7 +58,7 @@ impl<'a> TabViewer for TabViewerContext<'a> {
             .unwrap_or_else(|| format!("(missing #{})", tab.0));
 
         // Append ConEmu progress indicator if non-default.
-        match self.sessions.get(tab).map(|s| s.progress) {
+        match self.sessions.get(tab).map(|s| s.progress()) {
             Some(zenterm_core::Progress::Percentage(p)) => format!("{base} {p}%"),
             Some(zenterm_core::Progress::Error(p)) => format!("{base} !{p}%"),
             Some(zenterm_core::Progress::Indeterminate) => format!("{base} ~"),
@@ -69,7 +69,7 @@ impl<'a> TabViewer for TabViewerContext<'a> {
 
     fn context_menu(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab, _path: NodePath) {
         if let Some(session) = self.sessions.get(tab) {
-            let has_override = session.title_override.is_some();
+            let has_override = session.title_override().is_some();
 
             if ui.button("Rename Tab…").clicked() {
                 *self.pending_rename = Some(*tab);
@@ -78,7 +78,7 @@ impl<'a> TabViewer for TabViewerContext<'a> {
 
             if has_override && ui.button("Reset Tab Title").clicked() {
                 if let Some(s) = self.sessions.get_mut(tab) {
-                    s.title_override = None;
+                    s.clear_title_override();
                 }
                 ui.close();
             }
@@ -154,7 +154,8 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         // skip this rect_filled — the background image is drawn by the
         // shader as instance 0 in the wgpu callback.
         if !self.background_active {
-            ui.painter().rect_filled(cell_rect, 0.0, session.default_bg);
+            ui.painter()
+                .rect_filled(cell_rect, 0.0, session.background_color());
         }
 
         // Scrollbar overlay (on top of the background).
@@ -178,7 +179,7 @@ impl<'a> TabViewer for TabViewerContext<'a> {
         // selection background, which is designed to be visible on any
         // foreground/background combination.
         if self.show_active_indicator && *self.active_session_id == Some(*tab) {
-            let sel = session.terminal.scheme().selection_bg;
+            let sel = session.terminal().scheme().selection_bg;
             let accent = egui::Color32::from_rgba_unmultiplied(
                 (sel.r() * 255.0).round().clamp(0.0, 255.0) as u8,
                 (sel.g() * 255.0).round().clamp(0.0, 255.0) as u8,

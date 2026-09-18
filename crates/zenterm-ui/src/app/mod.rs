@@ -21,7 +21,7 @@ pub mod theme;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use egui::Context;
 
@@ -31,14 +31,15 @@ use zenterm_core::theme::{Theme, ThemePreference};
 use zenterm_render::BackgroundImageData;
 use zenterm_render::callback::{CallbackHandle, SharedRenderState, TerminalWgpuCallback};
 use zenterm_render::glyph_type;
-use zenterm_term::ColorScheme;
 
 use self::theme::{configure_egui_style, system_theme_is_dark};
 use crate::glyph_cache::SharedGlyphAtlas;
 use crate::gpu::SharedGpuContext;
 use crate::layout_io::LayoutIo;
 use crate::legacy::render_legacy_single;
-use crate::session::{SessionId, TerminalSession, session_working_directory};
+use crate::session::{
+    SessionFactory, SessionId, SessionRequest, TerminalSession, session_working_directory,
+};
 use crate::settings::SettingsState;
 use crate::workspace::WorkspaceManager;
 
@@ -50,6 +51,7 @@ pub struct ZentermApp {
     gpu: SharedGpuContext,
     pub atlas: std::sync::Arc<SharedGlyphAtlas>,
     pub callback: CallbackHandle,
+    session_factory: SessionFactory,
 
     // ── Multi-session state ────────────────────────────────────────
     pub sessions: HashMap<SessionId, TerminalSession>,
@@ -155,7 +157,7 @@ impl ZentermApp {
         egui_ctx.set_fonts(fonts);
 
         let shared = std::sync::Arc::new(SharedRenderState::new(80 * 24));
-        let gpu = SharedGpuContext::new(device, queue, target_format, shared.clone());
+        let gpu = SharedGpuContext::new(device, queue, shared.clone());
 
         // ── Glyph atlas (shared across all sessions) ───────────────
         let font_size = config.font.size * pixels_per_point;
@@ -185,9 +187,14 @@ impl ZentermApp {
         );
         let callback = CallbackHandle::new(callback);
 
-        // ── Theme + colour scheme ─────────────────────────────────
+        // ── Theme ─────────────────────────────────────────────────
         let default_bg = theme_bg_to_color32(&theme);
-        let scheme = ColorScheme::from_theme(&theme);
+        let session_factory = SessionFactory::new(
+            gpu.clone(),
+            atlas.clone(),
+            callback.clone(),
+            egui_ctx.clone(),
+        );
 
         // ── Layout persistence ────────────────────────────────────
         let config_path = Config::path();
@@ -198,12 +205,6 @@ impl ZentermApp {
         // Single-session mode deliberately ignores persisted dock state so
         // the legacy renderer and keyboard routing always target session 0.
         let first_id = SessionId::new(0);
-        let size = zenterm_core::size::TermSize::new(
-            config.window.dimensions.lines,
-            config.window.dimensions.columns,
-            0,
-            0,
-        );
         let mut sessions = HashMap::new();
         let mut workspaces = WorkspaceManager::new();
         let mut restored_session_ids: Vec<SessionId> = Vec::new();
@@ -242,24 +243,17 @@ impl ZentermApp {
         // sessions referenced by its tabs; this prevents an unowned PTY from
         // surviving beside the restored dock tree.
         if should_create_initial_session(config.ui.tabs_enabled, &restored_session_ids) {
-            let session = TerminalSession::new(
+            let session = session_factory.create(SessionRequest::from_config(
                 first_id,
-                size,
-                scheme.clone(),
-                config.terminal.scrollback_lines,
-                &config.cursor,
                 session_working_directory(
                     saved_meta
                         .get(&first_id.raw())
                         .and_then(|meta| meta.cwd.as_deref()),
                 ),
-                config.selection.save_to_clipboard,
+                &config,
+                &theme,
                 default_bg,
-                gpu.clone(),
-                atlas.clone(),
-                callback.clone(),
-                egui_ctx.clone(),
-            )?;
+            ))?;
             // `TerminalSession::new` already sets a reasonable initial title
             // via `detect_shell_name()`.  No override needed.
             sessions.insert(first_id, session);
@@ -271,24 +265,17 @@ impl ZentermApp {
             if sessions.contains_key(sid) {
                 continue;
             }
-            let s = TerminalSession::new(
+            let s = session_factory.create(SessionRequest::from_config(
                 *sid,
-                size,
-                scheme.clone(),
-                config.terminal.scrollback_lines,
-                &config.cursor,
                 session_working_directory(
                     saved_meta
                         .get(&sid.raw())
                         .and_then(|meta| meta.cwd.as_deref()),
                 ),
-                config.selection.save_to_clipboard,
+                &config,
+                &theme,
                 default_bg,
-                gpu.clone(),
-                atlas.clone(),
-                callback.clone(),
-                egui_ctx.clone(),
-            )?;
+            ))?;
             sessions.insert(*sid, s);
         }
 
@@ -310,7 +297,7 @@ impl ZentermApp {
                 if let Some(ref override_title) = meta.title_override
                     && !override_title.is_empty()
                 {
-                    session.title_override = Some(override_title.clone());
+                    session.set_title_override(override_title.clone());
                 }
             }
         }
@@ -331,6 +318,7 @@ impl ZentermApp {
             gpu,
             atlas,
             callback,
+            session_factory,
             sessions,
             workspaces,
             active_session_id,
@@ -438,20 +426,8 @@ impl eframe::App for ZentermApp {
             .unwrap_or(false);
         let window_focused = main_viewport_focused || settings_viewport_focused;
         for session in self.sessions.values_mut() {
-            if session.window_focused != window_focused {
-                // Focus changes must invalidate the cached instances so
-                // the hollow cursor appears/disappears immediately.
-                session.window_focused = window_focused;
-                session.terminal_dirty = true;
-            }
-            let blinking = session.terminal.cursor().style.blinking
-                && !matches!(
-                    session.terminal.cursor().style.shape,
-                    alacritty_terminal::vte::ansi::CursorShape::Block
-                );
-            if blinking {
-                session.terminal_dirty = true;
-                ctx.request_repaint_after(Duration::from_millis(session.blink_interval.max(100)));
+            if let Some(interval) = session.update_window_focus(window_focused) {
+                ctx.request_repaint_after(interval);
             }
         }
 
@@ -474,22 +450,10 @@ impl eframe::App for ZentermApp {
             && let Some(session) = self.sessions.get(&id)
         {
             let ppp = ctx.pixels_per_point();
-            let ox = session.last_vp_origin_px[0] / ppp;
-            let oy = session.last_vp_origin_px[1] / ppp;
-            let cursor = session.terminal.cursor();
-
             // Position the IME candidate window at the cursor.
             // We use a cursor-sized rect so the IME window
             // appears anchored to the cursor position.
-            let cursor_x = ox + cursor.pos.column as f32 * session.cell_width / ppp;
-            let cursor_y = oy + cursor.pos.line as f32 * session.cell_height / ppp;
-            let cursor_w = session.cell_width / ppp;
-            let cursor_h = session.cell_height / ppp;
-
-            let cursor_rect = egui::Rect::from_min_size(
-                egui::pos2(cursor_x, cursor_y),
-                egui::vec2(cursor_w, cursor_h),
-            );
+            let cursor_rect = session.ime_cursor_rect(ppp);
 
             ctx.output_mut(|o| {
                 o.ime = Some(egui::output::IMEOutput {

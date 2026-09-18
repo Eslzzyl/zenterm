@@ -47,12 +47,6 @@ pub struct SharedGpuContext {
     /// update, draw calls) is enqueued here.
     pub queue: Arc<wgpu::Queue>,
 
-    /// Target colour format of the eframe swap-chain surface.
-    /// Used by [`TerminalWgpuCallback`] when creating the render
-    /// pipeline so that output is correctly interpreted as sRGB
-    /// (or linear, depending on eframe's configuration).
-    pub target_format: wgpu::TextureFormat,
-
     /// Shared instance buffer + atlas upload channel.  One per
     /// application; every session appends cell instances to it.
     pub shared: Arc<SharedRenderState>,
@@ -61,16 +55,10 @@ pub struct SharedGpuContext {
 impl SharedGpuContext {
     /// Build a new shared context from raw wgpu handles and an
     /// already-constructed shared render state.
-    pub fn new(
-        device: wgpu::Device,
-        queue: wgpu::Queue,
-        target_format: wgpu::TextureFormat,
-        shared: Arc<SharedRenderState>,
-    ) -> Self {
+    pub fn new(device: wgpu::Device, queue: wgpu::Queue, shared: Arc<SharedRenderState>) -> Self {
         Self {
             device: Arc::new(device),
             queue: Arc::new(queue),
-            target_format,
             shared,
         }
     }

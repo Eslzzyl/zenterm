@@ -70,9 +70,10 @@ pub fn render_badge(template: &str, session: &TerminalSession) -> String {
 /// Resolve a single `\(variable)` name against session state.
 fn resolve_var(name: &str, session: &TerminalSession) -> String {
     match name {
-        "session.name" => session.title.clone(),
+        "session.name" => session.runtime.title.clone(),
         "session.terminalName" => "Zenterm".into(),
         "session.path" => session
+            .runtime
             .cwd
             .as_ref()
             .and_then(|p| p.file_name())
@@ -106,6 +107,7 @@ fn resolve_var(name: &str, session: &TerminalSession) -> String {
             // Check for user.<varname>
             if let Some(rest) = name.strip_prefix("user.") {
                 session
+                    .runtime
                     .terminal
                     .user_vars()
                     .get(rest)

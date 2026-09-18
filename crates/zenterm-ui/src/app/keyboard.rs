@@ -20,7 +20,7 @@ impl ZentermApp {
                 event,
                 egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::Paste(_)
             ) {
-                session.blink_epoch = std::time::Instant::now();
+                session.note_input_activity();
             }
 
             // Before PTY mapping, check for IME state events that
@@ -28,35 +28,29 @@ impl ZentermApp {
             if let egui::Event::Ime(ime_event) = event {
                 match ime_event {
                     egui::ImeEvent::Preedit(text) => {
-                        if text.is_empty() {
-                            session.preedit_text = None;
-                        } else {
-                            session.preedit_text = Some(text.clone());
-                        }
                         // Force a full re-render so the preedit text is
                         // drawn through the GPU glyph pipeline (the fast
                         // path in update_cell_instances skips preedit).
-                        session.terminal_dirty = true;
+                        session.set_preedit_text(Some(text.clone()));
                     }
                     egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled => {
-                        session.preedit_text = None;
-                        session.terminal_dirty = true;
+                        session.set_preedit_text(None);
                     }
                     egui::ImeEvent::Enabled => {}
                 }
             }
 
             // Build mapping options from terminal state + config.
-            let mode = session.terminal.mode();
+            let mode = session.terminal().mode();
             let opts = MappingOptions {
                 app_cursor: mode.contains(TermMode::APP_CURSOR),
                 macos_option_as_alt: self.config.window.macos_option_as_alt,
-                kitty_flags: session.terminal.kitty_keyboard_flags(),
+                kitty_flags: session.terminal().kitty_keyboard_flags(),
             };
 
             // Map event to PTY bytes (handles Commit, Text, Key, Paste).
             if let Some(bytes) = zenterm_input::InputMapper::map(event, &opts)
-                && let Err(e) = session.pty.write(&bytes)
+                && let Err(e) = session.pty_mut().write(&bytes)
             {
                 log::error!("PTY write error: {e}");
             }
@@ -262,12 +256,12 @@ impl ZentermApp {
             );
             if let Some(id) = self.active_session_id {
                 if let Some(session) = self.sessions.get_mut(&id) {
-                    let has_sel = session.terminal.has_selection();
+                    let has_sel = session.terminal().has_selection();
                     log::warn!("[clipboard] session found, has_selection={has_sel}");
                     if has_sel {
-                        if let Some(text) = session.terminal.selected_text() {
+                        if let Some(text) = session.terminal().selected_text() {
                             log::warn!("[clipboard] selected_text len={}", text.len());
-                            if let Some(ref mut cb) = session.clipboard {
+                            if let Some(cb) = session.clipboard_mut() {
                                 log::warn!("[clipboard] clipboard Some, calling set_text");
                                 match cb.set_text(text) {
                                     Ok(_) => log::warn!("[clipboard] *** set_text SUCCESS ***"),
@@ -295,14 +289,17 @@ impl ZentermApp {
         if paste
             && let Some(id) = self.active_session_id
             && let Some(session) = self.sessions.get_mut(&id)
-            && let Some(ref mut cb) = session.clipboard
-            && let Ok(text) = cb.get_text()
-            && !text.is_empty()
         {
-            if let Err(e) = session.pty.write(text.as_bytes()) {
-                log::error!("PTY paste error: {e}");
+            let text = session
+                .clipboard_mut()
+                .and_then(|clipboard| clipboard.get_text().ok())
+                .filter(|text| !text.is_empty());
+            if let Some(text) = text {
+                if let Err(e) = session.pty_mut().write(text.as_bytes()) {
+                    log::error!("PTY paste error: {e}");
+                }
+                return true;
             }
-            return true;
         }
 
         // ── Terminal scroll shortcuts (PageUp/Down/Home/End) ─────
@@ -311,9 +308,9 @@ impl ZentermApp {
             && let Some(id) = self.active_session_id
             && let Some(session) = self.sessions.get_mut(&id)
         {
-            if !session.terminal.mode().contains(TermMode::ALT_SCREEN) {
+            if !session.terminal().mode().contains(TermMode::ALT_SCREEN) {
                 log::info!("[dbg] keyboard: NOT alt_screen → consuming PageUp/Down for scrollback");
-                let rows = session.terminal.size().rows as i32;
+                let rows = session.terminal().size().rows as i32;
                 let mut scrolled = false;
                 ctx.input(|input| {
                     for event in &input.events {
@@ -323,19 +320,19 @@ impl ZentermApp {
                         {
                             match key {
                                 egui::Key::PageUp => {
-                                    session.terminal.scroll_display(rows);
+                                    session.terminal_mut().scroll_display(rows);
                                     scrolled = true;
                                 }
                                 egui::Key::PageDown => {
-                                    session.terminal.scroll_display(-rows);
+                                    session.terminal_mut().scroll_display(-rows);
                                     scrolled = true;
                                 }
                                 egui::Key::Home => {
-                                    session.terminal.scroll_to_top();
+                                    session.terminal_mut().scroll_to_top();
                                     scrolled = true;
                                 }
                                 egui::Key::End => {
-                                    session.terminal.scroll_to_bottom();
+                                    session.terminal_mut().scroll_to_bottom();
                                     scrolled = true;
                                 }
                                 _ => {}
@@ -344,7 +341,7 @@ impl ZentermApp {
                     }
                 });
                 if scrolled {
-                    session.terminal_dirty = true;
+                    session.mark_terminal_dirty();
                     // Consume the scroll keys so they aren't forwarded to the PTY.
                     ctx.input_mut(|i| {
                         i.events.retain(|e| {

@@ -288,18 +288,19 @@ fn detect_links(grid: &GridView<'_>) -> Vec<DetectedLink> {
 
 impl TerminalSession {
     pub(crate) fn refresh_detected_links(&mut self) {
-        let grid = self.terminal.visible_cells();
-        self.detected_links = detect_links(&grid);
+        let grid = self.runtime.terminal.visible_cells();
+        self.input.detected_links = detect_links(&grid);
         log::debug!(
             "link detection: {} visible links, hover_cell={:?}",
-            self.detected_links.len(),
-            self.hover_cell
+            self.input.detected_links.len(),
+            self.input.hover_cell
         );
     }
 
     pub(crate) fn hovered_link_index(&self) -> Option<usize> {
-        self.hover_cell.and_then(|(row, col)| {
-            self.detected_links
+        self.input.hover_cell.and_then(|(row, col)| {
+            self.input
+                .detected_links
                 .iter()
                 .position(|link| link.contains_cell(row, col))
         })

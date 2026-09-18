@@ -56,11 +56,12 @@ pub fn render_legacy_single(
     session.handle_mouse(ui, cell_rect, size_px, &response);
 
     // Legacy mode has one session → one callback → no cross-contamination.
-    let callback = egui_wgpu::Callback::new_paint_callback(cell_rect, session.callback.clone());
+    let callback = egui_wgpu::Callback::new_paint_callback(cell_rect, session.paint_callback());
     // When the BACKGROUND quad is active, the wgpu callback draws
     // the background image; skip the egui rect_filled.
     if !background_active {
-        ui.painter().rect_filled(cell_rect, 0.0, session.default_bg);
+        ui.painter()
+            .rect_filled(cell_rect, 0.0, session.background_color());
     }
     ui.painter().add(callback);
 

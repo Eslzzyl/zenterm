@@ -84,7 +84,11 @@ pub enum NotificationState {
     #[default]
     None,
     Bell,
+    /// Reserved for notification protocols that expose an unresolved state.
+    #[allow(dead_code)]
     Pending,
+    /// Reserved for platform notification backends with a visible payload.
+    #[allow(dead_code)]
     Desktop {
         title: String,
         body: String,
@@ -93,190 +97,92 @@ pub enum NotificationState {
 
 // ── TerminalSession ────────────────────────────────────────────────────
 
-/// All state and behaviour for a single terminal session.
-pub struct TerminalSession {
-    // ── Identity ─────────────────────────────────────────────────────
-    pub id: SessionId,
-    /// Terminal-set title (OSC 0/1/2).  Updated by the PTY pump.
-    pub title: String,
-    /// Manually overridden tab title.  When `Some` and non-empty, this
-    /// takes priority over all other title sources (see [`Self::title_effective`]).
-    pub title_override: Option<String>,
-    /// Whether the terminal has ever sent at least one OSC title sequence
-    /// (including empty).  Used by [`Self::title_effective`] to distinguish
-    /// "never received a title" from "OSC set title to empty".
-    pub seen_terminal_title: bool,
-    pub cwd: Option<PathBuf>,
-    pub git_branch: Option<String>,
-    pub notification: NotificationState,
-    /// ConEmu OSC 9;4 progress-bar state reported by the shell.
-    pub progress: zenterm_core::Progress,
-    /// Most recent FinalTerm OSC 133 semantic prompt marker.
-    pub latest_semantic_prompt: Option<zenterm_core::SemanticPrompt>,
-
-    // ── Per-session state ───────────────────────────────────────────
-    pub terminal: Terminal,
-    pub pty: PtySession,
-
-    // ── Shared resources (Arc, owned by the app) ────────────────────
-    pub(crate) gpu: SharedGpuContext,
-    pub atlas: Arc<SharedGlyphAtlas>,
-    pub callback: CallbackHandle,
-
-    // ── Cell metrics ─────────────────────────────────────────────────
-    pub cell_width: f32,
-    pub cell_height: f32,
-
-    // ── Viewport tracking (last dock viewport we rendered for) ───────
-    pub last_vp_size_px: [f32; 2],
-    pub last_vp_origin_px: [f32; 2],
-
-    // ── Dock-area viewport (single callback coordinate system) ────────
-    pub dock_vp_origin_px: [f32; 2],
-    pub dock_vp_size_px: [f32; 2],
-
-    // ── Per-session flags ───────────────────────────────────────────
-    pub selecting: bool,
-    pub terminal_dirty: bool,
-    pub last_resize_at: Option<f64>,
-    /// Blink interval in milliseconds (minimum effective interval: 100 ms).
-    pub blink_interval: u64,
-    /// Blink timeout in seconds (0 = blink forever).  Blinking stops
-    /// once this long has elapsed since the last activity.
-    /// (mirrors `config.cursor.blink_timeout`).
-    pub blink_timeout: u64,
-    /// Thickness of the Beam/Underline cursor as a fraction of cell
-    /// height (mirrors `config.cursor.thickness`).
-    pub cursor_thickness: f32,
-    /// Show a hollow cursor when the window is unfocused
-    /// (mirrors `config.cursor.unfocused_hollow`).
-    pub unfocused_hollow: bool,
-    /// Whether the application window currently has OS focus.  Updated
-    /// by the app layer before rendering each frame.
-    pub window_focused: bool,
-    /// Epoch timestamp for time-based cursor blink phase computation.
-    /// Replaces the old `frame_count`-based approach so we don't need
-    /// to increment a counter every frame.  Reset on user activity so
-    /// the blink timeout measures idle time.
-    pub blink_epoch: std::time::Instant,
-    /// Automatically copy selected text to the system clipboard
-    /// (mirrors `config.selection.save_to_clipboard`).
-    pub save_to_clipboard: bool,
-    /// Persistent clipboard handle (single instance, following Alacritty's
-    /// pattern — avoids temporary `arboard::Clipboard::new()` on each op).
-    pub clipboard: Option<arboard::Clipboard>,
-    pub pty_exited: bool,
-    /// Whether we have already emitted [`SessionEffect::CloseWindow`] for
-    /// this session.  Guards against repeated emissions across frames.
-    pub exit_effect_sent: bool,
-
-    /// Cursor line highlight (OSC 1337 HighlightCursorLine).
-    pub highlight_cursor_line: bool,
-    /// Badge format template (OSC 1337 SetBadgeFormat).
-    /// `None` = no badge; `Some(template)` = renders the badge.
-    pub badge_format: Option<String>,
-
-    // ── IME preedit (composition) text ────────────────────────────
-    //
-    // When the user is composing text with an IME (e.g. Chinese pinyin),
-    // the preedit string is stored here and rendered directly through
-    // the GPU glyph pipeline at the cursor position, matching the
-    // terminal text style exactly.
-    pub(crate) preedit_text: Option<String>,
-
-    // ── Theming ─────────────────────────────────────────────────────
-    pub default_bg: egui::Color32,
-
-    // ── Cell-instance cache (avoids full rebuild when terminal is idle) ──
-    pub(crate) cached_bg: Vec<CellInstance>,
-    /// Per-atlas-slot glyph instance caches.  Indexed by atlas_index;
-    /// grows dynamically as new slots are created.  Each inner vec holds
-    /// the instances that belong to that slot's GPU texture.
-    pub(crate) cached_glyph_per_atlas: Vec<Vec<CellInstance>>,
-    pub(crate) cached_deco: Vec<CellInstance>,
-    /// Image quads with z_index < 0 (render behind text), per atlas slot.
-    pub(crate) cached_image_below: Vec<Vec<CellInstance>>,
-    /// Image quads with z_index >= 0 (render on top of text), per atlas slot.
-    pub(crate) cached_image_above: Vec<Vec<CellInstance>>,
-    /// Image source identities that have been registered in the shared GPU
-    /// cache.  They are released when this session is closed.
-    pub(crate) image_sources: HashSet<usize>,
-
-    /// ── Reusable batch buffer for PTY data ──────────────────────────
-    /// Avoids allocating a new Vec in `pump_pty()` on every call.
-    /// Cleared and repopulated each pump cycle.
-    pub(crate) batch_buf: Vec<u8>,
-    /// PTY bytes left over when a frame budget splits an output chunk.
-    /// Kept ahead of newly received chunks to preserve terminal byte order.
-    pub(crate) pending_pty_data: VecDeque<Vec<u8>>,
-
-    /// ── Title debounce ──────────────────────────────────────────────────
-    ///
-    /// Some shells (fish, zsh with plugins) send a transient title event
-    /// (e.g. the command name "ls") just before executing a command, and
-    /// then the real prompt title (e.g. "~") shortly after.  Without
-    /// debouncing, both reach the UI as separate frames, causing a visible
-    /// flicker.
-    ///
-    /// We buffer the incoming title and only apply it once it has been
-    /// stable for [`TITLE_DEBOUNCE_MS`].
-    pub(crate) pending_title: Option<(String, Instant)>,
-
-    // ── URL detection ──────────────────────────────────────────────────
-    pub(crate) url_open: bool,
-    pub(crate) url_hover_underline: bool,
-    /// Mouse-hovered cell position, updated every frame by `handle_mouse`.
-    pub(crate) hover_cell: Option<(usize, usize)>,
-    /// Cached detected hyperlinks for the visible grid, rebuilt on dirty.
-    pub(crate) detected_links: Vec<DetectedLink>,
-    /// Guards against processing the same Ctrl+Click across multiple frames.
-    ///
-    /// # Workaround
-    ///
-    /// `egui::Response::clicked()` sometimes returns `true` for two
-    /// consecutive frames (root cause not yet identified).  Without this
-    /// guard a single Ctrl+Click would open the URL twice.
-    ///
-    /// Set to `true` after handling a click; cleared on the next frame
-    /// without a click so a later click is never swallowed.
-    pub(crate) url_click_handled: bool,
-
-    // ── Scrollbar state ────────────────────────────────────────────────
-    pub(crate) scrollbar_dragging: bool,
-    pub(crate) scrollbar_drag_start_y: f32,
-    pub(crate) scrollbar_drag_start_offset: usize,
-
-    // ── Scroll accumulation (alacritty-style pixel accumulator) ─────────
-    // Accumulates sub-cell scroll deltas from the trackpad across frames.
-    // Extracted as whole lines by dividing by cell_height; remainder is
-    // preserved via `%= cell_height` to avoid losing fractional deltas.
-    pub(crate) scroll_accumulator_y: f64,
-
-    // ── SGR mouse state ─────────────────────────────────────────────────
-    /// Tracked mouse-button codes for correct release encoding.
-    /// Each entry is `base_button | mod_bits` (base: 0=left, 1=middle, 2=right).
-    /// Popped on release so the release event carries the right button code.
-    pub(crate) sgr_mouse_buttons: Vec<u8>,
-    /// Last cell position for which we sent an SGR motion event.
-    /// Used to suppress duplicate motion events when the pointer hasn't
-    /// moved to a new cell.
-    pub(crate) last_sgr_motion_pos: Option<(usize, usize)>,
-
-    // ── Kitty OSC 99: notification response channel ──────────────────
-    /// Sender half: cloned into notification threads so they can write
-    /// escape-sequence responses back to the PTY (for `a=report`, `c=1`,
-    /// and button clicks).
-    pub(crate) notification_resp_tx: mpsc::Sender<String>,
-    /// Receiver half: drained in [`Self::pump_pty`] after each feed.
-    pub(crate) notification_resp_rx: mpsc::Receiver<String>,
-
-    // ── Window / tab focus state (for Kitty OSC 99 `o=` filtering) ──
-    /// Whether this session's tab is the currently active tab.
-    /// Set by the app layer before [`Self::handle_side_effects`].
-    pub(crate) tab_active: bool,
+/// PTY, terminal-core, and terminal-protocol state for one session.
+pub(super) struct SessionRuntime {
+    pub(super) title: String,
+    pub(super) title_override: Option<String>,
+    pub(super) seen_terminal_title: bool,
+    pub(super) cwd: Option<PathBuf>,
+    pub(super) progress: zenterm_core::Progress,
+    pub(super) latest_semantic_prompt: Option<zenterm_core::SemanticPrompt>,
+    pub(super) terminal: Terminal,
+    pub(super) pty: PtySession,
+    pub(super) terminal_dirty: bool,
+    pub(super) last_resize_at: Option<f64>,
+    pub(super) pty_exited: bool,
+    pub(super) exit_effect_sent: bool,
+    pub(super) highlight_cursor_line: bool,
+    pub(super) batch_buf: Vec<u8>,
+    pub(super) pending_pty_data: VecDeque<Vec<u8>>,
+    pub(super) pending_title: Option<(String, Instant)>,
 }
 
-impl Drop for TerminalSession {
+/// Per-session GPU resources, geometry, and reusable render caches.
+pub(super) struct SessionViewState {
+    pub(super) gpu: SharedGpuContext,
+    pub(super) atlas: Arc<SharedGlyphAtlas>,
+    pub(super) callback: CallbackHandle,
+    pub(super) cell_width: f32,
+    pub(super) cell_height: f32,
+    pub(super) last_vp_size_px: [f32; 2],
+    pub(super) last_vp_origin_px: [f32; 2],
+    pub(super) dock_vp_origin_px: [f32; 2],
+    pub(super) dock_vp_size_px: [f32; 2],
+    pub(super) default_bg: egui::Color32,
+    pub(super) cached_bg: Vec<CellInstance>,
+    pub(super) cached_glyph_per_atlas: Vec<Vec<CellInstance>>,
+    pub(super) cached_deco: Vec<CellInstance>,
+    pub(super) cached_image_below: Vec<Vec<CellInstance>>,
+    pub(super) cached_image_above: Vec<Vec<CellInstance>>,
+    /// Image source identities registered in the shared GPU cache.
+    pub(super) image_sources: HashSet<usize>,
+}
+
+/// User-input, selection, clipboard, and pointer interaction state.
+pub(super) struct SessionInputState {
+    pub(super) selecting: bool,
+    pub(super) blink_interval: u64,
+    pub(super) blink_timeout: u64,
+    pub(super) cursor_thickness: f32,
+    pub(super) unfocused_hollow: bool,
+    pub(super) window_focused: bool,
+    pub(super) blink_epoch: Instant,
+    pub(super) save_to_clipboard: bool,
+    pub(super) clipboard: Option<arboard::Clipboard>,
+    pub(super) preedit_text: Option<String>,
+    pub(super) url_open: bool,
+    pub(super) url_hover_underline: bool,
+    pub(super) hover_cell: Option<(usize, usize)>,
+    pub(super) detected_links: Vec<DetectedLink>,
+    pub(super) url_click_handled: bool,
+    pub(super) scrollbar_dragging: bool,
+    pub(super) scrollbar_drag_start_y: f32,
+    pub(super) scrollbar_drag_start_offset: usize,
+    pub(super) scroll_accumulator_y: f64,
+    pub(super) sgr_mouse_buttons: Vec<u8>,
+    pub(super) last_sgr_motion_pos: Option<(usize, usize)>,
+}
+
+/// Displayed notifications and the Kitty OSC 99 response channel.
+pub(super) struct SessionNotificationState {
+    pub(super) notification: NotificationState,
+    pub(super) badge_format: Option<String>,
+    pub(super) notification_resp_tx: mpsc::Sender<String>,
+    pub(super) notification_resp_rx: mpsc::Receiver<String>,
+    pub(super) tab_active: bool,
+}
+
+/// Coordinates the independent runtime, view, input, and notification state
+/// of a single terminal tab.
+pub struct TerminalSession {
+    pub id: SessionId,
+    pub(super) runtime: SessionRuntime,
+    pub(super) view: SessionViewState,
+    pub(super) input: SessionInputState,
+    pub(super) notifications: SessionNotificationState,
+}
+
+impl Drop for SessionViewState {
     fn drop(&mut self) {
         for source_id in self.image_sources.drain() {
             self.atlas.release_image_source(source_id);
@@ -304,6 +210,161 @@ pub(crate) const TITLE_DEBOUNCE_MS: f64 = 80.0;
 // ── Title resolution ─────────────────────────────────────────────────
 
 impl TerminalSession {
+    /// Expose the terminal core for read-only UI decisions without exposing
+    /// session storage layout to application modules.
+    pub(crate) fn terminal(&self) -> &Terminal {
+        &self.runtime.terminal
+    }
+
+    /// Mutably access the terminal core for the small set of app-level
+    /// operations that are not yet session-owned behaviours.
+    pub(crate) fn terminal_mut(&mut self) -> &mut Terminal {
+        &mut self.runtime.terminal
+    }
+
+    /// Access the PTY only through the session boundary.
+    pub(crate) fn pty_mut(&mut self) -> &mut PtySession {
+        &mut self.runtime.pty
+    }
+
+    /// Access the persistent clipboard handle through the input boundary.
+    pub(crate) fn clipboard_mut(&mut self) -> Option<&mut arboard::Clipboard> {
+        self.input.clipboard.as_mut()
+    }
+
+    pub(crate) fn title(&self) -> &str {
+        &self.runtime.title
+    }
+
+    pub(crate) fn title_override(&self) -> Option<&str> {
+        self.runtime.title_override.as_deref()
+    }
+
+    pub(crate) fn set_title_override(&mut self, title: String) {
+        self.runtime.title_override = Some(title);
+    }
+
+    pub(crate) fn clear_title_override(&mut self) {
+        self.runtime.title_override = None;
+    }
+
+    pub(crate) fn working_directory(&self) -> Option<&std::path::Path> {
+        self.runtime.cwd.as_deref()
+    }
+
+    pub(crate) fn progress(&self) -> zenterm_core::Progress {
+        self.runtime.progress
+    }
+
+    pub(crate) fn notification(&self) -> &NotificationState {
+        &self.notifications.notification
+    }
+
+    pub(crate) fn background_color(&self) -> egui::Color32 {
+        self.view.default_bg
+    }
+
+    pub(crate) fn paint_callback(&self) -> CallbackHandle {
+        self.view.callback.clone()
+    }
+
+    pub(crate) fn cell_height(&self) -> f32 {
+        self.view.cell_height
+    }
+
+    pub(crate) fn viewport_rect(&self, pixels_per_point: f32) -> egui::Rect {
+        egui::Rect::from_min_size(
+            egui::pos2(
+                self.view.last_vp_origin_px[0] / pixels_per_point,
+                self.view.last_vp_origin_px[1] / pixels_per_point,
+            ),
+            egui::vec2(
+                self.view.last_vp_size_px[0] / pixels_per_point,
+                self.view.last_vp_size_px[1] / pixels_per_point,
+            ),
+        )
+    }
+
+    pub(crate) fn resize_overlay_rect(&self, pixels_per_point: f32) -> Option<egui::Rect> {
+        self.runtime
+            .last_resize_at
+            .map(|_| self.viewport_rect(pixels_per_point))
+    }
+
+    pub(crate) fn badge_format(&self) -> Option<&str> {
+        self.notifications.badge_format.as_deref()
+    }
+
+    pub(crate) fn set_theme(
+        &mut self,
+        scheme: zenterm_term::ColorScheme,
+        background: egui::Color32,
+    ) {
+        self.runtime.terminal.set_scheme(scheme);
+        self.view.default_bg = background;
+        self.runtime.terminal_dirty = true;
+    }
+
+    pub(crate) fn set_save_to_clipboard(&mut self, enabled: bool) {
+        self.input.save_to_clipboard = enabled;
+    }
+
+    pub(crate) fn mark_terminal_dirty(&mut self) {
+        self.runtime.terminal_dirty = true;
+    }
+
+    pub(crate) fn note_input_activity(&mut self) {
+        self.input.blink_epoch = Instant::now();
+    }
+
+    pub(crate) fn set_preedit_text(&mut self, text: Option<String>) {
+        self.input.preedit_text = text.filter(|text| !text.is_empty());
+        self.runtime.terminal_dirty = true;
+    }
+
+    /// Apply focus state and return the repaint interval when the current
+    /// cursor style is actively blinking.
+    pub(crate) fn update_window_focus(&mut self, focused: bool) -> Option<std::time::Duration> {
+        if self.input.window_focused != focused {
+            self.input.window_focused = focused;
+            self.runtime.terminal_dirty = true;
+        }
+        let cursor = self.runtime.terminal.cursor();
+        let blinking = cursor.style.blinking
+            && !matches!(
+                cursor.style.shape,
+                alacritty_terminal::vte::ansi::CursorShape::Block
+            );
+        if blinking {
+            self.runtime.terminal_dirty = true;
+            Some(std::time::Duration::from_millis(
+                self.input.blink_interval.max(100),
+            ))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn ime_cursor_rect(&self, pixels_per_point: f32) -> egui::Rect {
+        let cursor = self.runtime.terminal.cursor();
+        let origin_x = self.view.last_vp_origin_px[0] / pixels_per_point;
+        let origin_y = self.view.last_vp_origin_px[1] / pixels_per_point;
+        egui::Rect::from_min_size(
+            egui::pos2(
+                origin_x + cursor.pos.column as f32 * self.view.cell_width / pixels_per_point,
+                origin_y + cursor.pos.line as f32 * self.view.cell_height / pixels_per_point,
+            ),
+            egui::vec2(
+                self.view.cell_width / pixels_per_point,
+                self.view.cell_height / pixels_per_point,
+            ),
+        )
+    }
+
+    pub(crate) fn set_tab_active(&mut self, active: bool) {
+        self.notifications.tab_active = active;
+    }
+
     /// Resolve the effective display title using the priority chain:
     ///
     /// 1. [`Self::title_override`] — manually set by user (highest priority)
@@ -313,7 +374,7 @@ impl TerminalSession {
     /// 4. `"terminal"` — ultimate hardcoded fallback
     pub fn title_effective(&self) -> String {
         // ① Manual override
-        if let Some(ref t) = self.title_override
+        if let Some(ref t) = self.runtime.title_override
             && !t.is_empty()
         {
             return t.clone();
@@ -325,12 +386,12 @@ impl TerminalSession {
         // `$SHELL`).  We do NOT gate on `seen_terminal_title` here so
         // that the initial title shows immediately at startup; once the
         // shell sends a real OSC title it replaces this value.
-        if !self.title.is_empty() {
-            return self.title.clone();
+        if !self.runtime.title.is_empty() {
+            return self.runtime.title.clone();
         }
 
         // ③ Inferred from cwd basename
-        if let Some(ref cwd) = self.cwd
+        if let Some(ref cwd) = self.runtime.cwd
             && let Some(name) = cwd.file_name().and_then(|n| n.to_str())
             && !name.is_empty()
         {

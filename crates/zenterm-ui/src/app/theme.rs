@@ -197,9 +197,7 @@ impl ZentermApp {
             self.default_bg = theme_bg_to_color32(&new_theme);
             let scheme = ColorScheme::from_theme(&new_theme);
             for session in self.sessions.values_mut() {
-                session.terminal.set_scheme(scheme.clone());
-                session.default_bg = self.default_bg;
-                session.terminal_dirty = true;
+                session.set_theme(scheme.clone(), self.default_bg);
             }
 
             // Sync egui chrome style to match the terminal theme.

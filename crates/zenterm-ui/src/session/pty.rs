@@ -52,20 +52,24 @@ impl TerminalSession {
     /// Pending chunks are batched into one `feed()` call per frame, subject
     /// to a byte budget so high-throughput output cannot monopolise the UI.
     pub fn pump_pty(&mut self) {
-        if self.pty_exited {
+        if self.runtime.pty_exited {
             return;
         }
-        let batch = &mut self.batch_buf;
+        let batch = &mut self.runtime.batch_buf;
         trim_batch_capacity(batch);
         batch.clear();
         if batch.capacity() < PTY_BATCH_MIN_CAPACITY {
             batch.reserve(PTY_BATCH_MIN_CAPACITY - batch.capacity());
         }
 
-        append_pending_pty_data(&mut self.pending_pty_data, batch, PTY_MAX_BYTES_PER_PUMP);
+        append_pending_pty_data(
+            &mut self.runtime.pending_pty_data,
+            batch,
+            PTY_MAX_BYTES_PER_PUMP,
+        );
         let mut pty_end = false;
         while batch.len() < PTY_MAX_BYTES_PER_PUMP {
-            let Some(result) = self.pty.try_read() else {
+            let Some(result) = self.runtime.pty.try_read() else {
                 break;
             };
             match result {
@@ -76,20 +80,20 @@ impl TerminalSession {
                     } else {
                         let (head, tail) = data.split_at(remaining);
                         batch.extend_from_slice(head);
-                        self.pending_pty_data.push_back(tail.to_vec());
+                        self.runtime.pending_pty_data.push_back(tail.to_vec());
                         break;
                     }
                 }
                 Err(e) => {
                     log::info!("PTY session ended ({e}), exiting");
-                    self.pty_exited = true;
-                    self.pty.close();
+                    self.runtime.pty_exited = true;
+                    self.runtime.pty.close();
                     pty_end = true;
                     break;
                 }
             }
         }
-        if batch.len() == PTY_MAX_BYTES_PER_PUMP && !self.pending_pty_data.is_empty() {
+        if batch.len() == PTY_MAX_BYTES_PER_PUMP && !self.runtime.pending_pty_data.is_empty() {
             log::trace!(
                 "pump_pty: frame byte budget reached ({} bytes), deferring remaining PTY data",
                 PTY_MAX_BYTES_PER_PUMP
@@ -100,34 +104,34 @@ impl TerminalSession {
         }
         if !batch.is_empty() {
             log::trace!("pump_pty: batching {} bytes from PTY", batch.len());
-            let replies = self.terminal.feed(batch);
+            let replies = self.runtime.terminal.feed(batch);
             if !replies.is_empty() {
                 log::trace!("pump_pty: writing {} reply bytes", replies.len(),);
-                if let Err(e) = self.pty.write(&replies) {
+                if let Err(e) = self.runtime.pty.write(&replies) {
                     log::error!("failed to write pty reply: {e}");
                 }
             }
-            self.terminal_dirty = true;
+            self.runtime.terminal_dirty = true;
             // Shell output counts as activity — restart the cursor
             // blink timeout window.
-            self.blink_epoch = std::time::Instant::now();
+            self.input.blink_epoch = std::time::Instant::now();
         }
 
         // Drain Kitty OSC 99 notification responses (a=report, c=1,
         // button clicks) back to the PTY.
-        while let Ok(resp) = self.notification_resp_rx.try_recv() {
+        while let Ok(resp) = self.notifications.notification_resp_rx.try_recv() {
             log::debug!("pump_pty: writing notification response: {resp}");
-            if let Err(e) = self.pty.write(resp.as_bytes()) {
+            if let Err(e) = self.runtime.pty.write(resp.as_bytes()) {
                 log::error!("failed to write notification response: {e}");
             }
         }
 
-        if !self.pty_exited
-            && let Some(status) = self.pty.try_wait()
+        if !self.runtime.pty_exited
+            && let Some(status) = self.runtime.pty.try_wait()
         {
             log::info!("shell exited with status: {status:?}, closing");
-            self.pty.close();
-            self.pty_exited = true;
+            self.runtime.pty.close();
+            self.runtime.pty_exited = true;
         }
     }
 
@@ -141,16 +145,16 @@ impl TerminalSession {
         let mut effects = Vec::new();
 
         // Buffer incoming title event (don't apply yet — wait for stability).
-        if let Some(title) = self.terminal.take_title() {
+        if let Some(title) = self.runtime.terminal.take_title() {
             log::trace!("session: title event '{:?}' (debouncing)", title);
-            self.pending_title = Some((title, Instant::now()));
+            self.runtime.pending_title = Some((title, Instant::now()));
         }
 
         // Apply pending title if it has been stable long enough.
-        if let Some((title, at)) = &self.pending_title
+        if let Some((title, at)) = &self.runtime.pending_title
             && at.elapsed().as_secs_f64() * 1000.0 >= TITLE_DEBOUNCE_MS
         {
-            self.seen_terminal_title = true;
+            self.runtime.seen_terminal_title = true;
 
             if title.is_empty() {
                 // Empty title → fallback to cwd basename.
@@ -158,37 +162,38 @@ impl TerminalSession {
                 // sequence is treated as a reset, and we show the
                 // working directory name instead.
                 let fallback = self
+                    .runtime
                     .cwd
                     .as_ref()
                     .and_then(|p| p.file_name())
                     .and_then(|n| n.to_str())
                     .map(|s| s.to_string())
                     .unwrap_or_default();
-                if self.title != fallback {
+                if self.runtime.title != fallback {
                     log::debug!("session: empty title → fallback to cwd '{:?}'", fallback,);
-                    self.title = fallback;
-                    effects.push(SessionEffect::WindowTitle(self.title.clone()));
+                    self.runtime.title = fallback;
+                    effects.push(SessionEffect::WindowTitle(self.runtime.title.clone()));
                 }
-            } else if self.title != *title {
+            } else if self.runtime.title != *title {
                 log::debug!(
                     "session: window title changed: {:?} -> {:?}",
-                    self.title,
+                    self.runtime.title,
                     title
                 );
-                self.title = title.clone();
+                self.runtime.title = title.clone();
                 effects.push(SessionEffect::WindowTitle(title.clone()));
             } else {
                 log::trace!(
                     "session: window title unchanged ({:?}), skipping",
-                    self.title
+                    self.runtime.title
                 );
             }
-            self.pending_title = None;
+            self.runtime.pending_title = None;
         }
 
-        if self.terminal.take_bell() {
+        if self.runtime.terminal.take_bell() {
             log::debug!("update: bell");
-            self.notification = super::types::NotificationState::Bell;
+            self.notifications.notification = super::types::NotificationState::Bell;
         }
 
         // ── Desktop notification ────────────────────────────────────────
@@ -197,8 +202,8 @@ impl TerminalSession {
         //   OSC 9 (iTerm2)     → title + body only
         //   OSC 777 (rxvt)     → title + body only
         // Prefer the Kitty notification when available.
-        let kitty_notif = self.terminal.take_kitty_notification();
-        let basic_notif = self.terminal.take_notification();
+        let kitty_notif = self.runtime.terminal.take_kitty_notification();
+        let basic_notif = self.runtime.terminal.take_notification();
         if let Some(kitty) = kitty_notif {
             log::info!("desktop notification (Kitty OSC 99): {:?}", kitty);
 
@@ -207,14 +212,16 @@ impl TerminalSession {
             let should_show = match kitty.occasion {
                 zenterm_core::KittyOccasion::Always => true,
                 zenterm_core::KittyOccasion::Unfocused => !window_focused,
-                zenterm_core::KittyOccasion::Invisible => !window_focused || !self.tab_active,
+                zenterm_core::KittyOccasion::Invisible => {
+                    !window_focused || !self.notifications.tab_active
+                }
             };
             if !should_show {
                 log::debug!(
                     "suppressed Kitty notification (occasion={:?}, window_focused={}, tab_active={})",
                     kitty.occasion,
                     window_focused,
-                    self.tab_active,
+                    self.notifications.tab_active,
                 );
             } else {
                 let title = if kitty.title.is_empty() {
@@ -236,7 +243,7 @@ impl TerminalSession {
                 let buttons = kitty.buttons.clone();
                 let timeout_ms = kitty.timeout_ms;
                 let sound = kitty.sound.clone();
-                let resp_tx = self.notification_resp_tx.clone();
+                let resp_tx = self.notifications.notification_resp_tx.clone();
                 let notif_id = kitty.id.clone();
                 let report_click = kitty.report_click;
                 let close_report = kitty.close_report;
@@ -379,42 +386,44 @@ impl TerminalSession {
         }
 
         // ── ConEmu progress bar (OSC 9;4) ─────────────────────────────
-        if let Some(prog) = self.terminal.take_progress() {
-            self.progress = prog;
+        if let Some(prog) = self.runtime.terminal.take_progress() {
+            self.runtime.progress = prog;
         }
 
         // ── FinalTerm semantic prompt (OSC 133) ──────────────────────────
-        if let Some(prompt) = self.terminal.take_semantic_prompt() {
+        if let Some(prompt) = self.runtime.terminal.take_semantic_prompt() {
             log::trace!("session: OSC 133 semantic prompt: {prompt:?}");
-            self.latest_semantic_prompt = Some(prompt);
+            self.runtime.latest_semantic_prompt = Some(prompt);
         }
 
-        if !self.exit_effect_sent {
-            if self.terminal.take_exit() || self.terminal.take_child_exit().is_some() {
+        if !self.runtime.exit_effect_sent {
+            if self.runtime.terminal.take_exit()
+                || self.runtime.terminal.take_child_exit().is_some()
+            {
                 log::info!("update: terminal requested exit, closing");
-                self.pty_exited = true;
+                self.runtime.pty_exited = true;
             }
-            if self.pty_exited {
+            if self.runtime.pty_exited {
                 log::info!("handle_side_effects: session exited, emitting CloseWindow");
-                self.exit_effect_sent = true;
+                self.runtime.exit_effect_sent = true;
                 effects.push(SessionEffect::CloseWindow);
             }
         }
 
-        if let Some(text) = self.terminal.take_clipboard_store()
-            && let Some(ref mut cb) = self.clipboard
+        if let Some(text) = self.runtime.terminal.take_clipboard_store()
+            && let Some(ref mut cb) = self.input.clipboard
             && let Err(e) = cb.set_text(text)
         {
             log::error!("failed to store clipboard text: {e}");
         }
 
-        if let Some(formatter) = self.terminal.take_clipboard_load()
-            && let Some(ref mut cb) = self.clipboard
+        if let Some(formatter) = self.runtime.terminal.take_clipboard_load()
+            && let Some(ref mut cb) = self.input.clipboard
         {
             match cb.get_text() {
                 Ok(text) => {
                     let seq = formatter(&text);
-                    if let Err(e) = self.pty.write(seq.as_bytes()) {
+                    if let Err(e) = self.runtime.pty.write(seq.as_bytes()) {
                         log::error!("failed to write clipboard-load response: {e}");
                     }
                 }
@@ -425,20 +434,20 @@ impl TerminalSession {
         }
 
         // ── OSC 7: working directory (current working directory URL) ──
-        if let Some(url) = self.terminal.take_current_directory()
+        if let Some(url) = self.runtime.terminal.take_current_directory()
             && let Some(path) = osc7_url_to_path(&url)
         {
-            self.cwd = Some(path);
+            self.runtime.cwd = Some(path);
         }
 
         // ── OSC 1337 (iTerm2 proprietary) actions ───────────────────
         // Consume navigation marks first (stored directly in terminal layer).
-        let marks = self.terminal.take_marks();
+        let marks = self.runtime.terminal.take_marks();
         for (col, line) in &marks {
             log::info!("session: mark placed at ({col}, {line})");
         }
 
-        if let Some(action) = self.terminal.take_iterm_action() {
+        if let Some(action) = self.runtime.terminal.take_iterm_action() {
             log::debug!("session: OSC 1337 action: {action:?}");
             match action {
                 zenterm_core::ITermProprietary::StealFocus => {
@@ -449,10 +458,10 @@ impl TerminalSession {
                     log::info!("session: profile change requested: {name}");
                 }
                 zenterm_core::ITermProprietary::HighlightCursorLine(enabled) => {
-                    self.highlight_cursor_line = enabled;
+                    self.runtime.highlight_cursor_line = enabled;
                 }
                 zenterm_core::ITermProprietary::SetBadgeFormat(fmt) => {
-                    self.badge_format = Some(fmt);
+                    self.notifications.badge_format = Some(fmt);
                 }
                 zenterm_core::ITermProprietary::ReportVariable(name) => {
                     // The terminal layer already handles lookup and response.
@@ -494,7 +503,7 @@ impl TerminalSession {
 
     /// Send an SGR mouse event to the PTY.
     pub fn send_sgr_mouse(&mut self, row: usize, col: usize, button: u8, release: bool) {
-        let mode = self.terminal.mode();
+        let mode = self.runtime.terminal.mode();
         let mouse_active = mode.contains(TermMode::SGR_MOUSE)
             && mode.intersects(
                 TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION,
@@ -511,7 +520,7 @@ impl TerminalSession {
         //              button ; column ; row
         let seq = format!("\x1b[<{};{};{}{}", button, col + 1, row + 1, suffix);
         log::info!("[dbg] pty: writing SGR seq: {:?}", seq.as_bytes());
-        if let Err(e) = self.pty.write(seq.as_bytes()) {
+        if let Err(e) = self.runtime.pty.write(seq.as_bytes()) {
             log::error!("SGR mouse write error: {e}");
         }
     }

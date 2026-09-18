@@ -67,9 +67,9 @@ impl ZentermApp {
                     .map(|ws| ws.id.raw());
                 SessionMeta {
                     id: id.0,
-                    title: s.title.clone(),
-                    title_override: s.title_override.clone(),
-                    cwd: s.cwd.clone(),
+                    title: s.title().to_owned(),
+                    title_override: s.title_override().map(str::to_owned),
+                    cwd: s.working_directory().map(std::path::Path::to_path_buf),
                     shell: None,
                     workspace_id: ws_id,
                 }

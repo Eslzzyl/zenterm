@@ -4,37 +4,17 @@
 
 use egui::Context;
 
-use zenterm_term::ColorScheme;
-
 use super::ZentermApp;
-use crate::session::{SessionEffect, SessionId, TerminalSession, default_working_directory};
+use crate::session::{
+    SessionEffect, SessionId, SessionRequest, TerminalSession, default_working_directory,
+};
 
 impl ZentermApp {
     /// Spawn a new session in the active workspace's currently focused
     /// dock leaf and return its id.
     pub(crate) fn spawn_session(&mut self) -> Option<SessionId> {
         let id = self.workspaces.new_session_id();
-        let scheme = ColorScheme::from_theme(&self.theme);
-        let size = zenterm_core::size::TermSize::new(
-            self.config.window.dimensions.lines,
-            self.config.window.dimensions.columns,
-            0,
-            0,
-        );
-        let session = match TerminalSession::new(
-            id,
-            size,
-            scheme,
-            self.config.terminal.scrollback_lines,
-            &self.config.cursor,
-            default_working_directory(),
-            self.config.selection.save_to_clipboard,
-            self.default_bg,
-            self.gpu.clone(),
-            self.atlas.clone(),
-            self.callback.clone(),
-            self.egui_ctx.clone(),
-        ) {
+        let session = match self.create_session(id, default_working_directory()) {
             Ok(session) => session,
             Err(error) => {
                 self.report_session_spawn_error(error);
@@ -46,6 +26,23 @@ impl ZentermApp {
         self.active_session_id = Some(id);
         self.mark_layout_dirty();
         Some(id)
+    }
+
+    /// Build a session from the app's current launch settings.  Registration
+    /// in the session map and workspace is deliberately left to the caller so
+    /// creation remains failure-atomic.
+    fn create_session(
+        &self,
+        id: SessionId,
+        cwd: std::path::PathBuf,
+    ) -> zenterm_core::Result<TerminalSession> {
+        self.session_factory.create(SessionRequest::from_config(
+            id,
+            cwd,
+            &self.config,
+            &self.theme,
+            self.default_bg,
+        ))
     }
 
     fn report_session_spawn_error(&mut self, error: zenterm_core::Error) {
@@ -123,7 +120,7 @@ impl ZentermApp {
         let mut exit_ids: Vec<SessionId> = Vec::new();
         for id in ids {
             let effects = if let Some(s) = self.sessions.get_mut(&id) {
-                s.tab_active = self.active_session_id == Some(id);
+                s.set_tab_active(self.active_session_id == Some(id));
                 s.handle_side_effects(ctx)
             } else {
                 Vec::new()

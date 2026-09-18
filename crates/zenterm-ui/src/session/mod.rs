@@ -11,7 +11,8 @@
 //! # Module layout
 //!
 //! * [`types`] — core type definitions (`SessionId`, `TerminalSession`, …)
-//! * [`new`] — `TerminalSession::new()` constructor
+//! * [`factory`] — request snapshots and the unified session factory
+//! * [`new`] — low-level terminal and PTY initialization
 //! * [`pty`] — PTY pumping, side-effect handling, SGR mouse
 //! * [`reinit`] — viewport/dock helpers, DPI reinit, resize, config changes
 //! * [`mouse`] — per-tab mouse interaction, scrollbar, context menu
@@ -47,6 +48,7 @@
 
 mod badge;
 mod effects;
+mod factory;
 mod links;
 mod mouse;
 mod new;
@@ -60,6 +62,7 @@ mod types;
 pub use badge::render_badge;
 
 pub use effects::SessionEffect;
+pub(crate) use factory::{SessionFactory, SessionRequest};
 pub(crate) use new::{default_working_directory, session_working_directory};
 pub(crate) use types::NotificationState;
 pub use types::{SessionId, TerminalSession};

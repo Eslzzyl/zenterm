@@ -53,7 +53,7 @@ impl ZentermApp {
                     let has_attention = tab_ids.iter().any(|id| {
                         self.sessions.get(id).is_some_and(|session| {
                             !matches!(
-                                session.notification,
+                                session.notification(),
                                 crate::session::NotificationState::None
                             )
                         })
@@ -339,17 +339,7 @@ impl ZentermApp {
                 // appears on top of the terminal content.
                 let ppp = ui.ctx().pixels_per_point();
                 for session in self.sessions.values() {
-                    if session.last_resize_at.is_some() {
-                        let rect = egui::Rect::from_min_size(
-                            egui::pos2(
-                                session.last_vp_origin_px[0] / ppp,
-                                session.last_vp_origin_px[1] / ppp,
-                            ),
-                            egui::vec2(
-                                session.last_vp_size_px[0] / ppp,
-                                session.last_vp_size_px[1] / ppp,
-                            ),
-                        );
+                    if let Some(rect) = session.resize_overlay_rect(ppp) {
                         session.render_resize_overlay(ui, rect);
                     }
                 }
@@ -358,21 +348,12 @@ impl ZentermApp {
                 // Renders a large text label in the top-right corner of
                 // each session's viewport.
                 for session in self.sessions.values() {
-                    if let Some(ref template) = session.badge_format {
+                    if let Some(template) = session.badge_format() {
                         let text = crate::session::render_badge(template, session);
                         if !text.is_empty() {
                             let ppp = ui.ctx().pixels_per_point();
-                            let vp_rect = egui::Rect::from_min_size(
-                                egui::pos2(
-                                    session.last_vp_origin_px[0] / ppp,
-                                    session.last_vp_origin_px[1] / ppp,
-                                ),
-                                egui::vec2(
-                                    session.last_vp_size_px[0] / ppp,
-                                    session.last_vp_size_px[1] / ppp,
-                                ),
-                            );
-                            let font_size = (session.cell_height * 2.0).max(14.0);
+                            let vp_rect = session.viewport_rect(ppp);
+                            let font_size = (session.cell_height() * 2.0).max(14.0);
                             ui.painter().text(
                                 egui::pos2(vp_rect.right() - 8.0, vp_rect.top() + 8.0),
                                 egui::Align2::RIGHT_TOP,
@@ -438,7 +419,7 @@ impl ZentermApp {
                                 if !buf.is_empty()
                                     && let Some(s) = self.sessions.get_mut(&rename_id)
                                 {
-                                    s.title_override = Some(buf.clone());
+                                    s.set_title_override(buf.clone());
                                 }
                                 close_requested = true;
                             } else if cancel {
@@ -453,7 +434,7 @@ impl ZentermApp {
                                         if !buf.is_empty()
                                             && let Some(s) = self.sessions.get_mut(&rename_id)
                                         {
-                                            s.title_override = Some(buf.clone());
+                                            s.set_title_override(buf.clone());
                                         }
                                         close_requested = true;
                                     }

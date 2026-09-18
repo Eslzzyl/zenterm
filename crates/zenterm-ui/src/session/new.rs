@@ -4,13 +4,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc;
 
-use zenterm_config::cursor::{Blinking, CursorConfig, CursorShape};
+use zenterm_config::cursor::{Blinking, CursorShape};
 use zenterm_core::Result;
 use zenterm_core::size::TermSize;
 use zenterm_render::callback::CallbackHandle;
-use zenterm_term::{BlinkPolicy, ColorScheme, CursorPrefs, Terminal};
+use zenterm_term::{BlinkPolicy, CursorPrefs, Terminal};
 
-use super::types::{NotificationState, SessionId, TerminalSession};
+use super::factory::SessionRequest;
+use super::types::{
+    NotificationState, SessionInputState, SessionNotificationState, SessionRuntime,
+    SessionViewState, TerminalSession,
+};
 use crate::glyph_cache::SharedGlyphAtlas;
 use crate::gpu::SharedGpuContext;
 
@@ -103,21 +107,23 @@ impl TerminalSession {
     /// `egui_ctx` is stored internally and cloned into the PTY reader
     /// thread as a wakeup callback (`ctx.request_repaint()`) so that
     /// incoming PTY data wakes the egui event loop from idle.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        id: SessionId,
-        size: TermSize,
-        scheme: ColorScheme,
-        scrollback_lines: usize,
-        cursor: &CursorConfig,
-        cwd: PathBuf,
-        save_to_clipboard: bool,
-        default_bg: egui::Color32,
+    pub(super) fn new(
+        request: SessionRequest,
         gpu: SharedGpuContext,
         atlas: Arc<SharedGlyphAtlas>,
         callback: CallbackHandle,
         egui_ctx: egui::Context,
     ) -> Result<Self> {
+        let SessionRequest {
+            id,
+            size,
+            scheme,
+            scrollback_lines,
+            cursor,
+            cwd,
+            save_to_clipboard,
+            default_bg,
+        } = request;
         // Create a wakeup callback that the PTY reader thread calls
         // after each successful read.  This is the core of the event-
         // driven architecture: instead of the main thread polling PTY
@@ -159,65 +165,72 @@ impl TerminalSession {
         let (notification_resp_tx, notification_resp_rx) = mpsc::channel();
         Ok(Self {
             id,
-            title: detect_shell_name(),
-            title_override: None,
-            seen_terminal_title: false,
-            cwd: Some(cwd),
-            git_branch: None,
-            notification: NotificationState::None,
-            progress: zenterm_core::Progress::None,
-            latest_semantic_prompt: None,
-            terminal,
-            pty,
-            gpu,
-            atlas,
-            callback,
-            cell_width,
-            cell_height,
-            last_vp_size_px: [0.0, 0.0],
-            last_vp_origin_px: [0.0, 0.0],
-            dock_vp_origin_px: [0.0, 0.0],
-            dock_vp_size_px: [0.0, 0.0],
-            selecting: false,
-            terminal_dirty: true,
-            last_resize_at: None,
-            blink_interval: cursor.blink_interval,
-            blink_timeout: cursor.blink_timeout,
-            cursor_thickness: cursor.thickness,
-            unfocused_hollow: cursor.unfocused_hollow,
-            window_focused: true,
-            save_to_clipboard,
-            clipboard: arboard::Clipboard::new().ok(),
-            blink_epoch: std::time::Instant::now(),
-            pty_exited: false,
-            exit_effect_sent: false,
-            highlight_cursor_line: false,
-            badge_format: None,
-            default_bg,
-            cached_bg: Vec::new(),
-            cached_glyph_per_atlas: Vec::new(),
-            cached_deco: Vec::new(),
-            cached_image_below: Vec::new(),
-            cached_image_above: Vec::new(),
-            image_sources: std::collections::HashSet::new(),
-            pending_title: None,
-            preedit_text: None,
-            url_open: true,
-            url_hover_underline: true,
-            hover_cell: None,
-            detected_links: Vec::new(),
-            url_click_handled: false,
-            scrollbar_dragging: false,
-            scrollbar_drag_start_y: 0.0,
-            scrollbar_drag_start_offset: 0,
-            scroll_accumulator_y: 0.0,
-            sgr_mouse_buttons: Vec::new(),
-            last_sgr_motion_pos: None,
-            notification_resp_tx,
-            notification_resp_rx,
-            batch_buf: Vec::new(),
-            pending_pty_data: std::collections::VecDeque::new(),
-            tab_active: false,
+            runtime: SessionRuntime {
+                title: detect_shell_name(),
+                title_override: None,
+                seen_terminal_title: false,
+                cwd: Some(cwd),
+                progress: zenterm_core::Progress::None,
+                latest_semantic_prompt: None,
+                terminal,
+                pty,
+                terminal_dirty: true,
+                last_resize_at: None,
+                pty_exited: false,
+                exit_effect_sent: false,
+                highlight_cursor_line: false,
+                batch_buf: Vec::new(),
+                pending_pty_data: std::collections::VecDeque::new(),
+                pending_title: None,
+            },
+            view: SessionViewState {
+                gpu,
+                atlas,
+                callback,
+                cell_width,
+                cell_height,
+                last_vp_size_px: [0.0, 0.0],
+                last_vp_origin_px: [0.0, 0.0],
+                dock_vp_origin_px: [0.0, 0.0],
+                dock_vp_size_px: [0.0, 0.0],
+                default_bg,
+                cached_bg: Vec::new(),
+                cached_glyph_per_atlas: Vec::new(),
+                cached_deco: Vec::new(),
+                cached_image_below: Vec::new(),
+                cached_image_above: Vec::new(),
+                image_sources: std::collections::HashSet::new(),
+            },
+            input: SessionInputState {
+                selecting: false,
+                blink_interval: cursor.blink_interval,
+                blink_timeout: cursor.blink_timeout,
+                cursor_thickness: cursor.thickness,
+                unfocused_hollow: cursor.unfocused_hollow,
+                window_focused: true,
+                blink_epoch: std::time::Instant::now(),
+                save_to_clipboard,
+                clipboard: arboard::Clipboard::new().ok(),
+                preedit_text: None,
+                url_open: true,
+                url_hover_underline: true,
+                hover_cell: None,
+                detected_links: Vec::new(),
+                url_click_handled: false,
+                scrollbar_dragging: false,
+                scrollbar_drag_start_y: 0.0,
+                scrollbar_drag_start_offset: 0,
+                scroll_accumulator_y: 0.0,
+                sgr_mouse_buttons: Vec::new(),
+                last_sgr_motion_pos: None,
+            },
+            notifications: SessionNotificationState {
+                notification: NotificationState::None,
+                badge_format: None,
+                notification_resp_tx,
+                notification_resp_rx,
+                tab_active: false,
+            },
         })
     }
 }
