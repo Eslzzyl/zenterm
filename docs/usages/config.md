@@ -39,12 +39,14 @@ back through the main screen.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `shell` | `string` | detected platform shell | Fixed executable path used by newly created sessions. The settings panel discovers and writes this path. |
 | `scrollback_lines` | `integer` | `10000` | Maximum retained history lines. `0` disables scrollback history. Changes apply immediately to existing sessions. |
 
 ### Example
 
 ```toml
 [terminal]
+shell = "/bin/zsh"
 scrollback_lines = 5000
 ```
 
@@ -367,6 +369,7 @@ title = "Zenterm"
 decorations = true
 
 [terminal]
+shell = "C:\\Windows\\System32\\cmd.exe"
 scrollback_lines = 10000
 
 [font]

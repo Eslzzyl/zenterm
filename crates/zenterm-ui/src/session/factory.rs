@@ -39,6 +39,7 @@ pub(crate) struct SessionRequest {
     pub(super) scheme: ColorScheme,
     pub(super) scrollback_lines: usize,
     pub(super) cursor: zenterm_config::cursor::CursorConfig,
+    pub(super) shell: Option<PathBuf>,
     pub(super) cwd: PathBuf,
     pub(super) save_to_clipboard: bool,
     pub(super) default_bg: egui::Color32,
@@ -77,6 +78,7 @@ impl SessionRequest {
         config: &Config,
         theme: &Theme,
         default_bg: egui::Color32,
+        shell_override: Option<PathBuf>,
     ) -> Self {
         Self {
             id,
@@ -89,6 +91,7 @@ impl SessionRequest {
             scheme: ColorScheme::from_theme(theme),
             scrollback_lines: config.terminal.scrollback_lines,
             cursor: config.cursor.clone(),
+            shell: shell_override.or_else(|| config.terminal.shell.clone()),
             cwd,
             save_to_clipboard: config.selection.save_to_clipboard,
             default_bg,
@@ -121,12 +124,14 @@ mod tests {
             &config,
             &theme,
             egui::Color32::from_rgb(1, 2, 3),
+            None,
         );
 
         assert_eq!(request.id, SessionId::new(9));
         assert_eq!(request.size.rows, 42);
         assert_eq!(request.size.cols, 137);
         assert_eq!(request.scrollback_lines, 4_096);
+        assert_eq!(request.shell, config.terminal.shell);
         assert!(request.save_to_clipboard);
         assert_eq!(request.cursor.blink_interval, 750);
         assert_eq!(request.cwd, cwd);

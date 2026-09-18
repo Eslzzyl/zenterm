@@ -14,6 +14,10 @@ use portable_pty::{
 
 use zenterm_core::{Error, Result, TermSize};
 
+mod shell;
+
+pub use shell::{ShellCandidate, ShellSource, candidate_for_path, default_shell, detect_shells};
+
 type DataHandler = Box<dyn Fn(&[u8]) + Send + Sync>;
 
 const DEFAULT_TERM: &str = "xterm-256color";
@@ -87,7 +91,18 @@ impl PtySession {
         wakeup: Option<Box<dyn Fn() + Send + Sync>>,
         cwd: Option<&Path>,
     ) -> Result<Self> {
-        Self::spawn_with_handlers_and_cwd(size, wakeup, cwd, None)
+        Self::spawn_with_handlers_and_shell(size, wakeup, cwd, None, None)
+    }
+
+    /// Spawn a new shell using the explicit executable path selected by the
+    /// user.
+    pub fn spawn_with_shell(
+        size: TermSize,
+        wakeup: Option<Box<dyn Fn() + Send + Sync>>,
+        cwd: Option<&Path>,
+        shell: &Path,
+    ) -> Result<Self> {
+        Self::spawn_with_handlers_and_shell(size, wakeup, cwd, Some(shell), None)
     }
 
     /// Spawn a new shell with wakeup and optional data handler.
@@ -109,13 +124,14 @@ impl PtySession {
         wakeup: Option<Box<dyn Fn() + Send + Sync>>,
         on_data: Option<DataHandler>,
     ) -> Result<Self> {
-        Self::spawn_with_handlers_and_cwd(size, wakeup, None, on_data)
+        Self::spawn_with_handlers_and_shell(size, wakeup, None, None, on_data)
     }
 
-    fn spawn_with_handlers_and_cwd(
+    fn spawn_with_handlers_and_shell(
         size: TermSize,
         wakeup: Option<Box<dyn Fn() + Send + Sync>>,
         cwd: Option<&Path>,
+        shell: Option<&Path>,
         on_data: Option<DataHandler>,
     ) -> Result<Self> {
         let pty_system = NativePtySystem::default();
@@ -129,7 +145,7 @@ impl PtySession {
             })
             .map_err(|e| Error::Pty(e.to_string()))?;
 
-        let mut cmd = CommandBuilder::new_default_prog();
+        let mut cmd = shell.map_or_else(CommandBuilder::new_default_prog, CommandBuilder::new);
         configure_command_environment(&mut cmd);
         if let Some(cwd) = cwd {
             cmd.cwd(cwd);

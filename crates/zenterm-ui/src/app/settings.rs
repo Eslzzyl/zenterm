@@ -95,9 +95,15 @@ impl ZentermApp {
 
         // ── Handle Reset All ──────────────────────────────────────
         if output.reset_all_confirmed {
-            // Reset to defaults, apply, and save.
-            self.settings_state.working_config = Config::default();
-            self.apply_new_config(Config::default(), ctx);
+            // Reset to defaults, materialize the detected shell once, apply,
+            // and save.  The shell must remain a fixed executable path after
+            // reset just like after normal first-run initialization.
+            let mut reset_config = Config::default();
+            if let Some(shell) = zenterm_pty::default_shell() {
+                reset_config.terminal.shell = Some(shell);
+            }
+            self.settings_state.working_config = reset_config.clone();
+            self.apply_new_config(reset_config, ctx);
             if let Err(e) = self.config.save() {
                 log::error!("settings reset + save failed: {e}");
                 self.error_toast = Some(format!("Failed to save reset config: {e}"));

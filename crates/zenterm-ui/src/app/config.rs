@@ -74,9 +74,18 @@ impl ZentermApp {
     /// glyph atlas as needed.  Returns the diff of what changed.
     pub(crate) fn apply_new_config(
         &mut self,
-        new_config: Config,
+        mut new_config: Config,
         egui_ctx: &Context,
     ) -> zenterm_config::ConfigChanges {
+        if let Some(shell) = new_config.terminal.shell.clone() {
+            if let Some(candidate) =
+                zenterm_pty::candidate_for_path(&shell, zenterm_pty::ShellSource::Configured)
+            {
+                new_config.terminal.shell = Some(candidate.program);
+            }
+        } else if let Some(shell) = zenterm_pty::default_shell() {
+            new_config.terminal.shell = Some(shell);
+        }
         let old_config = std::mem::replace(&mut self.config, new_config);
         let changes = old_config.diff_to(&self.config);
 

@@ -18,27 +18,16 @@ use super::types::{
 use crate::glyph_cache::SharedGlyphAtlas;
 use crate::gpu::SharedGpuContext;
 
-/// Detect the shell name from environment variables.
-///
-/// Priority:
-/// 1. `$SHELL` — standard on Unix, also set by MSYS2/Git Bash on Windows
-/// 2. `$ComSpec` — Windows cmd.exe (matches what `portable-pty` uses as
-///    the default program on Windows)
-/// 3. `"terminal"` — fallback
-///
-/// The `.exe` suffix is stripped on Windows for cleaner display.
-fn detect_shell_name() -> String {
-    let shell = std::env::var("SHELL")
-        .or_else(|_| std::env::var("ComSpec"))
-        .unwrap_or_else(|_| {
-            if cfg!(windows) {
-                "cmd.exe".into()
-            } else {
-                "terminal".into()
-            }
-        });
+/// Derive the initial tab title from the fixed shell path.  The `.exe` suffix
+/// is stripped on Windows for cleaner display.
+fn detect_shell_name(shell: Option<&Path>) -> String {
+    let shell = shell
+        .map(Path::to_path_buf)
+        .or_else(zenterm_pty::default_shell)
+        .unwrap_or_else(|| PathBuf::from(if cfg!(windows) { "cmd.exe" } else { "terminal" }));
 
-    Path::new(&shell)
+    shell
+        .as_path()
         .file_name()
         .and_then(|n| n.to_str())
         .map(|n| n.trim_end_matches(".exe").to_string())
@@ -120,6 +109,7 @@ impl TerminalSession {
             scheme,
             scrollback_lines,
             cursor,
+            shell,
             cwd,
             save_to_clipboard,
             default_bg,
@@ -132,7 +122,12 @@ impl TerminalSession {
             let ctx = egui_ctx.clone();
             Box::new(move || ctx.request_repaint())
         };
-        let mut pty = zenterm_pty::PtySession::spawn_with_cwd(size, Some(wakeup), Some(&cwd))?;
+        let mut pty = match shell.as_deref() {
+            Some(shell) => {
+                zenterm_pty::PtySession::spawn_with_shell(size, Some(wakeup), Some(&cwd), shell)?
+            }
+            None => zenterm_pty::PtySession::spawn_with_cwd(size, Some(wakeup), Some(&cwd))?,
+        };
         let mut terminal = Terminal::new_with_scrollback(
             size,
             scheme,
@@ -166,9 +161,10 @@ impl TerminalSession {
         Ok(Self {
             id,
             runtime: SessionRuntime {
-                title: detect_shell_name(),
+                title: detect_shell_name(shell.as_deref()),
                 title_override: None,
                 seen_terminal_title: false,
+                shell,
                 cwd: Some(cwd),
                 progress: zenterm_core::Progress::None,
                 latest_semantic_prompt: None,

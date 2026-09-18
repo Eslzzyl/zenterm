@@ -42,6 +42,7 @@ impl ZentermApp {
             &self.config,
             &self.theme,
             self.default_bg,
+            None,
         ))
     }
 

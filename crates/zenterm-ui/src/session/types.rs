@@ -102,6 +102,7 @@ pub(super) struct SessionRuntime {
     pub(super) title: String,
     pub(super) title_override: Option<String>,
     pub(super) seen_terminal_title: bool,
+    pub(super) shell: Option<PathBuf>,
     pub(super) cwd: Option<PathBuf>,
     pub(super) progress: zenterm_core::Progress,
     pub(super) latest_semantic_prompt: Option<zenterm_core::SemanticPrompt>,
@@ -250,6 +251,10 @@ impl TerminalSession {
 
     pub(crate) fn working_directory(&self) -> Option<&std::path::Path> {
         self.runtime.cwd.as_deref()
+    }
+
+    pub(crate) fn shell_path(&self) -> Option<&std::path::Path> {
+        self.runtime.shell.as_deref()
     }
 
     pub(crate) fn progress(&self) -> zenterm_core::Progress {

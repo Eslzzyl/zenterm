@@ -141,8 +141,28 @@ impl ZentermApp {
         queue: wgpu::Queue,
         target_format: wgpu::TextureFormat,
         pixels_per_point: f32,
-        config: Config,
+        mut config: Config,
     ) -> zenterm_core::Result<Self> {
+        // Legacy configurations did not persist a shell.  Resolve that once
+        // at startup so every new session uses a fixed executable path.
+        let mut shell_initialized = false;
+        match config.terminal.shell.clone() {
+            Some(shell) => {
+                if let Some(candidate) =
+                    zenterm_pty::candidate_for_path(&shell, zenterm_pty::ShellSource::Configured)
+                    && candidate.program != shell
+                {
+                    config.terminal.shell = Some(candidate.program);
+                    shell_initialized = true;
+                }
+            }
+            None => {
+                if let Some(shell) = zenterm_pty::default_shell() {
+                    config.terminal.shell = Some(shell);
+                    shell_initialized = true;
+                }
+            }
+        }
         // Resolve and install the configured theme before any expensive
         // renderer setup.  This minimizes the window in which eframe could
         // present its default egui visuals during startup.
@@ -253,6 +273,9 @@ impl ZentermApp {
                 &config,
                 &theme,
                 default_bg,
+                saved_meta
+                    .get(&first_id.raw())
+                    .and_then(|meta| meta.shell.clone()),
             ))?;
             // `TerminalSession::new` already sets a reasonable initial title
             // via `detect_shell_name()`.  No override needed.
@@ -275,6 +298,9 @@ impl ZentermApp {
                 &config,
                 &theme,
                 default_bg,
+                saved_meta
+                    .get(&sid.raw())
+                    .and_then(|meta| meta.shell.clone()),
             ))?;
             sessions.insert(*sid, s);
         }
@@ -340,7 +366,7 @@ impl ZentermApp {
             pending_adds: 0,
             pending_rename: None,
             current_window_title: None,
-            config_dirty: false,
+            config_dirty: shell_initialized,
             last_config_save_at: None,
             viewport_revealed: false,
             egui_ctx,

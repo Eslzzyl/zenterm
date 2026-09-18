@@ -101,7 +101,7 @@ pub struct SessionMeta {
     #[serde(default)]
     pub cwd: Option<PathBuf>,
     #[serde(default)]
-    pub shell: Option<String>,
+    pub shell: Option<PathBuf>,
     /// The workspace this session belongs to.
     #[serde(default)]
     pub workspace_id: Option<u64>,
@@ -328,7 +328,10 @@ mod tests {
             loaded[&0].cwd.as_deref(),
             Some(std::path::Path::new("/Users/me/proj"))
         );
-        assert_eq!(loaded[&1].shell.as_deref(), Some("/bin/zsh"));
+        assert_eq!(
+            loaded[&1].shell.as_deref(),
+            Some(std::path::Path::new("/bin/zsh"))
+        );
         assert_eq!(loaded[&0].workspace_id, Some(0));
         assert_eq!(loaded[&1].workspace_id, Some(1));
     }

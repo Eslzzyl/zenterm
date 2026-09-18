@@ -70,7 +70,7 @@ impl ZentermApp {
                     title: s.title().to_owned(),
                     title_override: s.title_override().map(str::to_owned),
                     cwd: s.working_directory().map(std::path::Path::to_path_buf),
-                    shell: None,
+                    shell: s.shell_path().map(std::path::Path::to_path_buf),
                     workspace_id: ws_id,
                 }
             })

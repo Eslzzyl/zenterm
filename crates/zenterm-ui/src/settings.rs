@@ -24,6 +24,7 @@ use zenterm_config::ui::{SidebarPosition, UiConfig};
 use zenterm_config::window::WindowConfig;
 use zenterm_core::color::Rgba;
 use zenterm_core::{HintingMode, RenderMode};
+use zenterm_pty::{ShellCandidate, ShellSource, candidate_for_path, detect_shells};
 
 use crate::settings_widgets;
 
@@ -114,6 +115,8 @@ pub struct SettingsState {
     /// [`register_preview_fonts`] succeeded.  Every name in this set
     /// has valid font data that egui can safely use with RichText.
     pub registered_fonts: HashSet<String>,
+    /// Shell executables discovered for the shell selector.
+    pub shell_candidates: Vec<ShellCandidate>,
 }
 
 impl SettingsState {
@@ -130,18 +133,33 @@ impl SettingsState {
             font_families,
             fonts_registered: false,
             registered_fonts: HashSet::new(),
+            shell_candidates: discover_shell_candidates(config),
         }
     }
 
     /// Reset the working config to match a fresh config.
     pub fn reset_to(&mut self, config: &Config) {
         self.working_config = config.clone();
+        self.shell_candidates = discover_shell_candidates(config);
     }
 
     /// Returns `true` if the working config differs from `other`.
     pub fn is_dirty(&self, other: &Config) -> bool {
         self.working_config != *other
     }
+}
+
+fn discover_shell_candidates(config: &Config) -> Vec<ShellCandidate> {
+    let mut shell_candidates = detect_shells();
+    if let Some(shell) = config.terminal.shell.as_deref()
+        && !shell_candidates
+            .iter()
+            .any(|candidate| candidate.program.as_path() == shell)
+        && let Some(candidate) = candidate_for_path(shell, ShellSource::Configured)
+    {
+        shell_candidates.push(candidate);
+    }
+    shell_candidates
 }
 
 // ── Render entry point (native viewport mode) ─────────────────────────
@@ -333,6 +351,7 @@ fn render_settings_content(
                     &mut state.working_config,
                     &state.font_families,
                     &state.registered_fonts,
+                    &mut state.shell_candidates,
                 );
             });
         });
@@ -370,10 +389,13 @@ fn render_section(
     cfg: &mut Config,
     font_families: &[String],
     registered_fonts: &HashSet<String>,
+    shell_candidates: &mut Vec<ShellCandidate>,
 ) {
     match section {
         SettingsSection::Window => render_window_section(ui, &mut cfg.window),
-        SettingsSection::Terminal => render_terminal_section(ui, &mut cfg.terminal),
+        SettingsSection::Terminal => {
+            render_terminal_section(ui, &mut cfg.terminal, shell_candidates)
+        }
         SettingsSection::Font => {
             render_font_section(ui, &mut cfg.font, font_families, registered_fonts)
         }
@@ -414,8 +436,89 @@ fn render_window_section(ui: &mut egui::Ui, w: &mut WindowConfig) {
 
 // ── Terminal section ─────────────────────────────────────────────────────
 
-fn render_terminal_section(ui: &mut egui::Ui, terminal: &mut TerminalConfig) {
+fn render_terminal_section(
+    ui: &mut egui::Ui,
+    terminal: &mut TerminalConfig,
+    shell_candidates: &mut Vec<ShellCandidate>,
+) {
     settings_widgets::section_header(ui, "Terminal", "Terminal buffer and scrollback history.");
+
+    let selected_shell = terminal.shell.clone();
+    settings_widgets::row(
+        ui,
+        "Shell for new tabs",
+        "The selected executable is used for every newly created tab.",
+        |ui| {
+            let selected_text = selected_shell
+                .as_deref()
+                .and_then(|path| {
+                    shell_candidates
+                        .iter()
+                        .find(|candidate| candidate.program.as_path() == path)
+                })
+                .map(|candidate| candidate.display_name.clone())
+                .or_else(|| {
+                    selected_shell
+                        .as_deref()
+                        .map(|path| format!("Unavailable: {}", path.display()))
+                })
+                .unwrap_or_else(|| "No shell selected".into());
+
+            egui::ComboBox::from_id_salt("terminal_shell")
+                .selected_text(selected_text)
+                .width(260.0)
+                .show_ui(ui, |ui| {
+                    for candidate in shell_candidates.iter() {
+                        let selected =
+                            selected_shell.as_deref() == Some(candidate.program.as_path());
+                        let default_suffix = if candidate.is_platform_default {
+                            " (default)"
+                        } else {
+                            ""
+                        };
+                        let label = format!(
+                            "{}{} — {}",
+                            candidate.display_name,
+                            default_suffix,
+                            candidate.program.display()
+                        );
+                        if ui.selectable_label(selected, label).clicked() {
+                            terminal.shell = Some(candidate.program.clone());
+                        }
+                    }
+                });
+        },
+    );
+
+    if let Some(path) = terminal.shell.as_deref()
+        && !shell_candidates
+            .iter()
+            .any(|candidate| candidate.program.as_path() == path)
+    {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            format!("Selected shell is unavailable: {}", path.display()),
+        );
+    }
+
+    ui.horizontal(|ui| {
+        if ui.button("Rescan shells").clicked() {
+            *shell_candidates = detect_shells();
+            if let Some(shell) = terminal.shell.as_deref()
+                && !shell_candidates
+                    .iter()
+                    .any(|candidate| candidate.program.as_path() == shell)
+                && let Some(candidate) = candidate_for_path(shell, ShellSource::Configured)
+            {
+                shell_candidates.push(candidate);
+            }
+        }
+        if !shell_candidates.is_empty() {
+            ui.label(format!("{} detected", shell_candidates.len()));
+        }
+    });
+
+    ui.add_space(8.0);
     settings_widgets::drag_usize(
         ui,
         "Scrollback Lines",
