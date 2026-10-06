@@ -2,8 +2,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// Playback state for a Kitty animated image.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AnimationPlayback {
+    #[default]
     Stopped,
     Running {
         /// `true` means reaching the last frame waits for a later frame.
@@ -12,12 +13,6 @@ pub enum AnimationPlayback {
         /// remaining loop-backs after the current pass.
         loops_remaining: Option<u32>,
     },
-}
-
-impl Default for AnimationPlayback {
-    fn default() -> Self {
-        Self::Stopped
-    }
 }
 
 impl AnimationPlayback {
@@ -29,13 +24,6 @@ impl AnimationPlayback {
     }
 }
 
-///
-/// Animation gaps are signed milliseconds:
-/// - positive: wait before advancing;
-/// - zero: no automatic timing (the root frame defaults to zero);
-/// - negative: gapless frame, skipped immediately during playback.
-
-/// Texture coordinate in normalized UV space `[0, 1]`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextureCoordinate {
     pub x: f32,
@@ -66,7 +54,10 @@ pub enum ImageDataType {
         width: u32,
         height: u32,
         frames: Vec<Arc<Vec<u8>>>,
-        /// Gap from this frame to the next frame, in signed milliseconds.
+        /// Gap from this frame to the next frame, in signed milliseconds:
+        /// - positive: wait before advancing;
+        /// - zero: no automatic timing (the root frame defaults to zero);
+        /// - negative: gapless frame, skipped immediately during playback.
         durations: Vec<i32>,
         hashes: Vec<[u8; 32]>,
         current_frame: usize,
