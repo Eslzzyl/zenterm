@@ -12,6 +12,7 @@ pub use placement::{PlacementParams, PlacementRequest, PlacementStyle};
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use zenterm_core::image::ImageData;
 
@@ -45,11 +46,17 @@ impl ImageCache {
         }
     }
 
-    /// Assign a new or reuse an existing image-id.
-    /// Returns the resolved image-id.
     pub fn assign_id(&mut self, image_id: Option<u32>, image_number: Option<u32>) -> u32 {
         match (image_id, image_number) {
-            (Some(id), _) => id,
+            (Some(id), Some(number)) => {
+                self.max_image_id = self.max_image_id.max(id);
+                self.number_to_id.insert(number, id);
+                id
+            }
+            (Some(id), None) => {
+                self.max_image_id = self.max_image_id.max(id);
+                id
+            }
             (None, Some(no)) => {
                 if let Some(&id) = self.number_to_id.get(&no) {
                     id
@@ -63,11 +70,44 @@ impl ImageCache {
             (None, None) => 0,
         }
     }
+    /// Resolve an existing image reference without allocating a new id.
+    pub fn resolve_id(&self, image_id: Option<u32>, image_number: Option<u32>) -> Option<u32> {
+        match (image_id, image_number) {
+            (Some(id), None) if id != 0 => self.id_to_data.contains_key(&id).then_some(id),
+            (None, Some(number)) if number != 0 => self
+                .number_to_id
+                .get(&number)
+                .copied()
+                .filter(|id| self.id_to_data.contains_key(id)),
+            _ => None,
+        }
+    }
+
+    /// Advance every terminal-driven animation and return the nearest future
+    /// wake-up interval.
+    pub fn advance_animations(&mut self, now: Instant) -> (bool, Option<Duration>) {
+        let mut changed = false;
+        let mut next = None;
+        for data in self.id_to_data.values() {
+            changed |= data.advance_animation(now);
+            if let Some(deadline) = data.animation_deadline() {
+                let delay = if deadline <= now {
+                    Duration::ZERO
+                } else {
+                    deadline.duration_since(now)
+                };
+                next = Some(next.map_or(delay, |current: Duration| current.min(delay)));
+            }
+        }
+        (changed, next)
+    }
 
     /// Store an image under the given id.
     pub fn insert(&mut self, image_id: u32, data: Arc<ImageData>) {
-        if self.id_to_data.contains_key(&image_id) {
-            self.remove(image_id);
+        // Keep image-number aliases intact when an image ID is retransmitted.
+        if let Some(old) = self.id_to_data.remove(&image_id) {
+            self.used_memory = self.used_memory.saturating_sub(old.len());
+            self.evicted_hashes.extend(old.frame_hashes());
         }
         self.used_memory += data.len();
         self.id_to_data.insert(image_id, data);
@@ -79,20 +119,30 @@ impl ImageCache {
         self.id_to_data.get(&image_id)
     }
 
-    /// Remove an image by id.
-    /// Returns the content hash if the image existed, for atlas cleanup.
-    pub fn remove(&mut self, image_id: u32) -> Option<[u8; 32]> {
-        // Clean up number_to_id entries pointing to this id.
+    /// Remove an image and return the hashes of all frame buffers it owned.
+    pub fn remove_with_hashes(&mut self, image_id: u32) -> Option<Vec<[u8; 32]>> {
         self.number_to_id.retain(|_, v| *v != image_id);
-        if let Some(data) = self.id_to_data.remove(&image_id) {
+        self.id_to_data.remove(&image_id).map(|data| {
             self.used_memory = self.used_memory.saturating_sub(data.len());
-            Some(data.hash())
-        } else {
-            None
-        }
+            data.frame_hashes()
+        })
     }
 
-    /// Return all content hashes currently in the cache.
+    /// Remove an image by id, returning one aggregate hash for legacy callers.
+    pub fn remove(&mut self, image_id: u32) -> Option<[u8; 32]> {
+        self.remove_with_hashes(image_id)
+            .and_then(|hashes| hashes.into_iter().next())
+    }
+
+    /// Return the hashes of all frame buffers currently in the cache.
+    pub fn all_frame_hashes(&self) -> Vec<[u8; 32]> {
+        self.id_to_data
+            .values()
+            .flat_map(|data| data.frame_hashes())
+            .collect()
+    }
+
+    /// Return all aggregate content hashes currently in the cache.
     pub fn all_hashes(&self) -> Vec<[u8; 32]> {
         self.id_to_data.values().map(|d| d.hash()).collect()
     }
@@ -109,6 +159,7 @@ impl ImageCache {
 
     /// Remove all images and placements.
     pub fn clear(&mut self) {
+        self.evicted_hashes.extend(self.all_frame_hashes());
         self.id_to_data.clear();
         self.number_to_id.clear();
         self.used_memory = 0;
@@ -139,10 +190,15 @@ impl ImageCache {
             }
             if let Some(data) = self.id_to_data.remove(&id) {
                 self.number_to_id.retain(|_, mapped_id| *mapped_id != id);
-                let hash = data.hash();
+                let hashes = data.frame_hashes();
                 freed += data.len();
-                if !self.id_to_data.values().any(|other| other.hash() == hash) {
-                    self.evicted_hashes.push(hash);
+                if !self.id_to_data.values().any(|other| {
+                    other
+                        .frame_hashes()
+                        .into_iter()
+                        .any(|hash| hashes.contains(&hash))
+                }) {
+                    self.evicted_hashes.extend(hashes);
                 }
             }
         }
@@ -209,5 +265,15 @@ mod tests {
 
         assert_eq!(cache.used_memory, 16);
         assert_eq!(cache.get(0).expect("anonymous image").len(), 16);
+    }
+
+    #[test]
+    fn image_number_alias_survives_retransmit() {
+        let mut cache = ImageCache::new();
+        let id = cache.assign_id(None, Some(9));
+        cache.insert(id, image(8));
+        cache.insert(id, image(16));
+
+        assert_eq!(cache.resolve_id(None, Some(9)), Some(id));
     }
 }

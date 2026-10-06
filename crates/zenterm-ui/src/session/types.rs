@@ -7,7 +7,7 @@ use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -339,6 +339,14 @@ impl TerminalSession {
 
     pub(crate) fn mark_terminal_dirty(&mut self) {
         self.runtime.terminal_dirty = true;
+    }
+
+    pub(crate) fn advance_animations(&mut self, now: Instant) -> Option<Duration> {
+        let (changed, next) = self.runtime.terminal.advance_animations(now);
+        if changed {
+            self.runtime.terminal_dirty = true;
+        }
+        next
     }
 
     pub(crate) fn note_input_activity(&mut self) {

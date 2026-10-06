@@ -4,14 +4,14 @@
 //! Implements the protocol described at
 //! <https://github.com/kovidgoyal/kitty/blob/master/docs/graphics-protocol.rst>
 
+use base64::Engine as _;
+use image::load_from_memory;
+use image::{ColorType, GenericImageView, ImageDecoder};
 use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::path::{Component, Path};
 use std::sync::Arc;
-
-use base64::Engine as _;
-use image::load_from_memory;
-use image::{ColorType, GenericImageView, ImageDecoder};
+use std::time::Instant;
 
 use zenterm_core::image::{ImageData, ImageDataType, hash_bytes};
 
@@ -309,6 +309,8 @@ pub enum KittyImageDelete {
     },
     /// `d=f/F` — delete animation frames.
     DeleteAnimationFrames {
+        image_id: Option<u32>,
+        image_number: Option<u32>,
         delete: bool,
     },
     /// `d=q/Q` — delete by cell position + z-index intersection.
@@ -344,11 +346,12 @@ pub enum KittyFrameCompositionMode {
     Overwrite,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KittyImageFrame {
     pub x: Option<u32>,
     pub y: Option<u32>,
-    pub duration_ms: Option<u32>,
+    /// Signed Kitty `z` gap. Negative values are gapless frames.
+    pub duration_ms: Option<i32>,
     pub frame_number: Option<u32>,
     pub base_frame: Option<u32>,
     pub composition_mode: KittyFrameCompositionMode,
@@ -364,24 +367,35 @@ pub enum KittyAnimationAction {
     Run,     // s=3
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KittyAnimationControl {
-    pub action: KittyAnimationAction,
+    pub image_id: Option<u32>,
+    pub image_number: Option<u32>,
+    pub action: Option<KittyAnimationAction>,
     pub frame: Option<u32>,
-    pub gap_ms: Option<u32>,
+    pub gap_ms: Option<i32>,
     pub current_frame: Option<u32>,
     pub loops: Option<u32>,
 }
 
 impl KittyAnimationControl {
     fn from_keys(keys: &BTreeMap<&str, &str>) -> Option<Self> {
+        let action = match get(keys, "s") {
+            None | Some("0") => None,
+            Some("1") => Some(KittyAnimationAction::Stop),
+            Some("2") => Some(KittyAnimationAction::RunWait),
+            Some("3") => Some(KittyAnimationAction::Run),
+            _ => return None,
+        };
+        let image_id = geti(keys, "i");
+        let image_number = geti(keys, "I");
+        if image_id.is_some() == image_number.is_some() {
+            return None;
+        }
         Some(Self {
-            action: match get(keys, "s") {
-                Some("1") => KittyAnimationAction::Stop,
-                Some("2") => KittyAnimationAction::RunWait,
-                Some("3") => KittyAnimationAction::Run,
-                _ => return None,
-            },
+            image_id,
+            image_number,
+            action,
             frame: match geti(keys, "r") {
                 None | Some(0) => None,
                 n => n,
@@ -391,9 +405,9 @@ impl KittyAnimationControl {
                 None | Some(0) => None,
                 n => n,
             },
-            loops: match geti(keys, "v") {
-                None | Some(0) => None,
-                n => n,
+            loops: match geti::<u32>(keys, "v") {
+                None | Some(0) | Some(1) => None,
+                Some(n) => Some(n - 1),
             },
         })
     }
@@ -418,9 +432,14 @@ pub struct KittyImageFrameCompose {
 
 impl KittyImageFrameCompose {
     fn from_keys(keys: &BTreeMap<&str, &str>) -> Option<Self> {
+        let image_id = geti(keys, "i");
+        let image_number = geti(keys, "I");
+        if image_id.is_some() == image_number.is_some() {
+            return None;
+        }
         Some(Self {
-            image_id: geti(keys, "i"),
-            image_number: geti(keys, "I"),
+            image_id,
+            image_number,
             x: geti(keys, "x"),
             y: geti(keys, "y"),
             src_x: geti(keys, "X"),
@@ -527,11 +546,17 @@ impl KittyImage {
                 what: KittyImageDelete::from_keys(&keys)?,
                 verbosity,
             }),
-            "f" => Some(Self::TransmitFrame {
-                transmit: KittyImageTransmit::from_keys(&keys, payload)?,
-                frame: KittyImageFrame::from_keys(&keys)?,
-                verbosity,
-            }),
+            "f" => {
+                let transmit = KittyImageTransmit::from_keys(&keys, payload)?;
+                if transmit.image_id.is_some() == transmit.image_number.is_some() {
+                    return None;
+                }
+                Some(Self::TransmitFrame {
+                    transmit,
+                    frame: KittyImageFrame::from_keys(&keys)?,
+                    verbosity,
+                })
+            }
             "c" => Some(Self::ComposeFrame {
                 frame: KittyImageFrameCompose::from_keys(&keys)?,
                 verbosity,
@@ -672,7 +697,18 @@ impl KittyImageDelete {
                 z: geti(keys, "z")?,
                 delete,
             }),
-            'f' => Some(Self::DeleteAnimationFrames { delete }),
+            'f' => {
+                let image_id = geti(keys, "i");
+                let image_number = geti(keys, "I");
+                if image_id.is_some() == image_number.is_some() {
+                    return None;
+                }
+                Some(Self::DeleteAnimationFrames {
+                    image_id,
+                    image_number,
+                    delete,
+                })
+            }
             'q' => Some(Self::DeleteAtCellZ {
                 x: geti(keys, "x")?,
                 y: geti(keys, "y")?,
@@ -694,7 +730,7 @@ impl KittyImageFrame {
         Some(Self {
             x: geti(keys, "x"),
             y: geti(keys, "y"),
-            duration_ms: match geti(keys, "Z") {
+            duration_ms: match geti(keys, "z") {
                 None | Some(0) => None,
                 n => n,
             },
@@ -809,17 +845,11 @@ pub fn decode_image_frame(
     image_cache: &mut ImageCache,
 ) -> Result<(), String> {
     let image_id = match (transmit.image_id, transmit.image_number) {
-        (Some(id), _) => id,
-        (None, Some(no)) => {
-            // Look up the image_number mapping.
-            // We assign via `image_cache.assign_id` which tracks number_to_id.
-
-            image_cache.assign_id(None, Some(no))
-        }
-        (None, None) => {
-            // Use image id 0 (anonymous).
-            0
-        }
+        (Some(id), None) if id != 0 => id,
+        (None, Some(no)) if no != 0 => image_cache
+            .resolve_id(None, Some(no))
+            .ok_or("image_number not found for frame transmit")?,
+        _ => return Err("animation frame requires exactly one image ID or number".into()),
     };
 
     let raw = transmit.data.load_data()?;
@@ -850,7 +880,7 @@ pub fn decode_image_frame(
 
     let x = frame.x.unwrap_or(0);
     let y = frame.y.unwrap_or(0);
-    let composition_mode = frame.composition_mode; // 0=overlay, 1=replace
+    let composition_mode = frame.composition_mode;
     let background_pixel = frame.background_pixel.unwrap_or(0);
     let bg = image::Rgba([
         ((background_pixel >> 24) & 0xff) as u8,
@@ -863,6 +893,7 @@ pub fn decode_image_frame(
         .get(image_id)
         .ok_or("image_id not found for frame transmit")?;
     let mut guard = existing.data();
+    let mut frame_appended = false;
 
     match &mut *guard {
         ImageDataType::Rgba8 {
@@ -872,9 +903,7 @@ pub fn decode_image_frame(
             hash,
         } => {
             validate_image_dimensions(*width, *height)?;
-            let frame_no = frame.frame_number.unwrap_or(1);
-            if frame_no == 1 {
-                // Edit in place: blit the new data onto the existing frame.
+            if frame.frame_number == Some(1) {
                 let mut dest =
                     take_rgba_image(data, *width, *height, "invalid existing rgba data")?;
                 let src = image::RgbaImage::from_raw(frame_w, frame_h, frame_data)
@@ -883,30 +912,39 @@ pub fn decode_image_frame(
                 *data = Arc::new(dest.into_vec());
                 *hash = hash_bytes(data.as_slice());
             } else {
-                // Create a second frame: convert to AnimRgba8.
-                let bg_duration =
-                    std::time::Duration::from_millis(frame.duration_ms.unwrap_or(40) as u64);
-                let base = if frame.base_frame.unwrap_or(0) == 1 {
-                    data.as_ref().clone()
-                } else {
-                    [bg.0[0], bg.0[1], bg.0[2], bg.0[3]]
-                        .repeat(checked_image_len(*width, *height, 1)?)
+                if frame.frame_number.is_some_and(|number| number != 2) {
+                    return Err("new animation frames must be created as frame 2".into());
+                }
+                let width_value = *width;
+                let height_value = *height;
+                let duration_ms = frame.duration_ms.unwrap_or(40);
+                let base = match frame.base_frame {
+                    None => [bg.0[0], bg.0[1], bg.0[2], bg.0[3]].repeat(checked_image_len(
+                        width_value,
+                        height_value,
+                        1,
+                    )?),
+                    Some(1) => data.as_ref().clone(),
+                    Some(_) => return Err("base frame must be frame 1".into()),
                 };
-                let mut new_frame = image::RgbaImage::from_raw(*width, *height, base)
+                let mut new_frame = image::RgbaImage::from_raw(width_value, height_value, base)
                     .ok_or("invalid base frame")?;
                 let src = image::RgbaImage::from_raw(frame_w, frame_h, frame_data)
                     .ok_or("invalid frame data")?;
                 apply_blit(&mut new_frame, &src, x, y, composition_mode);
 
                 let old_data = std::mem::take(data);
+                let new_data = Arc::new(new_frame.into_vec());
                 *guard = ImageDataType::AnimRgba8 {
-                    width: *width,
-                    height: *height,
-                    frames: vec![old_data, Arc::new(new_frame.into_vec())],
-                    durations: vec![std::time::Duration::from_secs(0), bg_duration],
+                    width: width_value,
+                    height: height_value,
+                    frames: vec![old_data, new_data],
+                    durations: vec![0, duration_ms],
                     hashes: Vec::new(),
+                    current_frame: 0,
+                    playback: zenterm_core::image::AnimationPlayback::Stopped,
+                    next_frame_at: None,
                 };
-                // Recompute hashes.
                 if let ImageDataType::AnimRgba8 {
                     ref frames,
                     ref mut hashes,
@@ -923,11 +961,11 @@ pub fn decode_image_frame(
             frames,
             durations,
             hashes,
+            ..
         } => {
             validate_image_dimensions(*width, *height)?;
             let frame_no = frame.frame_number.unwrap_or(frames.len() as u32 + 1);
             if frame_no <= frames.len() as u32 {
-                // Edit existing frame in place.
                 let frame_idx = frame_no as usize - 1;
                 let mut dest = take_rgba_image(
                     &mut frames[frame_idx],
@@ -940,16 +978,24 @@ pub fn decode_image_frame(
                 apply_blit(&mut dest, &src, x, y, composition_mode);
                 frames[frame_idx] = Arc::new(dest.into_vec());
                 hashes[frame_idx] = hash_bytes(frames[frame_idx].as_slice());
+                if let Some(gap) = frame.duration_ms {
+                    durations[frame_idx] = gap;
+                }
             } else {
-                // Append a new frame.
-                let bg_duration =
-                    std::time::Duration::from_millis(frame.duration_ms.unwrap_or(40) as u64);
+                if frame
+                    .frame_number
+                    .is_some_and(|number| number != frames.len() as u32 + 1)
+                {
+                    return Err("new animation frames must be appended in frame order".into());
+                }
+                let gap = frame.duration_ms.unwrap_or(40);
                 let base = match frame.base_frame {
+                    None => [bg.0[0], bg.0[1], bg.0[2], bg.0[3]]
+                        .repeat(checked_image_len(*width, *height, 1)?),
                     Some(n) if n > 0 && n as usize <= frames.len() => {
                         frames[n as usize - 1].as_ref().clone()
                     }
-                    _ => [bg.0[0], bg.0[1], bg.0[2], bg.0[3]]
-                        .repeat(checked_image_len(*width, *height, 1)?),
+                    Some(_) => return Err("base frame is out of range".into()),
                 };
                 let mut new_frame = image::RgbaImage::from_raw(*width, *height, base)
                     .ok_or("invalid base frame")?;
@@ -957,12 +1003,16 @@ pub fn decode_image_frame(
                     .ok_or("invalid frame data")?;
                 apply_blit(&mut new_frame, &src, x, y, composition_mode);
                 frames.push(Arc::new(new_frame.into_vec()));
-                durations.push(bg_duration);
+                durations.push(gap);
                 hashes.push(hash_bytes(frames.last().unwrap().as_slice()));
+                frame_appended = true;
             }
         }
     }
     drop(guard);
+    if frame_appended {
+        existing.data().resume_loading_animation(Instant::now());
+    }
 
     Ok(())
 }
@@ -975,13 +1025,12 @@ pub fn handle_compose_frame(
     frame: KittyImageFrameCompose,
     image_cache: &mut ImageCache,
 ) -> Result<(), String> {
-    let image_id = match frame.image_id {
-        Some(id) => id,
-        None => {
-            let no = frame.image_number.ok_or("no image_id or image_number")?;
-            // Assign to look up or create mapping.
-            image_cache.assign_id(None, Some(no))
-        }
+    let image_id = match (frame.image_id, frame.image_number) {
+        (Some(id), None) if id != 0 => id,
+        (None, Some(no)) if no != 0 => image_cache
+            .resolve_id(None, Some(no))
+            .ok_or("image_number not found for compose")?,
+        _ => return Err("compose requires exactly one image ID or number".into()),
     };
 
     let existing = image_cache
@@ -1281,6 +1330,7 @@ pub struct KittyAccumulator {
     data_buf: Vec<u8>,
     transmit: Option<KittyImageTransmit>,
     placement: Option<KittyImagePlacement>,
+    frame: Option<KittyImageFrame>,
     verbosity: KittyImageVerbosity,
 }
 
@@ -1290,22 +1340,28 @@ impl KittyAccumulator {
     pub fn feed(&mut self, img: KittyImage) -> Result<Option<KittyImage>, String> {
         let more = match &img {
             KittyImage::TransmitData { transmit, .. }
-            | KittyImage::TransmitDataAndDisplay { transmit, .. } => transmit.more_data_follows,
+            | KittyImage::TransmitDataAndDisplay { transmit, .. }
+            | KittyImage::TransmitFrame { transmit, .. } => transmit.more_data_follows,
             _ => return Ok(Some(img)),
         };
         let is_first = self.transmit.is_none();
 
         if is_first {
-            let (tx, pl, verb) = match img {
+            let (tx, pl, frame, verb) = match img {
                 KittyImage::TransmitData {
                     transmit,
                     verbosity,
-                } => (transmit, None, verbosity),
+                } => (transmit, None, None, verbosity),
                 KittyImage::TransmitDataAndDisplay {
                     transmit,
                     placement,
                     verbosity,
-                } => (transmit, Some(placement), verbosity),
+                } => (transmit, Some(placement), None, verbosity),
+                KittyImage::TransmitFrame {
+                    transmit,
+                    frame,
+                    verbosity,
+                } => (transmit, None, Some(frame), verbosity),
                 _ => unreachable!(),
             };
             let bytes = tx.data.load_data()?;
@@ -1325,6 +1381,7 @@ impl KittyAccumulator {
                 more_data_follows: false,
             });
             self.placement = pl;
+            self.frame = frame;
             self.verbosity = verb;
             // The accumulator is empty on the first chunk, so take ownership
             // directly instead of copying the complete decoded chunk into a
@@ -1333,23 +1390,18 @@ impl KittyAccumulator {
         } else {
             match img {
                 KittyImage::TransmitData { transmit, .. }
-                | KittyImage::TransmitDataAndDisplay { transmit, .. } => {
-                    // Decode immediately — no intermediate storage.
-                    let bytes = transmit.data.load_data()?;
-                    let new_len = self
-                        .data_buf
-                        .len()
-                        .checked_add(bytes.len())
-                        .ok_or_else(|| "image transmission size overflow".to_string())?;
-                    if new_len > MAX_ACCUMULATED_IMAGE_BYTES {
-                        self.reset();
-                        return Err(format!(
-                            "image transmission exceeds {MAX_ACCUMULATED_IMAGE_BYTES} byte limit"
-                        ));
-                    }
-                    self.data_buf.extend_from_slice(&bytes);
+                | KittyImage::TransmitDataAndDisplay { transmit, .. }
+                    if self.frame.is_none() =>
+                {
+                    self.append_chunk(transmit)?;
                 }
-                _ => unreachable!(),
+                KittyImage::TransmitFrame { transmit, .. } if self.frame.is_some() => {
+                    self.append_chunk(transmit)?;
+                }
+                _ => {
+                    self.reset();
+                    return Err("mixed Kitty transmission kinds".into());
+                }
             }
         }
 
@@ -1383,26 +1435,55 @@ impl KittyAccumulator {
                     ..tx
                 };
                 let placement = self.placement.take();
-                return Ok(Some(match placement {
-                    Some(pl) => KittyImage::TransmitDataAndDisplay {
+                let frame = self.frame.take();
+                return Ok(Some(match (placement, frame) {
+                    (Some(pl), None) => KittyImage::TransmitDataAndDisplay {
                         transmit: assembled,
                         placement: pl,
                         verbosity: self.verbosity,
                     },
-                    None => KittyImage::TransmitData {
+                    (None, Some(frame)) => KittyImage::TransmitFrame {
+                        transmit: assembled,
+                        frame,
+                        verbosity: self.verbosity,
+                    },
+                    (None, None) => KittyImage::TransmitData {
                         transmit: assembled,
                         verbosity: self.verbosity,
                     },
+                    (Some(_), Some(_)) => {
+                        self.reset();
+                        return Err("invalid accumulated Kitty transmission".into());
+                    }
                 }));
             }
         }
         Ok(None)
     }
 
+    fn append_chunk(&mut self, transmit: KittyImageTransmit) -> Result<(), String> {
+        // Decode immediately — no intermediate storage.
+        let bytes = transmit.data.load_data()?;
+        let new_len = self
+            .data_buf
+            .len()
+            .checked_add(bytes.len())
+            .ok_or_else(|| "image transmission size overflow".to_string())?;
+        if new_len > MAX_ACCUMULATED_IMAGE_BYTES {
+            self.reset();
+            return Err(format!(
+                "image transmission exceeds {MAX_ACCUMULATED_IMAGE_BYTES} byte limit"
+            ));
+        }
+        self.data_buf.extend_from_slice(&bytes);
+        Ok(())
+    }
+
     fn reset(&mut self) {
         self.data_buf.clear();
         self.transmit = None;
         self.placement = None;
+        self.frame = None;
         self.verbosity = KittyImageVerbosity::default();
     }
 }
@@ -1445,6 +1526,156 @@ mod tests {
     fn test_parse_display() {
         let img = KittyImage::parse_apc(b"Ga=p,i=1,c=2,r=3").unwrap();
         assert!(matches!(img, KittyImage::Display { .. }));
+    }
+
+    #[test]
+    fn animation_commands_parse_signed_gaps_and_targets() {
+        let KittyImage::AnimationControl { control, .. } =
+            KittyImage::parse_apc(b"Ga=a,i=7,s=3,v=1,c=2,r=2,z=-9").unwrap()
+        else {
+            panic!("expected animation control");
+        };
+        assert_eq!(control.image_id, Some(7));
+        assert_eq!(control.current_frame, Some(2));
+        assert_eq!(control.gap_ms, Some(-9));
+        assert_eq!(control.loops, None);
+
+        let KittyImage::TransmitFrame { frame, .. } =
+            KittyImage::parse_apc(b"Ga=f,i=7,f=32,s=1,v=1,z=-4;AQIDBA==").unwrap()
+        else {
+            panic!("expected frame transmit");
+        };
+        assert_eq!(frame.duration_ms, Some(-4));
+        assert!(KittyImage::parse_apc(b"Ga=f,f=32,s=1,v=1;AQIDBA==").is_none());
+
+        let KittyImage::Delete {
+            what:
+                KittyImageDelete::DeleteAnimationFrames {
+                    image_id,
+                    image_number,
+                    delete,
+                },
+            ..
+        } = KittyImage::parse_apc(b"Ga=d,d=F,I=9").unwrap()
+        else {
+            panic!("expected animation-frame delete");
+        };
+        assert_eq!(image_id, None);
+        assert_eq!(image_number, Some(9));
+        assert!(delete);
+        assert!(KittyImage::parse_apc(b"Ga=d,d=f").is_none());
+    }
+
+    #[test]
+    fn frame_chunks_are_accumulated_before_decode() {
+        let first = KittyImage::parse_apc(b"Ga=f,i=7,f=32,s=1,v=1,m=1;AQ==").expect("first chunk");
+        let last = KittyImage::parse_apc(b"Ga=f,i=7,f=32,s=1,v=1,m=0;AgME").expect("last chunk");
+        let mut accumulator = KittyAccumulator::default();
+        assert!(accumulator.feed(first).unwrap().is_none());
+        let Some(KittyImage::TransmitFrame { transmit, .. }) = accumulator.feed(last).unwrap()
+        else {
+            panic!("expected assembled frame");
+        };
+        assert_eq!(transmit.data, KittyImageData::DirectBin(vec![1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn frame_creation_and_edit_validate_frame_order() {
+        let mut cache = ImageCache::new();
+        let root = KittyImageTransmit {
+            format: Some(KittyImageFormat::Rgba),
+            data: KittyImageData::DirectBin(vec![1, 2, 3, 255]),
+            width: Some(1),
+            height: Some(1),
+            image_id: Some(7),
+            image_number: None,
+            compression: KittyImageCompression::None,
+            more_data_follows: false,
+        };
+        assert_eq!(decode_image_data(root, &mut cache).unwrap(), 7);
+
+        let frame = KittyImageFrame {
+            x: None,
+            y: None,
+            duration_ms: Some(12),
+            frame_number: None,
+            base_frame: Some(1),
+            composition_mode: KittyFrameCompositionMode::Overwrite,
+            background_pixel: None,
+        };
+        decode_image_frame(
+            KittyImageTransmit {
+                format: Some(KittyImageFormat::Rgba),
+                data: KittyImageData::DirectBin(vec![9, 8, 7, 255]),
+                width: Some(1),
+                height: Some(1),
+                image_id: Some(7),
+                image_number: None,
+                compression: KittyImageCompression::None,
+                more_data_follows: false,
+            },
+            frame,
+            &mut cache,
+        )
+        .unwrap();
+        {
+            let data = cache.get(7).unwrap().data();
+            let ImageDataType::AnimRgba8 {
+                frames, durations, ..
+            } = &*data
+            else {
+                panic!("expected animation");
+            };
+            assert_eq!(frames.len(), 2);
+            assert_eq!(durations, &vec![0, 12]);
+        }
+
+        decode_image_frame(
+            KittyImageTransmit {
+                format: Some(KittyImageFormat::Rgba),
+                data: KittyImageData::DirectBin(vec![4, 5, 6, 255]),
+                width: Some(1),
+                height: Some(1),
+                image_id: Some(7),
+                image_number: None,
+                compression: KittyImageCompression::None,
+                more_data_follows: false,
+            },
+            KittyImageFrame {
+                frame_number: Some(2),
+                duration_ms: Some(-3),
+                ..frame
+            },
+            &mut cache,
+        )
+        .unwrap();
+        let data = cache.get(7).unwrap().data();
+        let ImageDataType::AnimRgba8 { durations, .. } = &*data else {
+            panic!("expected animation");
+        };
+        assert_eq!(durations, &vec![0, -3]);
+        drop(data);
+
+        assert!(
+            decode_image_frame(
+                KittyImageTransmit {
+                    format: Some(KittyImageFormat::Rgba),
+                    data: KittyImageData::DirectBin(vec![0, 0, 0, 255]),
+                    width: Some(1),
+                    height: Some(1),
+                    image_id: Some(7),
+                    image_number: None,
+                    compression: KittyImageCompression::None,
+                    more_data_follows: false,
+                },
+                KittyImageFrame {
+                    frame_number: Some(4),
+                    ..frame
+                },
+                &mut cache,
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -39,11 +39,11 @@ pub(super) fn emit_image_quad(
             height,
             frames,
             hashes,
+            current_frame,
             ..
         } => {
-            // Use the first frame for rendering (frame 0).
-            // FUTURE: cycle through frames based on timing.
-            let Some((data, hash)) = frames.first().zip(hashes.first()) else {
+            let Some((data, hash)) = frames.get(*current_frame).zip(hashes.get(*current_frame))
+            else {
                 return;
             };
             (ImagePixels::Shared(data), *width, *height, *hash)

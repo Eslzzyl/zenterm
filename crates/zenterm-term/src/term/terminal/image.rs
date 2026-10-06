@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::grid::Dimensions;
 
@@ -148,18 +149,24 @@ impl Terminal {
                 verbosity,
             } => {
                 log::debug!("[img] TransmitFrame");
+                let resp_id = transmit.image_id;
+                let resp_num = transmit.image_number;
                 let result = kitty::decode_image_frame(transmit, frame, &mut self.image_cache);
                 match &result {
                     Ok(()) => {
+                        self.damage.mark_all();
                         if verbosity != kitty::KittyImageVerbosity::Quiet {
-                            // No image_id readily available from frame result; respond generically.
-                            return Some(kitty::kitty_response(None, None, "OK"));
+                            return Some(kitty::kitty_response(resp_id, resp_num, "OK"));
                         }
                     }
                     Err(e) => {
                         log::error!("[img] frame transmit FAILED: {e}");
                         if verbosity != kitty::KittyImageVerbosity::OnlyErrors {
-                            return Some(kitty::kitty_response(None, None, &format!("ERROR:{e}")));
+                            return Some(kitty::kitty_response(
+                                resp_id,
+                                resp_num,
+                                &format!("ERROR:{e}"),
+                            ));
                         }
                     }
                 }
@@ -172,6 +179,7 @@ impl Terminal {
                 let result = kitty::handle_compose_frame(frame, &mut self.image_cache);
                 match &result {
                     Ok(()) => {
+                        self.damage.mark_all();
                         if verbosity != kitty::KittyImageVerbosity::Quiet {
                             return Some(kitty::kitty_response(resp_id, resp_num, "OK"));
                         }
@@ -196,17 +204,77 @@ impl Terminal {
                     control.frame,
                     control.gap_ms,
                 );
-                // Animation playback control is not yet supported; return error.
-                if verbosity != kitty::KittyImageVerbosity::OnlyErrors {
-                    return Some(kitty::kitty_response(
-                        None,
-                        None,
-                        "ERROR: animation control not implemented",
-                    ));
+                let resp_id = control.image_id;
+                let resp_num = control.image_number;
+                let result = self.handle_kitty_animation(control);
+                match &result {
+                    Ok(()) => {
+                        if verbosity != kitty::KittyImageVerbosity::Quiet {
+                            return Some(kitty::kitty_response(resp_id, resp_num, "OK"));
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("[img] animation control FAILED: {e}");
+                        if verbosity != kitty::KittyImageVerbosity::OnlyErrors {
+                            return Some(kitty::kitty_response(
+                                resp_id,
+                                resp_num,
+                                &format!("ERROR:{e}"),
+                            ));
+                        }
+                    }
                 }
                 None
             }
         }
+    }
+
+    fn handle_kitty_animation(
+        &mut self,
+        control: kitty::KittyAnimationControl,
+    ) -> Result<(), String> {
+        let image_id = self
+            .image_cache
+            .resolve_id(control.image_id, control.image_number)
+            .ok_or("image_id not found for animation control")?;
+        let image = self
+            .image_cache
+            .get(image_id)
+            .cloned()
+            .ok_or("image_id not found for animation control")?;
+        let now = Instant::now();
+        let mut data = image.data();
+
+        if let Some(frame) = control.current_frame {
+            data.set_animation_current_frame(frame as usize, now)?;
+        }
+        if let Some(gap) = control.gap_ms {
+            let frame = control.frame.or(control.current_frame).unwrap_or(1) as usize;
+            data.set_animation_gap(frame, gap, now)?;
+        }
+        match control.action {
+            Some(kitty::KittyAnimationAction::Stop) => data.stop_animation(),
+            Some(kitty::KittyAnimationAction::RunWait) => {
+                data.start_animation(true, control.loops, now)?
+            }
+            Some(kitty::KittyAnimationAction::Run) => {
+                data.start_animation(false, control.loops, now)?
+            }
+            None => {}
+        }
+        drop(data);
+        self.damage.mark_all();
+        Ok(())
+    }
+
+    /// Advance running Kitty animations and return whether the terminal must
+    /// be re-rendered plus the nearest future wake-up interval.
+    pub fn advance_animations(&mut self, now: Instant) -> (bool, Option<Duration>) {
+        let result = self.image_cache.advance_animations(now);
+        if result.0 {
+            self.damage.mark_all();
+        }
+        result
     }
 
     fn kitty_place_image(
@@ -595,15 +663,12 @@ impl Terminal {
         (columns.min(max_cols), Some(rows_out.min(max_rows)))
     }
 
-    fn handle_kitty_delete(&mut self, what: kitty::KittyImageDelete) {
+    pub(crate) fn handle_kitty_delete(&mut self, what: kitty::KittyImageDelete) {
         match what {
             kitty::KittyImageDelete::All { delete } => {
                 self.image_placements.clear();
                 self.virtual_placements.clear();
                 if delete {
-                    // Collect all hashes before clearing for atlas cleanup.
-                    let hashes: Vec<[u8; 32]> = self.image_cache.all_hashes();
-                    self.pending_image_deallocations.extend(hashes);
                     self.image_cache.clear();
                 }
             }
@@ -621,30 +686,27 @@ impl Terminal {
                 self.virtual_placements.retain(|(id, pid), _| {
                     *id != image_id || placement_id.is_some_and(|p| *pid != Some(p))
                 });
-                if delete && let Some(hash) = self.image_cache.remove(image_id) {
-                    self.pending_image_deallocations.push(hash);
+                if delete && let Some(hashes) = self.image_cache.remove_with_hashes(image_id) {
+                    self.pending_image_deallocations.extend(hashes);
                 }
             }
             kitty::KittyImageDelete::ByImageNumber {
-                image_number: _,
+                image_number,
                 placement_id,
                 delete,
             } => {
-                // Look up the image_id from the number mapping.
-                let ids: Vec<u32> = self
-                    .image_placements
-                    .iter()
-                    .filter(|(_, v)| v.placement_id == placement_id)
-                    .filter_map(|(_, v)| v.image_id)
-                    .collect();
-                for id in ids {
-                    self.image_placements.retain(|_, v| v.image_id != Some(id));
-                    self.virtual_placements.retain(|(vid, pid), _| {
-                        *vid != id || placement_id.is_some_and(|p| *pid != Some(p))
-                    });
-                    if delete {
-                        self.image_cache.remove(id);
-                    }
+                let Some(id) = self.image_cache.resolve_id(None, Some(image_number)) else {
+                    return;
+                };
+                self.image_placements.retain(|_, v| {
+                    v.image_id != Some(id)
+                        || placement_id.is_some_and(|p| v.placement_id != Some(p))
+                });
+                self.virtual_placements.retain(|(vid, pid), _| {
+                    *vid != id || placement_id.is_some_and(|p| *pid != Some(p))
+                });
+                if delete && let Some(hashes) = self.image_cache.remove_with_hashes(id) {
+                    self.pending_image_deallocations.extend(hashes);
                 }
             }
             kitty::KittyImageDelete::AtCursorPosition { delete } => {
@@ -681,54 +743,44 @@ impl Terminal {
             kitty::KittyImageDelete::DeleteZ { z, delete: _ } => {
                 self.image_placements.retain(|_, v| v.z_index != z);
             }
-            kitty::KittyImageDelete::DeleteAnimationFrames { delete } => {
-                // For each image in the cache, if it is animated (AnimRgba8),
-                // convert it to single-frame Rgba8 (keep first frame only).
-                // Then remove all placements for that image.
-                let all_ids: Vec<u32> = self.image_cache.all_image_ids();
-                for id in all_ids {
-                    let dominated = self
-                        .image_cache
-                        .get(id)
-                        .map(|d| {
-                            let guard = d.data();
-                            matches!(
-                                &*guard,
-                                zenterm_core::image::ImageDataType::AnimRgba8 { .. }
-                            )
-                        })
-                        .unwrap_or(false);
+            kitty::KittyImageDelete::DeleteAnimationFrames {
+                image_id,
+                image_number,
+                delete,
+            } => {
+                let Some(id) = self.image_cache.resolve_id(image_id, image_number) else {
+                    log::warn!(
+                        "[img] animation-frame delete target not found: id={image_id:?}, \
+                         number={image_number:?}"
+                    );
+                    return;
+                };
 
-                    if dominated {
-                        // Convert AnimRgba8 → Rgba8 (keep first frame).
-                        if let Some(d) = self.image_cache.get(id) {
-                            let mut guard = d.data();
-                            if let zenterm_core::image::ImageDataType::AnimRgba8 {
-                                ref width,
-                                ref height,
-                                ref frames,
-                                ..
-                            } = *guard
-                                && let Some(first_frame) = frames.first()
-                            {
-                                let new_data = zenterm_core::image::ImageDataType::new_rgba8(
-                                    first_frame.as_ref().clone(),
-                                    *width,
-                                    *height,
-                                );
-                                *guard = new_data;
-                            }
-                        }
-                        // Remove all placements for this image since animation changed.
-                        self.image_placements.retain(|_, v| v.image_id != Some(id));
-                        self.virtual_placements.retain(|(vid, _), _| *vid != id);
+                if delete {
+                    self.image_placements.retain(|_, v| v.image_id != Some(id));
+                    self.virtual_placements.retain(|(vid, _), _| *vid != id);
+                    if let Some(hashes) = self.image_cache.remove_with_hashes(id) {
+                        self.pending_image_deallocations.extend(hashes);
                     }
-                    if delete {
-                        if let Some(hash) = self.image_cache.remove(id) {
-                            self.pending_image_deallocations.push(hash);
+                } else {
+                    // Lowercase d=f removes animation state but keeps the
+                    // root frame, image identity, and all placements alive.
+                    if let Some(data) = self.image_cache.get(id) {
+                        let mut guard = data.data();
+                        if let zenterm_core::image::ImageDataType::AnimRgba8 {
+                            width,
+                            height,
+                            frames,
+                            ..
+                        } = &*guard
+                            && let Some(root) = frames.first()
+                        {
+                            *guard = zenterm_core::image::ImageDataType::new_rgba8(
+                                root.as_ref().clone(),
+                                *width,
+                                *height,
+                            );
                         }
-                        self.image_placements.retain(|_, v| v.image_id != Some(id));
-                        self.virtual_placements.retain(|(vid, _), _| *vid != id);
                     }
                 }
             }
@@ -756,8 +808,9 @@ impl Terminal {
                     .collect();
                 for id in ids_to_delete {
                     self.image_placements.retain(|_, v| v.image_id != Some(id));
-                    if delete && let Some(hash) = self.image_cache.remove(id) {
-                        self.pending_image_deallocations.push(hash);
+                    self.virtual_placements.retain(|(vid, _), _| *vid != id);
+                    if delete && let Some(hashes) = self.image_cache.remove_with_hashes(id) {
+                        self.pending_image_deallocations.extend(hashes);
                     }
                 }
             }

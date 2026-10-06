@@ -870,4 +870,79 @@ mod tests {
         assert!(terminal.image_placements.is_empty());
         assert_eq!(terminal.pending_image_deallocations, vec![hash]);
     }
+
+    #[test]
+    fn animation_frame_delete_keeps_or_frees_root_and_placements() {
+        use std::sync::Arc;
+
+        use zenterm_core::image::{ImageCell, ImageData, ImageDataType, TextureCoordinate};
+
+        let mut terminal = Terminal::new(
+            TermSize::new(3, 4, 0, 0),
+            ColorScheme::default(),
+            CursorPrefs::default(),
+        );
+        let data = Arc::new(ImageData::new(ImageDataType::new_anim_rgba8_with_gaps(
+            vec![vec![1, 2, 3, 255], vec![9, 8, 7, 255]],
+            vec![0, 10],
+            1,
+            1,
+        )));
+        terminal.image_cache.insert(7, Arc::clone(&data));
+        let mut cell = ImageCell::new(
+            TextureCoordinate::new(0.0, 0.0),
+            TextureCoordinate::new(1.0, 1.0),
+            data,
+        );
+        cell.image_id = Some(7);
+        terminal.image_placements.insert((0, 0), cell);
+
+        terminal.handle_kitty_delete(
+            crate::image::kitty::KittyImageDelete::DeleteAnimationFrames {
+                image_id: Some(7),
+                image_number: None,
+                delete: false,
+            },
+        );
+        assert!(terminal.image_placements.contains_key(&(0, 0)));
+        assert!(matches!(
+            &*terminal.image_cache.get(7).unwrap().data(),
+            ImageDataType::Rgba8 { .. }
+        ));
+
+        terminal.handle_kitty_delete(
+            crate::image::kitty::KittyImageDelete::DeleteAnimationFrames {
+                image_id: Some(7),
+                image_number: None,
+                delete: true,
+            },
+        );
+        assert!(terminal.image_placements.is_empty());
+        assert!(terminal.image_cache.get(7).is_none());
+        assert!(!terminal.pending_image_deallocations.is_empty());
+    }
+
+    #[test]
+    fn kitty_animation_protocol_starts_and_advances() {
+        use std::time::Instant;
+
+        let mut terminal = Terminal::new(
+            TermSize::new(3, 4, 0, 0),
+            ColorScheme::default(),
+            CursorPrefs::default(),
+        );
+        terminal.feed(b"\x1b_Gi=7,f=32,s=1,v=1;AQIDBA==\x1b\\");
+        terminal.feed(b"\x1b_Ga=f,i=7,f=32,s=1,v=1,c=1;CQgH/w==\x1b\\");
+        terminal.feed(b"\x1b_Ga=a,i=7,s=3,v=1\x1b\\");
+
+        let now = Instant::now();
+        let (changed, next) = terminal.advance_animations(now);
+        assert!(changed);
+        assert!(next.is_some());
+        let data = terminal.image_cache.get(7).unwrap().data();
+        let zenterm_core::image::ImageDataType::AnimRgba8 { current_frame, .. } = &*data else {
+            panic!("expected animated image");
+        };
+        assert_eq!(*current_frame, 1);
+    }
 }

@@ -440,6 +440,21 @@ impl eframe::App for ZentermApp {
         // 1. Pump PTY for every session.
         self.pump_pty_active_sessions();
 
+        // 1.25. Advance Kitty animations even when the PTY is idle.
+        let now = Instant::now();
+        let mut animation_repaint = None;
+        for session in self.sessions.values_mut() {
+            if let Some(delay) = session.advance_animations(now) {
+                animation_repaint = Some(
+                    animation_repaint
+                        .map_or(delay, |current: std::time::Duration| current.min(delay)),
+                );
+            }
+        }
+        if let Some(delay) = animation_repaint {
+            ctx.request_repaint_after(delay.max(std::time::Duration::from_millis(1)));
+        }
+
         // 1.5. Side-effects.
         self.handle_side_effects(ctx);
 
