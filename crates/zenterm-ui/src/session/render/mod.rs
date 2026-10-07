@@ -13,6 +13,7 @@ mod pass3;
 
 use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::vte::ansi::CursorShape;
+use unicode_width::UnicodeWidthChar;
 
 use zenterm_core::Rgba;
 use zenterm_glyph::{GlyphContentType, GlyphStyle};
@@ -40,6 +41,61 @@ fn clear_high_water_buffer<T>(buffer: &mut Vec<T>) {
     buffer.clear();
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreeditGlyph {
+    ch: char,
+    cell_offset: usize,
+    cell_width: usize,
+}
+
+fn unicode_cell_width(ch: char) -> usize {
+    ch.width().unwrap_or(1).max(1)
+}
+
+fn build_preedit_layout(text: &str) -> Vec<PreeditGlyph> {
+    let mut cell_offset = 0;
+    text.chars()
+        .map(|ch| {
+            let cell_width = unicode_cell_width(ch);
+            let glyph = PreeditGlyph {
+                ch,
+                cell_offset,
+                cell_width,
+            };
+            cell_offset += cell_width;
+            glyph
+        })
+        .collect()
+}
+
+fn preedit_glyph_at(layout: &[PreeditGlyph], cell_offset: usize) -> Option<PreeditGlyph> {
+    layout
+        .iter()
+        .find(|glyph| {
+            cell_offset >= glyph.cell_offset && cell_offset < glyph.cell_offset + glyph.cell_width
+        })
+        .copied()
+}
+
+/// Return whether a monochrome glyph may preserve horizontal overhang.
+fn may_overflow_into_empty_cell(
+    content_type: GlyphContentType,
+    num_cells: f32,
+    glyph_cell_width: usize,
+    next_cell: Option<&zenterm_core::Cell>,
+) -> bool {
+    matches!(content_type, GlyphContentType::Mask)
+        && (glyph_cell_width > 1
+            || (num_cells == 1.0 && next_cell.is_some_and(|cell| cell.c == ' ' && !cell.is_spacer)))
+}
+
+fn should_skip_wide_continuation(
+    num_cells: f32,
+    is_preedit: bool,
+    next_cell: Option<&zenterm_core::Cell>,
+) -> bool {
+    num_cells >= 2.0 && !is_preedit && next_cell.is_some_and(|cell| cell.c == ' ' || cell.is_spacer)
+}
 impl TerminalSession {
     /// Append the cached instances for a session to the current staging
     /// frame. The shared GPU callback covers all visible tabs, so a full
@@ -183,14 +239,13 @@ impl TerminalSession {
             return false;
         }
 
-        // When IME preedit is active, advance the visual cursor to the
-        // end of the composing text so the cursor follows the input.
-        let preedit_advance = self
-            .input
-            .preedit_text
-            .as_ref()
-            .map(|t| t.chars().count())
-            .unwrap_or(0);
+        // When IME preedit is active, lay out the composing text in terminal
+        // cells so wide characters advance by two cells.
+        let preedit_layout = self.input.preedit_text.as_deref().map(build_preedit_layout);
+        let preedit_advance = preedit_layout
+            .as_deref()
+            .and_then(|layout| layout.last())
+            .map_or(0, |glyph| glyph.cell_offset + glyph.cell_width);
         let cursor_col = (cursor_orig_col + preedit_advance).min(cols.saturating_sub(1));
 
         let baseline = atlas.cell_baseline_offset();
@@ -297,18 +352,36 @@ impl TerminalSession {
                     }
                 };
 
+                // The leading cell owns the full wide glyph quad and its
+                // background. Rendering the spacer independently would
+                // overwrite the second half, which is visible with a block
+                // cursor or a selection background.
+                if cell.is_spacer {
+                    col += 1;
+                    continue;
+                }
+
                 let mut ch_char = cell.c;
 
-                let is_preedit = self.input.preedit_text.as_ref().is_some_and(|preedit| {
-                    row == cursor_row
-                        && col >= cursor_orig_col
-                        && col - cursor_orig_col < preedit.chars().count()
-                });
-                if is_preedit
-                    && let Some(ref preedit) = self.input.preedit_text
-                    && let Some(c) = preedit.chars().nth(col - cursor_orig_col)
-                {
-                    ch_char = c;
+                let preedit_cell = if row == cursor_row {
+                    col.checked_sub(cursor_orig_col).and_then(|cell_offset| {
+                        preedit_layout
+                            .as_deref()
+                            .and_then(|layout| preedit_glyph_at(layout, cell_offset))
+                            .map(|glyph| (cell_offset, glyph))
+                    })
+                } else {
+                    None
+                };
+                let is_preedit = preedit_cell.is_some();
+                let is_preedit_continuation = preedit_cell
+                    .is_some_and(|(cell_offset, glyph)| cell_offset != glyph.cell_offset);
+                if let Some((cell_offset, glyph)) = preedit_cell {
+                    ch_char = if cell_offset == glyph.cell_offset {
+                        glyph.ch
+                    } else {
+                        ' '
+                    };
                 }
 
                 let is_blank = ch_char == ' ';
@@ -380,6 +453,7 @@ impl TerminalSession {
                 let ligature_eligible = ligatures_enabled
                     && run_end > run_start + 1
                     && !is_blank
+                    && !is_preedit
                     && run_end != last_checked_run_end;
                 if ligature_eligible {
                     let outcome = process_ligature_run(
@@ -451,14 +525,21 @@ impl TerminalSession {
                     }
                 }
 
-                let num_cells: f32 = if col + 1 < cols {
+                let grid_num_cells: f32 = if col + 1 < cols {
                     grid.cell(row, col + 1)
                         .map_or(1.0, |c| if c.is_spacer { 2.0 } else { 1.0 })
                 } else {
                     1.0
                 };
+                let num_cells: f32 = if preedit_cell
+                    .is_some_and(|(cell_offset, glyph)| cell_offset == glyph.cell_offset)
+                {
+                    preedit_cell.map_or(1.0, |(_, glyph)| glyph.cell_width as f32)
+                } else {
+                    grid_num_cells.max(unicode_cell_width(ch_char) as f32)
+                };
 
-                if !is_cursor || is_block_cursor {
+                if !is_preedit_continuation && (!is_cursor || is_block_cursor) {
                     let cell_bg = if is_sel { sel_bg } else { draw_bg };
                     emit_background_quad(
                         &mut self.view.cached_bg,
@@ -565,18 +646,34 @@ impl TerminalSession {
                         scaled_h = clipped_h;
                     }
 
-                    let glyph_right_px = glyph_x_px + scaled_w;
-                    let clipped_left = glyph_x_px.max(cell_left);
-                    let clipped_right = glyph_right_px.min(cell_right);
-                    let clipped_w = (clipped_right - clipped_left).max(0.0);
-                    if clipped_w < scaled_w && scaled_w > 0.0 {
-                        let r_left = (clipped_left - glyph_x_px) / scaled_w;
-                        let r_right = (clipped_right - glyph_x_px) / scaled_w;
-                        let u_range = u_max - u_min;
-                        u_min += r_left * u_range;
-                        u_max = u_min + (r_right - r_left) * u_range;
-                        glyph_x_px = clipped_left;
-                        scaled_w = clipped_w;
+                    // Match WezTerm's default "WhenFollowedBySpace" policy
+                    // for monochrome glyphs: preserve a glyph's intentional
+                    // horizontal overhang when the following terminal cell
+                    // is empty.  MASK uses coverage alpha, so transparent
+                    // atlas pixels leave that cell unchanged.  SUBPIXEL
+                    // pre-composes the source cell background and COLOR has
+                    // its own transparent-pixel semantics; keep both paths
+                    // clipped until their blend equations support overhang.
+                    let allow_horizontal_overflow = may_overflow_into_empty_cell(
+                        ct,
+                        num_cells,
+                        unicode_cell_width(ch_char),
+                        (col + 1 < cols).then(|| grid.cell(row, col + 1)).flatten(),
+                    );
+                    if !allow_horizontal_overflow {
+                        let glyph_right_px = glyph_x_px + scaled_w;
+                        let clipped_left = glyph_x_px.max(cell_left);
+                        let clipped_right = glyph_right_px.min(cell_right);
+                        let clipped_w = (clipped_right - clipped_left).max(0.0);
+                        if clipped_w < scaled_w && scaled_w > 0.0 {
+                            let r_left = (clipped_left - glyph_x_px) / scaled_w;
+                            let r_right = (clipped_right - glyph_x_px) / scaled_w;
+                            let u_range = u_max - u_min;
+                            u_min += r_left * u_range;
+                            u_max = u_min + (r_right - r_left) * u_range;
+                            glyph_x_px = clipped_left;
+                            scaled_w = clipped_w;
+                        }
                     }
 
                     let (glyph_fg, glyph_bg) = if is_cursor && !is_block_cursor {
@@ -681,7 +778,16 @@ impl TerminalSession {
                     );
                 }
 
-                col += 1;
+                let advance = if should_skip_wide_continuation(
+                    num_cells,
+                    is_preedit,
+                    (col + 1 < cols).then(|| grid.cell(row, col + 1)).flatten(),
+                ) {
+                    2
+                } else {
+                    1
+                };
+                col += advance;
             }
         }
 
@@ -784,5 +890,97 @@ mod tests {
 
         assert_eq!(buffer.len(), 0);
         assert!(buffer.capacity() < old_capacity);
+    }
+
+    #[test]
+    fn mask_glyph_overflow_policy() {
+        let blank = zenterm_core::Cell::blank();
+        let text =
+            zenterm_core::Cell::new('x', zenterm_core::Rgba::WHITE, zenterm_core::Rgba::BLACK);
+        let mut spacer = blank.clone();
+        spacer.is_spacer = true;
+
+        assert!(may_overflow_into_empty_cell(
+            GlyphContentType::Mask,
+            1.0,
+            1,
+            Some(&blank),
+        ));
+        assert!(!may_overflow_into_empty_cell(
+            GlyphContentType::Mask,
+            1.0,
+            1,
+            Some(&text),
+        ));
+        assert!(may_overflow_into_empty_cell(
+            GlyphContentType::Mask,
+            1.0,
+            2,
+            Some(&text),
+        ));
+        assert!(!may_overflow_into_empty_cell(
+            GlyphContentType::Mask,
+            2.0,
+            1,
+            Some(&blank),
+        ));
+        assert!(!may_overflow_into_empty_cell(
+            GlyphContentType::Subpixel,
+            1.0,
+            1,
+            Some(&blank),
+        ));
+        assert!(!may_overflow_into_empty_cell(
+            GlyphContentType::Mask,
+            1.0,
+            1,
+            Some(&spacer),
+        ));
+    }
+
+    #[test]
+    fn wide_glyph_skips_empty_continuation_cell() {
+        let blank = zenterm_core::Cell::blank();
+        let text =
+            zenterm_core::Cell::new('x', zenterm_core::Rgba::WHITE, zenterm_core::Rgba::BLACK);
+        let mut spacer = blank.clone();
+        spacer.is_spacer = true;
+
+        assert!(should_skip_wide_continuation(2.0, false, Some(&blank)));
+        assert!(should_skip_wide_continuation(2.0, false, Some(&spacer)));
+        assert!(!should_skip_wide_continuation(2.0, false, Some(&text)));
+        assert!(!should_skip_wide_continuation(2.0, true, Some(&blank)));
+    }
+    #[test]
+    fn preedit_layout_uses_terminal_cell_widths() {
+        assert_eq!(unicode_cell_width('询'), 2);
+        assert_eq!(unicode_cell_width('建'), 2);
+        assert_eq!(unicode_cell_width('a'), 1);
+
+        let layout = build_preedit_layout("询建a");
+
+        assert_eq!(
+            layout,
+            vec![
+                PreeditGlyph {
+                    ch: '询',
+                    cell_offset: 0,
+                    cell_width: 2,
+                },
+                PreeditGlyph {
+                    ch: '建',
+                    cell_offset: 2,
+                    cell_width: 2,
+                },
+                PreeditGlyph {
+                    ch: 'a',
+                    cell_offset: 4,
+                    cell_width: 1,
+                },
+            ]
+        );
+        assert_eq!(preedit_glyph_at(&layout, 1), Some(layout[0]));
+        assert_eq!(preedit_glyph_at(&layout, 2), Some(layout[1]));
+        assert_eq!(preedit_glyph_at(&layout, 5), None);
     }
 }

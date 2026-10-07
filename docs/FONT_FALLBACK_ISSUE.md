@@ -1,16 +1,14 @@
-# 字体回退与渲染问题分析记录 (Font Fallback & Rendering Analysis)
+# 汉字字体回退与粗体跳跃问题分析记录 (Han Fallback & Bold Inconsistency Analysis)
 
 ## 1. 现象描述
 
-在终端文本渲染中，目前存在两个关键的字形视觉问题：
+在终端文本渲染中，目前存在关键的汉字粗体 Fallback 异变与跳跃问题：
 
-1. **单格字形横向溢出裁切（Nerd Font Overhang Clipping）**：
-   部分单格字形（如 Nerd Font 图标、特定符号）在设计上带有向右的自然溢出（overhang）。当前渲染管线中执行了严格的基于 cell 边界的 CPU 端裁剪（`clipped_right = glyph_right_px.min(cell_right)`），导致图标右侧笔画被硬性截断。在 WezTerm 等终端中，当字形后继单元格为空格时，允许单格字形向右溢出（即 `WhenFollowedBySpace` 策略）。
-2. **CJK 汉字粗体 Fallback 异变与跳跃（Han Bold Fallback Inconsistency）**：
-   在常规字重（Normal / 400）下，常用汉字能正确匹配到系统默认字体；但在粗体（Bold / 700）下，相邻汉字会发生混乱的字体跳跃。例如：
-   * `构`、`询` 解析为宋体（`Songti SC`，衬线体）；
-   * `建` 解析为韩文字体（`Apple SD Gothic Neo`）；
-   * 同一行中文混杂了黑体、宋体和韩文字形，且各字符字面率与基线不一致。
+* **CJK 汉字粗体 Fallback 异变与跳跃（Han Bold Fallback Inconsistency）**：
+  在常规字重（Normal / 400）下，常用汉字能正确匹配到系统默认字体；但在粗体（Bold / 700）下，相邻汉字会发生混乱的跨字体跳跃。例如：
+  * `构`、`询` 解析为宋体（`Songti SC`，衬线体）；
+  * `建` 解析为韩文字体（`Apple SD Gothic Neo`）；
+  * 同一行中文混杂了黑体、宋体和韩文字形，且各字符字面率与基线不一致。
 
 ---
 
@@ -78,10 +76,8 @@ zenterm 采用纯 Rust 字体栈（`cosmic-text + fontdb + swash`）。在排查
 
 未来在彻底修复该问题时，建议遵循以下跨平台、零配置的重构路径：
 
-1. **水平溢出裁切策略解耦**：
-   针对 MASK 类型的单格字形，实现 `WhenFollowedBySpace` 逻辑：当后继单元格为空格时允许水平溢出绘制，后继有文字或非空格时保留水平裁剪。垂直方向维持原有固定行高裁切。
-2. **文字系统级回退调度器**：
-   在 `zenterm-glyph` 中抽象一个通用的文字系统回退解析层：
-   * 字符缺失时，识别其 Unicode Script；
-   * 在启动时已加载的系统字体（`fontdb`）中，根据 Script 覆盖范围和系统 Locale，动态选定该文字系统的承载字族；
-   * 该字族确立后，后续样式（Bold / Italic）统一通过 `fontdb` 的标准 CSS 匹配查询具体的 `fontdb::ID`，使粗体自然降级至 Semibold 或对应粗面，根治跨字体跳变。
+* **文字系统级回退调度器**：
+  在 `zenterm-glyph` 中抽象一个通用的文字系统回退解析层：
+  1. 字符缺失时，识别其 Unicode Script；
+  2. 在启动时已加载的系统字体（`fontdb`）中，根据 Script 覆盖范围和系统 Locale，动态选定该文字系统的承载字族；
+  3. 该字族确立后，后续样式（Bold / Italic）统一通过 `fontdb` 的标准 CSS 匹配查询具体的 `fontdb::ID`，使粗体自然降级至 Semibold 或对应粗面，根治跨字体跳变。

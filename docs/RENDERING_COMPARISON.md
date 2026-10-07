@@ -115,70 +115,81 @@ result = fg × 0 + framebuffer × 1 = framebuffer  （保持原样）
 
 ### Zenterm：标准 Alpha 混合
 
-Zenterm 的 fragment shader 只有一个输出，`bg_color` 被烘焙进结果：
+当前 Zenterm 的 MASK fragment shader 输出纯前景色和 coverage alpha：
 
 ```wgsl
-// MASK glyph fragment shader
 let alpha = texel.r;
 return vec4<f32>(
-    bg_r + (fg_r - bg_r) * alpha,    // mix(bg, fg, α)
-    bg_g + (fg_g - bg_g) * alpha,
-    bg_b + (fg_b - bg_b) * alpha,
-    1.0,
+    linear_to_srgb(fg_r),
+    linear_to_srgb(fg_g),
+    linear_to_srgb(fg_b),
+    alpha,
 );
 ```
 
-GPU 混合方程（预乘 Alpha）：
+GPU 混合方程：
 
-```
-result = src × 1 + dst × (1 - src_alpha)
-       = mix(bg, fg, α) × 1 + framebuffer × 0
-       = mix(bg, fg, α)
+```text
+result = fg × coverage + framebuffer × (1 - coverage)
 ```
 
-**关键效果**：当 `coverage = 0`（透明像素）时：
+当 `coverage = 0` 时，fragment alpha 为 0，透明 atlas 像素不会修改
+framebuffer。因此 MASK 字形在后继 cell 为空时可以保留横向 overhang。
 
-```
-result = mix(bg, fg, 0) = bg_color  （输出背景色！）
-```
+SUBPIXEL 仍在 shader 中预混合 `bg_color`，COLOR 字形也有独立的透明像素
+处理路径。这两类字形继续使用水平 cell 裁切。
 
-透明像素**输出 bg_color**。glyph quad 溢出到相邻 cell 时，溢出区域会画上 `bg_color`，覆盖相邻 cell 的内容。
-
-参考代码：`crates/zenterm-render/src/lib.rs:493-501`
+参考代码：`crates/zenterm-render/src/shaders.rs:147-199`
 
 ---
 
-## 4. 字形溢出与裁剪
+## 4. 字形溢出与裁切
 
 ### 为什么字形会溢出 cell
 
-swash 光栅化 glyph 时，位图的包围盒可能超出 cell 边界：
+swash 光栅化 glyph 时，位图的包围盒可能超出 cell：
 
 1. **Bézier 控制点溢出**：矢量轮廓的控制点可以超出实际曲线，导致包围盒偏大
 2. **像素对齐的 floor/ceil**：包围盒对齐到像素网格时，上下各可能多出 1px
 3. **OS/2 度量与实际轮廓不一致**：字体的 ascent/descent 是排版建议值，个别字符的轮廓可以超出
 
-### Alacritty：不需要裁剪
+### Alacritty
 
-因为双源混合，溢出区域的透明像素不修改帧缓冲，溢出不可见。
+Alacritty 使用 glyph 的 `left`、`top` 和 bitmap 宽高构造 quad，
+没有对普通 glyph 执行 CPU 横向裁切。它通过 dual-source blending 和 alpha
+路径处理透明像素。
 
-### Zenterm：需要裁剪
+### WezTerm
 
-因为标准 alpha 混合，溢出区域的透明像素输出 `bg_color`，溢出可见。
-所以在 CPU 端构建 instance 数据时，将 glyph quad 裁剪到 cell 边界内，同时调整 UV 坐标。
+WezTerm保留 glyph 的 `bearing_x`、`x_advance` 和 bitmap 尺寸，并提供
+`allow_square_glyphs_to_overflow_width`。默认策略是
+`WhenFollowedBySpace`：后继 cell 为空时允许方形字形横向溢出。
 
-参考代码：`crates/zenterm-ui/src/session.rs:860-886`
-参考文档：`GLYPH_CLIP.md`
+### Zenterm
 
-### 裁剪的影响范围
+Zenterm 继续对所有 glyph 做垂直裁切。MASK 字形先读取 Unicode 宽度：
 
-| glyph 类型 | 溢出行为 | 裁剪效果 |
-|-----------|---------|---------|
-| 普通文字（默认背景） | bg_color = 终端背景色，溢出与背景同色 → 不可见 | 裁剪是安全网 |
-| 普通文字（非默认背景） | bg_color ≠ 背景色，溢出可见 | 裁剪消除伪影 |
-| Block elements (░▒▓█) | bearing_y 修复前：溢出整个 descent 区域 | 修复后裁剪是 no-op |
-| Box drawing (─│┌┐) | 通常无溢出 | 裁剪是 no-op |
-| 光标（Block cursor） | bg_color = 光标色 ≠ 背景色 | 裁剪消除颜色渗漏 |
+- CJK、全角符号和宽 emoji 保留完整 bitmap；
+- 单格 MASK glyph 使用 WezTerm 的 `WhenFollowedBySpace` 策略；
+- SUBPIXEL 和 COLOR 继续做水平裁切。
+
+参考代码：`crates/zenterm-ui/src/session/render/mod.rs`
+和 `crates/zenterm-render/src/shaders.rs`
+
+### 裁切的影响范围
+
+| glyph 类型 | 横向策略 | 透明像素处理 |
+|-----------|---------|-------------|
+| MASK 普通文字 | 后继 cell 为空时允许 overhang | coverage alpha |
+| MASK CJK / Nerd Font 图标 | 按 Unicode 宽度保留完整 bitmap | coverage alpha |
+| SUBPIXEL | 保留 cell 裁切 | 预混合背景色 |
+| COLOR | 保留 cell 裁切 | 独立 RGBA 路径 |
+| Block elements | 内置 bitmap，继续垂直裁切 | Mask |
+| 光标（Block cursor） | 字形按同一策略处理 | 由 glyph 类型决定 |
+
+这让 Nerd Font 图标保留字体设计中的横向 overhang，同时让后继有内容的
+cell 保持独立。
+
 
 ---
 

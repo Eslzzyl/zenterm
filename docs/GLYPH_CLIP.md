@@ -12,9 +12,9 @@ swash 光栅化 glyph 时，位图的包围盒（`placement.top` + `placement.he
    OS/2 表（排版建议值），而 swash 的位图高度来自实际轮廓像素范围。
    个别字符的轮廓可以超出排版度量
 
-这导致 GLYPH quad 的 `clip_cell_size` 超出 cell，shader 在字形外填充的
-`bg_color` 会溢出到相邻 cell 区域，产生可见的视觉伪影；如果直接把 quad
-裁剪到 cell 边界，超出顶部的字形笔画也会被截断。
+这条风险描述适用于旧版 shader：透明像素会以 `bg_color` 写入 framebuffer。
+当前 MASK shader 使用 coverage alpha，coverage 为 0 时输出透明像素。
+因此 MASK 字形可以在后继 cell 为空时保留必要的横向 overhang。
 
 ## 行高与 fallback
 
@@ -27,16 +27,24 @@ swash 光栅化 glyph 时，位图的包围盒（`placement.top` + `placement.he
 font size 并重新光栅化，以 baseline 为中心保持 bearing 关系；重新光栅化后的取整或
 hinting 残差才交给渲染时的 scale 处理。缩放只作为异常 fallback 的安全适配，主字体
 glyph 保持原始尺寸。fallback glyph
-从光栅化阶段就使用灰度 mask，避免不同字体的物理子像素与采样位置错位；若后续
-对异常字形执行几何缩放，也不会重新引入 LCD coverage。这样可以保留固定行高，
-同时避免常见 fallback 字体的中文顶部被裁掉；渲染层的 cell 裁剪继续作为未预探测
-异常字形的最后安全边界。
+从光栅化阶段就使用灰度 mask，使 fallback glyph 保持稳定的物理采样；
+若后续对异常字形执行几何缩放，也不会重新引入 LCD coverage。这样可以保留固定行高，
+渲染层继续负责垂直裁切；MASK 的横向处理遵循后继 cell 内容。
+
+Han fallback family 采用主字体普通字重下的平台解析结果。
+当前字符的粗体或斜体属性沿用该 family 的 style 匹配。
+相邻 Han 字符保持同一平台 fallback，平台字体名称由系统解析。
+
 
 ## 解决方案
 
-在 CPU 端构建 instance 数据时，将 GLYPH quad 裁剪到 cell 边界内，
-同时同步调整 UV 坐标以避免纹理拉伸。fallback glyph 会在进入渲染层前按固定 cell
-约束，因此正常情况下不会触发顶部裁剪；该裁剪只处理未被适配的异常字形。
+渲染层继续处理垂直裁切。横向处理采用 WezTerm 默认的
+`WhenFollowedBySpace` 策略，并读取 glyph 自身的 Unicode 宽度：
+
+- MASK 宽字符按 2 个 cell 保留完整 bitmap；
+- MASK 单格 glyph 的后继 cell 为空时，保留横向 overhang；
+- MASK 单格 glyph 的后继 cell 有内容时，按 cell 范围裁切；
+- SUBPIXEL 和 COLOR 继续裁切，直到各自的透明像素与背景合成路径支持 overhang。
 
 代码位于 `crates/zenterm-ui/src/session/render/mod.rs`，非连字 glyph 渲染路径中：
 
@@ -56,18 +64,23 @@ if clipped_h < scaled_h && scaled_h > 0.0 {
     scaled_h = clipped_h;
 }
 
-// 水平裁剪（同理）
-let clipped_left = glyph_x_px.max(cell_left);
-let clipped_right = glyph_right_px.min(cell_right);
-```
+// 横向裁切
+let allow_horizontal_overflow =
+    glyph_type == GlyphContentType::Mask
+        && next_cell_is_space;
+if !allow_horizontal_overflow {
+    let clipped_left = glyph_x_px.max(cell_left);
+    let clipped_right = glyph_right_px.min(cell_right);
+    // 同步调整 u_min / u_max
+}
 
-裁剪对所有 glyph 生效（不只是光标），确保任何字符的位图 padding
-都不会溢出到相邻 cell。
+横向 overhang 只在空 cell 上绘制真实字形像素。MASK 的透明像素 alpha 为 0，
+不会改写后继 cell 的背景。
 
 ## 宽字符（CJK / Emoji）处理
 
-全角字符占据两个 cell。裁剪边界通过检查下一列的 `is_spacer` 标志
-来确定字符宽度：
+全角字符占据两个 cell。普通 glyph 优先读取下一列的 `is_spacer`，
+同时使用 `UnicodeWidthChar` 校正字符自身的显示宽度：
 
 ```rust
 let num_cells: f32 = if col + 1 < cols {
@@ -82,17 +95,32 @@ let cell_right = cell_left + cw * num_cells;  // 半角: +cw, 全角: +2*cw
 
 背景 quad 同样使用 `num_cells` 确保全角字符的背景覆盖完整的两列。
 
+宽字符的后继 cell 不单独生成背景或 glyph instance，无论该 cell 使用
+`is_spacer` 还是普通空格标志。首个 cell 负责整段背景与字形，保证
+block cursor、selection 背景覆盖完整宽度。
+
+## IME 预编辑
+
+输入法预编辑文字覆盖在终端网格上，底层网格没有为预编辑字符写入
+`is_spacer`。渲染层需要单独按 `UnicodeWidthChar` 计算预编辑字符占用的 cell：
+
+- CJK、全角符号和宽 emoji 占 2 个 cell；
+- 组合字符采用至少 1 个 cell 的绘制宽度；
+- 宽字符的后继 cell 跳过底层背景与 glyph，首个 cell 负责绘制完整 bitmap；
+- 视觉游标移动到预编辑文字占用的总 cell 数之后。
+
+这样预编辑中文与已经提交到终端网格的中文采用相同的宽度规则。
+
 ## 与其他终端的对比
 
-| | 裁剪 | 策略 |
-|--|------|------|
-| Alacritty | 无裁剪 | cell 足够大 + 画家算法覆盖溢出 |
-| WezTerm | 无裁剪 | 同上 |
-| zenterm | **CPU 端裁剪** | clip quad + 调整 UV |
+| | 横向策略 | 透明像素处理 |
+|--|-----------|--------------|
+| Alacritty | 保留 glyph bitmap 宽度 | dual-source / alpha 路径 |
+| WezTerm | `WhenFollowedBySpace` 默认 | 根据渲染模式选择合成路径 |
+| zenterm | MASK 跟随 `WhenFollowedBySpace` | MASK 使用 coverage alpha |
 
-Alacritty/WezTerm 依赖 cell 高度（来自字体真实行高）足够容纳 glyph，
-且下一行的渲染自然覆盖溢出。zenterm 选择在 CPU 端显式裁剪，
-确保 GLYPH quad 严格不超出 cell 边界。
+zenterm 的垂直裁切继续保护固定行高。MASK 的横向裁切按后继 cell 内容决定，
+使 Nerd Font 图标可以保留设计中的横向 overhang，同时让相邻文字保持独立。
 
 ## 性能影响
 

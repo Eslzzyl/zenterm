@@ -6096,6 +6096,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "unicode-width",
  "wgpu",
  "zenterm-config",
  "zenterm-core",
