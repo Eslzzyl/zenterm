@@ -74,10 +74,15 @@ fn record_alloc(bytes: usize) {
 
 fn record_dealloc(bytes: usize) {
     DEALLOCATED.fetch_add(bytes, Ordering::Relaxed);
-    LIVE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
-        Some(live.saturating_sub(bytes))
-    })
-    .ok();
+    let mut current = LIVE.load(Ordering::Relaxed);
+    while let Err(observed) = LIVE.compare_exchange_weak(
+        current,
+        current.saturating_sub(bytes),
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    ) {
+        current = observed;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
