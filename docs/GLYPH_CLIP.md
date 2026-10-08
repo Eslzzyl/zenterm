@@ -38,13 +38,10 @@ Han fallback family 由 `FontResolver` 按 Unicode Script、locale、平台 fall
 
 ## 解决方案
 
-渲染层继续处理垂直裁切。横向处理采用 WezTerm 默认的
-`WhenFollowedBySpace` 策略，并读取 glyph 自身的 Unicode 宽度：
+渲染层继续处理垂直裁切，保证固定行高。横向处理：
 
-- MASK 宽字符按 2 个 cell 保留完整 bitmap；
-- MASK 单格 glyph 的后继 cell 为空时，保留横向 overhang；
-- MASK 单格 glyph 的后继 cell 有内容时，按 cell 范围裁切；
-- SUBPIXEL 和 COLOR 继续裁切，直到各自的透明像素与背景合成路径支持 overhang。
+- MASK 灰度字形使用 coverage alpha 混合，透明像素的 alpha 为 0，不会改写帧缓冲（与 Alacritty 行为一致），因此保留完整 bitmap 宽度，**不作水平裁切**。这样可以彻底避免字符右侧轮廓（如 `D:` 中的 `D`）或斜体 overhang 被截断；
+- SUBPIXEL 和 COLOR 继续做水平裁切，直到各自的透明像素与背景合成路径支持 overhang。
 
 代码位于 `crates/zenterm-ui/src/session/render/mod.rs`，非连字 glyph 渲染路径中：
 
@@ -64,18 +61,16 @@ if clipped_h < scaled_h && scaled_h > 0.0 {
     scaled_h = clipped_h;
 }
 
-// 横向裁切
-let allow_horizontal_overflow =
-    glyph_type == GlyphContentType::Mask
-        && next_cell_is_space;
-if !allow_horizontal_overflow {
+// 横向裁切（仅对非 MASK 字形应用）
+if glyph_needs_horizontal_clip(ct) {
+    let glyph_right_px = glyph_x_px + scaled_w;
     let clipped_left = glyph_x_px.max(cell_left);
     let clipped_right = glyph_right_px.min(cell_right);
     // 同步调整 u_min / u_max
 }
+```
 
-横向 overhang 只在空 cell 上绘制真实字形像素。MASK 的透明像素 alpha 为 0，
-不会改写后继 cell 的背景。
+MASK 的透明像素 alpha 为 0，自然不会改写邻接 cell 的背景；真实笔画的边缘也能完整渲染。
 
 ## 宽字符（CJK / Emoji）处理
 
@@ -116,11 +111,11 @@ block cursor、selection 背景覆盖完整宽度。
 | | 横向策略 | 透明像素处理 |
 |--|-----------|--------------|
 | Alacritty | 保留 glyph bitmap 宽度 | dual-source / alpha 路径 |
-| WezTerm | `WhenFollowedBySpace` 默认 | 根据渲染模式选择合成路径 |
-| zenterm | MASK 跟随 `WhenFollowedBySpace` | MASK 使用 coverage alpha |
+| WezTerm | `WhenFollowedBySpace` 默认（针对 square 图标） | 根据渲染模式选择合成路径 |
+| zenterm | MASK 保留完整 bitmap 宽度（无水平裁切） | MASK 使用 coverage alpha |
 
-zenterm 的垂直裁切继续保护固定行高。MASK 的横向裁切按后继 cell 内容决定，
-使 Nerd Font 图标可以保留设计中的横向 overhang，同时让相邻文字保持独立。
+zenterm 的垂直裁切继续保护固定行高。MASK 字形使用 coverage alpha 且不带背景混合，
+保留完整宽度避免了字符轮廓（如 'D'）与斜体被截断，同时透明像素不会影响相邻 cell。
 
 ## 性能影响
 

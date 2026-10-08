@@ -270,22 +270,28 @@ pub(crate) fn process_ligature_run(
                     }
 
                     // ── Horizontal clip (GLYPH_CLIP.md) ──
-                    let glyph_right = glyph_x_px + scaled_w;
-                    let clipped_left = if gox >= 0.0 {
-                        glyph_x_px.max(cell_left)
-                    } else {
-                        glyph_x_px
-                    };
-                    let clipped_right = glyph_right.min(cell_right);
-                    let clipped_w = (clipped_right - clipped_left).max(0.0);
-                    if clipped_w < scaled_w && scaled_w > 0.0 {
-                        let r_left = (clipped_left - glyph_x_px) / scaled_w;
-                        let r_right = (clipped_right - glyph_x_px) / scaled_w;
-                        let u_range = u_max - u_min;
-                        u_min += u_range * r_left;
-                        u_max = u_min + u_range * (r_right - r_left);
-                        glyph_x_px = clipped_left;
-                        scaled_w = clipped_w;
+                    // MASK uses coverage alpha; transparent atlas pixels leave the
+                    // framebuffer unchanged (matching Alacritty), so MASK glyphs retain
+                    // their natural bitmap width without horizontal truncation.
+                    // Only SUBPIXEL and COLOR paths continue to clip horizontally.
+                    if sg.entry.content_type != GlyphContentType::Mask {
+                        let glyph_right = glyph_x_px + scaled_w;
+                        let clipped_left = if gox >= 0.0 {
+                            glyph_x_px.max(cell_left)
+                        } else {
+                            glyph_x_px
+                        };
+                        let clipped_right = glyph_right.min(cell_right);
+                        let clipped_w = (clipped_right - clipped_left).max(0.0);
+                        if clipped_w < scaled_w && scaled_w > 0.0 {
+                            let r_left = (clipped_left - glyph_x_px) / scaled_w;
+                            let r_right = (clipped_right - glyph_x_px) / scaled_w;
+                            let u_range = u_max - u_min;
+                            u_min += u_range * r_left;
+                            u_max = u_min + u_range * (r_right - r_left);
+                            glyph_x_px = clipped_left;
+                            scaled_w = clipped_w;
+                        }
                     }
 
                     let gqx = glyph_x_px * x_scale - 1.0;

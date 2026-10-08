@@ -167,10 +167,11 @@ WezTerm保留 glyph 的 `bearing_x`、`x_advance` 和 bitmap 尺寸，并提供
 
 ### Zenterm
 
-Zenterm 继续对所有 glyph 做垂直裁切。MASK 字形先读取 Unicode 宽度：
+### Zenterm
 
-- CJK、全角符号和宽 emoji 保留完整 bitmap；
-- 单格 MASK glyph 使用 WezTerm 的 `WhenFollowedBySpace` 策略；
+Zenterm 继续对所有 glyph 做垂直裁切以固定行高。对于横向：
+
+- MASK 灰度字形使用 coverage alpha，透明像素不改写帧缓冲，因此保留完整 bitmap 宽度（无水平裁切），彻底避免普通字符轮廓（如 `D:` 中的 `D`）或斜体被截断；
 - SUBPIXEL 和 COLOR 继续做水平裁切。
 
 参考代码：`crates/zenterm-ui/src/session/render/mod.rs`
@@ -180,15 +181,14 @@ Zenterm 继续对所有 glyph 做垂直裁切。MASK 字形先读取 Unicode 宽
 
 | glyph 类型 | 横向策略 | 透明像素处理 |
 |-----------|---------|-------------|
-| MASK 普通文字 | 后继 cell 为空时允许 overhang | coverage alpha |
-| MASK CJK / Nerd Font 图标 | 按 Unicode 宽度保留完整 bitmap | coverage alpha |
+| MASK 普通文字 | 保留完整 bitmap 宽度（无水平裁切） | coverage alpha |
+| MASK CJK / Nerd Font 图标 | 保留完整 bitmap 宽度（无水平裁切） | coverage alpha |
 | SUBPIXEL | 保留 cell 裁切 | 预混合背景色 |
 | COLOR | 保留 cell 裁切 | 独立 RGBA 路径 |
 | Block elements | 内置 bitmap，继续垂直裁切 | Mask |
 | 光标（Block cursor） | 字形按同一策略处理 | 由 glyph 类型决定 |
 
-这让 Nerd Font 图标保留字体设计中的横向 overhang，同时让后继有内容的
-cell 保持独立。
+这样既保留了字体的完整轮廓，又不会因为透明像素产生相邻 cell 污染。
 
 
 ---

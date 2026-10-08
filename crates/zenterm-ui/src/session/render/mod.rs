@@ -77,16 +77,16 @@ fn preedit_glyph_at(layout: &[PreeditGlyph], cell_offset: usize) -> Option<Preed
         .copied()
 }
 
-/// Return whether a monochrome glyph may preserve horizontal overhang.
-fn may_overflow_into_empty_cell(
-    content_type: GlyphContentType,
-    num_cells: f32,
-    glyph_cell_width: usize,
-    next_cell: Option<&zenterm_core::Cell>,
-) -> bool {
-    matches!(content_type, GlyphContentType::Mask)
-        && (glyph_cell_width > 1
-            || (num_cells == 1.0 && next_cell.is_some_and(|cell| cell.c == ' ' && !cell.is_spacer)))
+/// Return whether a glyph must be clipped to cell boundaries horizontally.
+///
+/// `Mask` glyphs use coverage alpha without touching the background (matching
+/// Alacritty), so they preserve their natural bitmap width to avoid clipping
+/// glyph overhangs (such as 'D' or italics).
+///
+/// `Subpixel` and `Color` glyphs pre-composite against the source cell's
+/// background colour in the fragment shader and continue to be clipped horizontally.
+fn glyph_needs_horizontal_clip(content_type: GlyphContentType) -> bool {
+    content_type != GlyphContentType::Mask
 }
 
 fn should_skip_wide_continuation(
@@ -646,21 +646,13 @@ impl TerminalSession {
                         scaled_h = clipped_h;
                     }
 
-                    // Match WezTerm's default "WhenFollowedBySpace" policy
-                    // for monochrome glyphs: preserve a glyph's intentional
-                    // horizontal overhang when the following terminal cell
-                    // is empty.  MASK uses coverage alpha, so transparent
-                    // atlas pixels leave that cell unchanged.  SUBPIXEL
-                    // pre-composes the source cell background and COLOR has
-                    // its own transparent-pixel semantics; keep both paths
-                    // clipped until their blend equations support overhang.
-                    let allow_horizontal_overflow = may_overflow_into_empty_cell(
-                        ct,
-                        num_cells,
-                        unicode_cell_width(ch_char),
-                        (col + 1 < cols).then(|| grid.cell(row, col + 1)).flatten(),
-                    );
-                    if !allow_horizontal_overflow {
+                    // Horizontal clip:
+                    // MASK uses coverage alpha; transparent atlas pixels leave the
+                    // framebuffer unchanged (matching Alacritty), so MASK glyphs retain
+                    // their natural bitmap width without horizontal truncation.
+                    // Only SUBPIXEL (pre-composited source cell bg) and COLOR paths
+                    // continue to clip horizontally.
+                    if glyph_needs_horizontal_clip(ct) {
                         let glyph_right_px = glyph_x_px + scaled_w;
                         let clipped_left = glyph_x_px.max(cell_left);
                         let clipped_right = glyph_right_px.min(cell_right);
@@ -893,49 +885,10 @@ mod tests {
     }
 
     #[test]
-    fn mask_glyph_overflow_policy() {
-        let blank = zenterm_core::Cell::blank();
-        let text =
-            zenterm_core::Cell::new('x', zenterm_core::Rgba::WHITE, zenterm_core::Rgba::BLACK);
-        let mut spacer = blank.clone();
-        spacer.is_spacer = true;
-
-        assert!(may_overflow_into_empty_cell(
-            GlyphContentType::Mask,
-            1.0,
-            1,
-            Some(&blank),
-        ));
-        assert!(!may_overflow_into_empty_cell(
-            GlyphContentType::Mask,
-            1.0,
-            1,
-            Some(&text),
-        ));
-        assert!(may_overflow_into_empty_cell(
-            GlyphContentType::Mask,
-            1.0,
-            2,
-            Some(&text),
-        ));
-        assert!(!may_overflow_into_empty_cell(
-            GlyphContentType::Mask,
-            2.0,
-            1,
-            Some(&blank),
-        ));
-        assert!(!may_overflow_into_empty_cell(
-            GlyphContentType::Subpixel,
-            1.0,
-            1,
-            Some(&blank),
-        ));
-        assert!(!may_overflow_into_empty_cell(
-            GlyphContentType::Mask,
-            1.0,
-            1,
-            Some(&spacer),
-        ));
+    fn glyph_horizontal_clip_policy() {
+        assert!(!glyph_needs_horizontal_clip(GlyphContentType::Mask));
+        assert!(glyph_needs_horizontal_clip(GlyphContentType::Subpixel));
+        assert!(glyph_needs_horizontal_clip(GlyphContentType::Color));
     }
 
     #[test]
