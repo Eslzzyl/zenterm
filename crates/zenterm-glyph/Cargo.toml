@@ -11,6 +11,7 @@ fontdb = "0.23"
 swash = "0.2"
 zeno = "0.3"
 ttf-parser = "0.25"
+unicode-script = "0.5.8"
 log = "0.4"
 
 [dev-dependencies]

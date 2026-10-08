@@ -6026,6 +6026,7 @@ dependencies = [
  "log",
  "swash",
  "ttf-parser",
+ "unicode-script",
  "zeno",
  "zenterm-core",
 ]

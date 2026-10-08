@@ -1,11 +1,13 @@
 # 汉字字体回退与粗体跳跃问题分析记录 (Han Fallback & Bold Inconsistency Analysis)
 
+> **状态：已实施。** 通用 Unicode Script 字体回退与字族内字重匹配已接入 `zenterm-glyph`。
+
 ## 1. 现象描述
 
-在终端文本渲染中，目前存在关键的汉字粗体 Fallback 异变与跳跃问题：
+历史版本的终端文本渲染曾出现关键的汉字粗体 Fallback 异变与跳跃问题：
 
 * **CJK 汉字粗体 Fallback 异变与跳跃（Han Bold Fallback Inconsistency）**：
-  在常规字重（Normal / 400）下，常用汉字能正确匹配到系统默认字体；但在粗体（Bold / 700）下，相邻汉字会发生混乱的跨字体跳跃。例如：
+  在常规字重（Normal / 400）下，常用汉字能正确匹配到系统默认字体；此前的粗体（Bold / 700）处理会让相邻汉字发生跨字体跳跃。例如：
   * `构`、`询` 解析为宋体（`Songti SC`，衬线体）；
   * `建` 解析为韩文字体（`Apple SD Gothic Neo`）；
   * 同一行中文混杂了黑体、宋体和韩文字形，且各字符字面率与基线不一致。
@@ -72,12 +74,61 @@ zenterm 采用纯 Rust 字体栈（`cosmic-text + fontdb + swash`）。在排查
 
 ---
 
-## 5. 后续建议重构方向
+## 5. 已实施方案
 
-未来在彻底修复该问题时，建议遵循以下跨平台、零配置的重构路径：
+实现位于 `crates/zenterm-glyph/src/font_resolver.rs`，并由
+`crates/zenterm-glyph/src/atlas_impl.rs` 的三条终端 shaping 路径统一使用。
 
-* **文字系统级回退调度器**：
-  在 `zenterm-glyph` 中抽象一个通用的文字系统回退解析层：
-  1. 字符缺失时，识别其 Unicode Script；
-  2. 在启动时已加载的系统字体（`fontdb`）中，根据 Script 覆盖范围和系统 Locale，动态选定该文字系统的承载字族；
-  3. 该字族确立后，后续样式（Bold / Italic）统一通过 `fontdb` 的标准 CSS 匹配查询具体的 `fontdb::ID`，使粗体自然降级至 Semibold 或对应粗面，根治跨字体跳变。
+### 5.1 Script 与字族解析
+
+`FontResolver` 在 `GlyphAtlas` 创建时建立一次字体索引：
+
+1. 收集每个 `fontdb::FaceInfo` 关联的全部字族名、face ID、字重、样式和等宽属性；
+2. 使用 `unicode-script` 按 UTF-8 字节范围切分文本；
+3. 对每个强 Script 保持一个 atlas 生命周期内固定的字族绑定；
+4. `Common`、`Inherited`、`Unknown` 使用配置的主字族，继续交由 `cosmic-text` 处理符号和组合字符；
+5. 字族选择顺序为主字族、`PlatformFallback` 的 locale 列表、数据库中的等宽字族、数据库中的全部字族；
+6. 字符覆盖检查使用 `Database::with_face_data`、`ttf_parser::Face::glyph_index` 和 `(fontdb::ID, u32)` 缓存。
+
+### 5.2 字族内字重匹配
+
+选定字族后，解析器按照样式匹配、请求字重能力、字重距离、face 字重进行选择：
+
+- 静态 face 使用字族内最近字重；
+- 静态字族提供 400 和 600 时，请求 700 选择 600；
+- 字族提供 700 时，请求 700 选择 700；
+- `wght` 可变轴覆盖请求值时，返回请求字重，让 `cosmic-text` 实例化对应轴值；
+- 原始 `style` 继续传入 shaping 属性，保留 cosmic-text 的样式合成行为；
+- 每个新 Script 绑定记录一次 `font fallback binding` 日志，实际 swash face 继续使用现有 `log_font_face` 诊断。
+
+### 5.3 shaping 路径接入
+
+`GlyphAtlas` 的以下路径统一通过 resolved attributes 设置 `Buffer`：
+
+- `baseline_glyph_ids`
+- `shape_and_rasterize_run_with_style`
+- `rasterize_glyph`
+
+单字族文本使用 `Buffer::set_text`；多字族 UTF-8 字节范围使用
+`Buffer::set_rich_text`。基础 `Attrs` 的 style、font features、metadata、metrics、
+cache flags 和 decorations 全部保留，family 与 weight 使用解析结果。
+
+终端 cell width、line height、baseline、cursor geometry 和 underline measurement
+继续使用配置的主字族。`GlyphCacheKey`、`RunCacheKey`、atlas 重建和现有缓存生命周期
+保持原有接口。
+
+### 5.4 测试覆盖
+
+`font_resolver` 测试覆盖静态 400/600 最近字重、静态 400/700 精确字重、
+可变 `wght` 轴和样式优先级。系统字体测试使用 `FontSystem::new()` 与 `构询建`，
+检查粗体两次解析的字族稳定性以及 regular/bold 的字族一致性。
+
+`atlas_impl` shaping 测试使用真实安装字体创建 `Buffer`，收集
+`LayoutGlyph::font_id`，确认 Han glyph 来自解析器绑定的字族。数据库缺少样本文字时，
+测试输出平台诊断信息。
+
+已执行：
+
+- `cargo fmt --check`
+- `cargo test -p zenterm-glyph`
+- `cargo test --workspace`

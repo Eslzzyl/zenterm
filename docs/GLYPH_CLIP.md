@@ -31,9 +31,9 @@ glyph 保持原始尺寸。fallback glyph
 若后续对异常字形执行几何缩放，也不会重新引入 LCD coverage。这样可以保留固定行高，
 渲染层继续负责垂直裁切；MASK 的横向处理遵循后继 cell 内容。
 
-Han fallback family 采用主字体普通字重下的平台解析结果。
-当前字符的粗体或斜体属性沿用该 family 的 style 匹配。
-相邻 Han 字符保持同一平台 fallback，平台字体名称由系统解析。
+Han fallback family 由 `FontResolver` 按 Unicode Script、locale、平台 fallback 列表和字体覆盖情况选择。
+同一 atlas 生命周期内，该 Script 保持固定字族绑定，相邻 Han 字符使用同一字族。
+请求字重和斜体属性在绑定字族内部匹配；静态字族使用最近字重，可变 `wght` 轴使用请求值。
 
 
 ## 解决方案

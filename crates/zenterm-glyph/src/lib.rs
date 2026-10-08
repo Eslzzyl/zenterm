@@ -27,6 +27,7 @@ use cosmic_text::{FontSystem, Metrics};
 use etagere::AtlasAllocator;
 use swash::scale::ScaleContext;
 
+use crate::font_resolver::FontResolver;
 use zenterm_core::{HintingMode, RenderMode, SubpixelLayout};
 
 /// Bound the ligature caches so arbitrary terminal output cannot retain an
@@ -39,6 +40,7 @@ pub mod allocate;
 pub mod atlas_impl;
 pub mod builtin;
 pub mod font_list;
+mod font_resolver;
 mod image_atlas;
 mod metrics;
 pub mod rasterize;
@@ -216,6 +218,7 @@ pub struct ShapedGlyph {
 /// [`grow_atlas`](Self::grow_atlas) pushes a new larger slot.
 pub struct GlyphAtlas {
     pub font_system: FontSystem,
+    font_resolver: FontResolver,
     /// Texture slots, indexed by [`GlyphEntry::atlas_index`].
     /// Slot 0 is always present; new slots are appended on demand.
     pub slots: Vec<AtlasSlot>,

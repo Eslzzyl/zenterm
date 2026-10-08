@@ -19,6 +19,7 @@ use swash::scale::image::Content as SwashContent;
 use zenterm_core::{Error, HintingMode, RenderMode, Result, SubpixelLayout};
 
 use crate::builtin;
+use crate::font_resolver::{FontResolver, ResolvedSpan};
 use crate::{
     AtlasDirtyRegion, AtlasSlot, GlyphAtlas, GlyphCacheKey, GlyphContentType, GlyphEntry,
     GlyphStyle, MAX_CACHED_RUN_BYTES, MAX_NO_EFFECT_CACHE_ENTRIES, MAX_RUN_CACHE_ENTRIES,
@@ -42,6 +43,35 @@ fn desubpixelize(img: &mut swash::scale::image::Image) {
 }
 
 impl GlyphAtlas {
+    fn set_resolved_text(
+        buffer: &mut Buffer,
+        text: &str,
+        base_attrs: &Attrs,
+        shaping: Shaping,
+        resolved_spans: &[ResolvedSpan],
+    ) {
+        if resolved_spans.len() <= 1 {
+            let mut attrs = base_attrs.clone();
+            if let Some(span) = resolved_spans.first() {
+                attrs.family = Family::Name(&span.family);
+                attrs.weight = span.weight;
+            }
+            buffer.set_text(text, &attrs, shaping, None);
+            return;
+        }
+
+        buffer.set_rich_text(
+            resolved_spans.iter().map(|span| {
+                let mut attrs = base_attrs.clone();
+                attrs.family = Family::Name(&span.family);
+                attrs.weight = span.weight;
+                (&text[span.range.clone()], attrs)
+            }),
+            base_attrs,
+            shaping,
+            None,
+        );
+    }
     /// Mark a rectangular atlas region for a partial GPU upload.
     pub(crate) fn mark_dirty_region(&mut self, atlas_index: usize, rectangle: etagere::Rectangle) {
         let width = rectangle.max.x.saturating_sub(rectangle.min.x) as u32;
@@ -86,6 +116,7 @@ impl GlyphAtlas {
              ligatures={ligatures_enabled} hinting={hinting_mode:?} render={render_mode:?}",
         );
         let font_system = FontSystem::new();
+        let font_resolver = FontResolver::new(font_family.as_ref(), font_system.db());
         // Initial line_height = font_size (1.0×).  This is intentionally
         // tight — the real line_height is computed in cell_size() after
         // measure_baseline() reads the font's actual ascent + descent.
@@ -103,6 +134,7 @@ impl GlyphAtlas {
 
         Self {
             font_system,
+            font_resolver,
             slots: vec![first_slot],
             font_size,
             font_family,
@@ -176,9 +208,6 @@ impl GlyphAtlas {
     /// allocation.  Used as a baseline to detect whether ligature features
     /// actually changed any glyphs.
     fn baseline_glyph_ids(&mut self, text: &str, style: GlyphStyle) -> Vec<u16> {
-        let mut buf = Buffer::new(&mut self.font_system, self.metrics);
-        buf.set_size(Some(self.font_size), None);
-        buf.set_wrap(Wrap::None);
         let attrs = Attrs::new()
             .family(Family::Name(&self.font_family))
             .weight(if style.bold {
@@ -191,7 +220,17 @@ impl GlyphAtlas {
             } else {
                 cosmic_text::Style::Normal
             });
-        buf.set_text(text, &attrs, Shaping::Basic, None);
+        let resolved_spans = self.font_resolver.resolve_spans(
+            self.font_system.db(),
+            self.font_system.locale(),
+            text,
+            attrs.weight,
+            attrs.style,
+        );
+        let mut buf = Buffer::new(&mut self.font_system, self.metrics);
+        buf.set_size(Some(self.font_size), None);
+        buf.set_wrap(Wrap::None);
+        Self::set_resolved_text(&mut buf, text, &attrs, Shaping::Basic, &resolved_spans);
         buf.shape_until_scroll(&mut self.font_system, true);
         buf.lines[0]
             .shape_opt()
@@ -287,9 +326,6 @@ impl GlyphAtlas {
             Shaping::Basic
         };
 
-        let mut buf = Buffer::new(&mut self.font_system, self.metrics);
-        buf.set_size(Some(self.font_size), None);
-        buf.set_wrap(Wrap::None);
         let mut font_features = FontFeatures::new();
         if self.ligatures_enabled {
             font_features.enable(FeatureTag::STANDARD_LIGATURES);
@@ -321,7 +357,17 @@ impl GlyphAtlas {
                 .map(|f| std::str::from_utf8(f.tag.as_bytes()).unwrap_or("?"))
                 .collect::<Vec<_>>(),
         );
-        buf.set_text(text, &attrs, shaping, None);
+        let resolved_spans = self.font_resolver.resolve_spans(
+            self.font_system.db(),
+            self.font_system.locale(),
+            text,
+            attrs.weight,
+            attrs.style,
+        );
+        let mut buf = Buffer::new(&mut self.font_system, self.metrics);
+        buf.set_size(Some(self.font_size), None);
+        buf.set_wrap(Wrap::None);
+        Self::set_resolved_text(&mut buf, text, &attrs, shaping, &resolved_spans);
         buf.shape_until_scroll(&mut self.font_system, true);
 
         // ── Diagnostic: inspect ShapeLine words/glyphs ────────────
@@ -713,8 +759,6 @@ impl GlyphAtlas {
         }
 
         // ── 1. Shape the character (cosmic-text Buffer) ───────────────
-        let mut buffer = Buffer::new(&mut self.font_system, self.metrics);
-        buffer.set_size(Some(self.font_size), None);
         let shaping = if c.is_ascii_graphic() || c == ' ' {
             Shaping::Basic
         } else {
@@ -732,7 +776,17 @@ impl GlyphAtlas {
             } else {
                 cosmic_text::Style::Normal
             });
-        buffer.set_text(&c.to_string(), &attrs, shaping, None);
+        let glyph_text = c.to_string();
+        let resolved_spans = self.font_resolver.resolve_spans(
+            self.font_system.db(),
+            self.font_system.locale(),
+            &glyph_text,
+            attrs.weight,
+            attrs.style,
+        );
+        let mut buffer = Buffer::new(&mut self.font_system, self.metrics);
+        buffer.set_size(Some(self.font_size), None);
+        Self::set_resolved_text(&mut buffer, &glyph_text, &attrs, shaping, &resolved_spans);
         buffer.shape_until_scroll(&mut self.font_system, true);
 
         let glyphs = buffer.lines[0]
@@ -1027,5 +1081,104 @@ impl GlyphAtlas {
         );
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight, Wrap};
+
+    use super::*;
+    use crate::font_resolver::FontResolver;
+
+    fn family_covers(db: &fontdb::Database, family: &str, text: &str) -> bool {
+        db.faces()
+            .filter(|face| face.families.iter().any(|(name, _)| name == family))
+            .any(|face| {
+                db.with_face_data(face.id, |data, index| {
+                    let Ok(font) = ttf_parser::Face::parse(data, index) else {
+                        return false;
+                    };
+                    text.chars()
+                        .all(|character| font.glyph_index(character).is_some())
+                })
+                .unwrap_or(false)
+            })
+    }
+
+    #[test]
+    fn resolved_han_layout_uses_one_bound_family() {
+        let mut font_system = FontSystem::new();
+        let Some(primary_family) = font_system
+            .db()
+            .faces()
+            .find_map(|face| face.families.first().map(|(family, _)| family.clone()))
+        else {
+            eprintln!("atlas shaping test skipped: installed database is empty");
+            return;
+        };
+        let text = "构询建";
+        let mut resolver = FontResolver::new(primary_family.clone(), font_system.db());
+        let resolved_spans = resolver.resolve_spans(
+            font_system.db(),
+            font_system.locale(),
+            text,
+            Weight::BOLD,
+            cosmic_text::Style::Normal,
+        );
+        let selected_family = &resolved_spans[0].family;
+
+        let selected_covers = family_covers(font_system.db(), selected_family, text);
+        let any_family_covers = font_system.db().faces().any(|face| {
+            face.families
+                .iter()
+                .any(|(family, _)| family_covers(font_system.db(), family, text))
+        });
+        if !selected_covers {
+            assert!(
+                !any_family_covers,
+                "resolver selected {selected_family:?} despite installed coverage"
+            );
+            eprintln!("atlas shaping test skipped: installed database has no Han coverage");
+            return;
+        }
+
+        let attrs = Attrs::new()
+            .family(Family::Name(&primary_family))
+            .weight(Weight::BOLD);
+        let mut buffer = Buffer::new(&mut font_system, Metrics::new(16.0, 16.0));
+        buffer.set_size(Some(16.0), None);
+        buffer.set_wrap(Wrap::None);
+        GlyphAtlas::set_resolved_text(
+            &mut buffer,
+            text,
+            &attrs,
+            Shaping::Advanced,
+            &resolved_spans,
+        );
+        buffer.shape_until_scroll(&mut font_system, true);
+
+        let family_ids: HashSet<_> = font_system
+            .db()
+            .faces()
+            .filter(|face| {
+                face.families
+                    .iter()
+                    .any(|(family, _)| family == selected_family)
+            })
+            .map(|face| face.id)
+            .collect();
+        let glyph_ids: Vec<_> = buffer.lines[0]
+            .layout_opt()
+            .into_iter()
+            .flat_map(|lines| lines.iter())
+            .flat_map(|line| line.glyphs.iter())
+            .map(|glyph| glyph.font_id)
+            .collect();
+
+        assert!(!glyph_ids.is_empty());
+        assert!(glyph_ids.iter().all(|font_id| family_ids.contains(font_id)));
     }
 }
