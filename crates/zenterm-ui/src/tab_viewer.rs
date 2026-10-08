@@ -195,6 +195,9 @@ impl<'a> TabViewer for TabViewerContext<'a> {
     fn on_tab_button(&mut self, tab: &mut Self::Tab, response: &egui::Response) {
         if response.clicked() {
             *self.active_session_id = Some(*tab);
+            // Switching the active tab changes which cached instances are
+            // visible in the shared GPU frame.
+            *self.layout_changed = true;
         }
         if response.drag_started() || response.dragged() || response.drag_stopped() {
             *self.layout_changed = true;

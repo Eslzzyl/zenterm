@@ -835,12 +835,21 @@ impl ZentermApp {
         changed
     }
 
+    fn visible_active_tab_ids(workspace: &crate::workspace::WorkspaceState) -> Vec<SessionId> {
+        workspace
+            .dock
+            .iter_leaves()
+            .filter(|(_, leaf)| !leaf.collapsed)
+            .filter_map(|(_, leaf)| leaf.tabs.get(leaf.active.0).copied())
+            .collect()
+    }
+
     fn rebuild_visible_instance_frame(&mut self, viewport_size_px: [f32; 2]) {
         self.gpu.clear_frame();
         let _ = self.emit_background_quad(viewport_size_px);
 
         let visible_ids = if self.config.ui.tabs_enabled {
-            self.workspaces.active_workspace().all_tab_ids()
+            Self::visible_active_tab_ids(self.workspaces.active_workspace())
         } else {
             vec![SessionId(0)]
         };
@@ -962,6 +971,31 @@ mod construction_tests {
         assert_eq!(
             resolve_config_relative_path(&absolute, &config_file),
             absolute
+        );
+    }
+    #[test]
+    fn visible_instance_frame_uses_only_active_tab_per_leaf() {
+        let mut dock = egui_dock::DockState::new(vec![SessionId::new(1), SessionId::new(2)]);
+        let workspace = crate::workspace::WorkspaceState::from_dock(
+            crate::workspace::WorkspaceId(0),
+            "test".to_owned(),
+            dock.clone(),
+        );
+
+        assert_eq!(
+            ZentermApp::visible_active_tab_ids(&workspace),
+            vec![SessionId::new(1)]
+        );
+
+        dock.main_surface_mut().set_active_tab(0, 1).unwrap();
+        let switched = crate::workspace::WorkspaceState::from_dock(
+            crate::workspace::WorkspaceId(0),
+            "test".to_owned(),
+            dock,
+        );
+        assert_eq!(
+            ZentermApp::visible_active_tab_ids(&switched),
+            vec![SessionId::new(2)]
         );
     }
 }
